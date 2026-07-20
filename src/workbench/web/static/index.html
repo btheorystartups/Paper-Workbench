@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Paper-Workbench</title>
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1><a href="#/">Paper-Workbench</a></h1>
+    <span class="dim small-text">evidence-controlled research workbench</span>
+    <span class="header-spacer"></span>
+    <span id="mode-badge" class="mode-badge unknown" role="status">checking&hellip;</span>
+  </header>
+
+  <main id="view" tabindex="-1">
+    <p class="loading">Loading&hellip;</p>
+  </main>
+
+  <div id="toast-region" role="status" aria-live="polite" aria-atomic="false"></div>
+  <div id="sr-status" class="visually-hidden" role="status" aria-live="polite"></div>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

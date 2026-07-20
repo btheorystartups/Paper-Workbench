@@ -211,6 +211,52 @@ class LiteratureEntry(_Stamped, Base):
     __table_args__ = (UniqueConstraint("project_id", "source_id"),)
 
 
+class Embedding(_Stamped, Base):
+    """Versioned embedding for one research object or source. Project-scoped retrieval
+    only; similarity is a discovery signal, never evidence (ADR-5)."""
+
+    __tablename__ = "embeddings"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(20))  # object|source
+    target_id: Mapped[str] = mapped_column(String(32), index=True)
+    model: Mapped[str] = mapped_column(String(80))
+    index_version: Mapped[int] = mapped_column(default=1)
+    vector: Mapped[list] = mapped_column(JSON)
+    text_hash: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (UniqueConstraint("target_type", "target_id", "model", "index_version"),)
+
+
+class User(_Stamped, Base):
+    """Local collaboration identity (single-machine trust model: API key ≈ dev token)."""
+
+    __tablename__ = "users"
+    name: Mapped[str] = mapped_column(String(200))
+    api_key: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class ProjectMember(_Stamped, Base):
+    __tablename__ = "project_members"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))  # owner|coauthor|reviewer|editor
+
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+
+
+class VenueProfile(_Stamped, Base):
+    """Journal/venue rules. `verified` must be set by a human before compliance audits
+    treat the rules as authoritative; `rules_source` records where/when rules came from."""
+
+    __tablename__ = "venue_profiles"
+    workspace_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    rules: Mapped[dict] = mapped_column(JSON, default=dict)
+    rules_source: Mapped[str] = mapped_column(Text, default="")
+    retrieved_at: Mapped[datetime | None] = mapped_column(default=None)
+    verified: Mapped[bool] = mapped_column(default=False)
+
+
 class AuditEvent(_Stamped, Base):
     __tablename__ = "audit_events"
     workspace_id: Mapped[str] = mapped_column(String(32), index=True)

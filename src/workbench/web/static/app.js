@@ -1,0 +1,1465 @@
+/* Paper-Workbench UI — single classic script, no dependencies.
+   Layout: vocab/constants, helpers, router, views, event delegation. */
+"use strict";
+
+/* ===================== vocab / constants ===================== */
+
+const KINDS = [
+  "question", "hypothesis", "conjecture", "result", "method", "definition",
+  "assumption", "limitation", "decision", "task", "note", "dataset", "analysis",
+  "figure", "table", "manuscript", "section", "paper_candidate",
+];
+
+const STRENGTHS = [
+  "formally_established", "empirically_established",
+  "computationally_verified_within_scope", "heuristically_supported",
+  "conjectured", "ai_suggested",
+];
+
+const ACCESS_LEVELS = [
+  "metadata_only", "abstract_only", "excerpt_available",
+  "full_text_authorized", "full_text_user_supplied",
+];
+
+const SUPPORTS = [
+  "research_result", "external_source", "both", "common_knowledge",
+  "interpretation", "hypothesis", "unsupported", "verification_required",
+];
+
+const NOVELTY = [
+  "apparently_novel_limited_search", "related_work_with_distinction",
+  "known_result_new_derivation_possible", "insufficient_evidence",
+  "probably_not_novel", "expert_confirmation_required",
+];
+
+const SCREEN_STATES = ["unread", "maybe", "include", "exclude"];
+const RELATIONSHIPS = ["supports", "contradicts", "background"];
+
+const PAPER_TYPES = [
+  "original_empirical", "mathematical_theoretical", "methodological",
+  "computational", "applied", "proof_of_concept", "short_communication",
+  "technical_note", "expository", "review_survey", "comparative",
+  "replication_validation", "software", "data_resource",
+  "working_paper_preprint", "custom",
+];
+
+const STRUCTURES = [
+  "imrad", "definition_theorem_proof_example",
+  "problem_framework_analysis_implications", "historical_synthesis",
+  "algorithm_correctness_complexity_experiments",
+  "application_method_case_study_validation", "custom",
+];
+
+const EXPORT_FORMATS = ["md", "tex", "html", "docx", "bib", "pdf", "jats"];
+
+const ACCESS_COLOR = {
+  metadata_only: "b-gray",
+  abstract_only: "b-blue",
+  excerpt_available: "b-teal",
+  full_text_authorized: "b-green",
+  full_text_user_supplied: "b-green",
+};
+
+const SUPPORT_COLOR = {
+  research_result: "b-green",
+  external_source: "b-blue",
+  both: "b-teal",
+  common_knowledge: "b-gray",
+  interpretation: "b-purple",
+  hypothesis: "b-amber",
+  unsupported: "b-red",
+  verification_required: "b-orange",
+};
+
+const SEVERITY_COLOR = {
+  blocker: "b-red", error: "b-red", high: "b-red",
+  warning: "b-amber", medium: "b-amber",
+  info: "b-blue", low: "b-blue",
+};
+
+const RISK_COLOR = {
+  read_only: "b-gray", reversible: "b-blue", external: "b-orange",
+};
+
+const STATE_COLOR = {
+  unread: "b-gray", maybe: "b-amber", include: "b-green", exclude: "b-red",
+  proposed: "b-amber", approved: "b-blue", executed: "b-green",
+  rejected: "b-red", invalidated: "b-gray",
+};
+
+/* ===================== state ===================== */
+
+const state = {
+  workspaceId: null,
+  projectNames: {},        // pid -> name
+  pickedExcerpts: new Map(), // excerpt id -> label (claim form, survives re-render)
+  pickedProject: null,       // pid the picked excerpts belong to
+};
+
+/* ===================== helpers ===================== */
+
+function esc(v) {
+  return String(v === null || v === undefined ? "" : v).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+async function api(path, method = "GET", body) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (_e) {
+    throw new Error("Network error: could not reach the API.");
+  }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_e) { data = null; }
+  if (!res.ok) {
+    let detail = res.status + " " + res.statusText;
+    if (data && data.detail !== undefined) {
+      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+    }
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function toast(msg, kind) {
+  const region = document.getElementById("toast-region");
+  const div = document.createElement("div");
+  div.className = "toast " + (kind === "err" ? "err" : "ok");
+  div.textContent = msg;
+  region.appendChild(div);
+  const sr = document.getElementById("sr-status");
+  if (sr) sr.textContent = msg;
+  setTimeout(() => div.remove(), kind === "err" ? 8000 : 4500);
+}
+
+function loadingHTML(msg) { return '<p class="loading">' + esc(msg || "Loading…") + "</p>"; }
+function emptyHTML(msg) { return '<p class="empty">' + esc(msg) + "</p>"; }
+function errorHTML(msg) { return '<div class="error-box" role="alert">' + esc(msg) + "</div>"; }
+
+function badge(text, color) {
+  return '<span class="badge ' + esc(color || "b-gray") + '">' + esc(pretty(text)) + "</span>";
+}
+
+function pretty(v) { return String(v === null || v === undefined ? "" : v).replace(/_/g, " "); }
+
+function trunc(s, n) {
+  s = String(s === null || s === undefined ? "" : s);
+  n = n || 120;
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function options(list, selected, withBlank) {
+  let html = withBlank ? '<option value="">' + esc(withBlank) + "</option>" : "";
+  for (const v of list) {
+    html += '<option value="' + esc(v) + '"' + (v === selected ? " selected" : "") + ">" +
+      esc(pretty(v)) + "</option>";
+  }
+  return html;
+}
+
+function multiOptions(items, labelFn) {
+  return items.map((it) =>
+    '<option value="' + esc(it.id) + '">' + esc(trunc(labelFn(it), 80)) + "</option>").join("");
+}
+
+function selectedValues(sel) {
+  return sel ? Array.from(sel.selectedOptions).map((o) => o.value).filter(Boolean) : [];
+}
+
+function fd(form) {
+  const out = {};
+  new FormData(form).forEach((v, k) => {
+    if (typeof v === "string") out[k] = v.trim();
+  });
+  return out;
+}
+
+async function withBusy(btn, fn) {
+  if (btn) btn.disabled = true;
+  try { return await fn(); } finally { if (btn) btn.disabled = false; }
+}
+
+function fmtAuthors(a) {
+  if (Array.isArray(a)) return a.join(", ");
+  return a || "";
+}
+
+function jsonPre(obj) {
+  let s;
+  try { s = JSON.stringify(obj, null, 2); } catch (_e) { s = String(obj); }
+  return '<pre class="payload">' + esc(s) + "</pre>";
+}
+
+/* ===================== health badge ===================== */
+
+async function loadHealth() {
+  const el = document.getElementById("mode-badge");
+  try {
+    const h = await api("/health");
+    const mode = h && h.provider_mode ? String(h.provider_mode) : "unknown";
+    if (mode === "live") {
+      el.className = "mode-badge live";
+      el.textContent = "live providers";
+    } else {
+      el.className = "mode-badge fake";
+      el.textContent = "OFFLINE/FAKE MODE (" + mode + ")";
+    }
+  } catch (_e) {
+    el.className = "mode-badge unknown";
+    el.textContent = "API unreachable";
+  }
+}
+
+/* ===================== router ===================== */
+
+const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts"];
+
+function route() {
+  const view = document.getElementById("view");
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (parts[0] === "project" && parts[1]) {
+    const tab = TABS.includes(parts[2]) ? parts[2] : "objects";
+    renderProject(view, parts[1], tab, parts.slice(3));
+  } else {
+    renderHome(view);
+  }
+}
+
+async function guarded(container, fn) {
+  container.innerHTML = loadingHTML();
+  try {
+    await fn(container);
+  } catch (e) {
+    container.innerHTML = errorHTML(e.message);
+  }
+}
+
+/* ===================== home ===================== */
+
+async function renderHome(view) {
+  view.innerHTML =
+    '<div class="panel-row">' +
+    '<section class="panel" aria-labelledby="ws-h">' +
+    '<h2 id="ws-h">Workspaces</h2><div id="ws-area">' + loadingHTML() + "</div>" +
+    "</section>" +
+    '<section class="panel" aria-labelledby="pr-h">' +
+    '<h2 id="pr-h">Projects</h2><div id="pr-area">' +
+    emptyHTML("Select a workspace to see its projects.") + "</div>" +
+    "</section></div>";
+  const wsArea = document.getElementById("ws-area");
+  try {
+    const workspaces = await api("/workspaces");
+    let html = "";
+    if (!workspaces.length) {
+      html += emptyHTML("No workspaces yet. Create one below.");
+    } else {
+      html +=
+        '<div class="field"><label for="ws-select">Workspace</label>' +
+        '<select id="ws-select" data-change="ws-select">' +
+        '<option value="">— choose —</option>' +
+        workspaces.map((w) =>
+          '<option value="' + esc(w.id) + '"' +
+          (w.id === state.workspaceId ? " selected" : "") + ">" + esc(w.name) + "</option>"
+        ).join("") +
+        "</select></div>";
+    }
+    html +=
+      '<hr class="soft">' +
+      '<form class="stack" data-form="create-workspace">' +
+      '<div class="field"><label for="ws-name">New workspace name</label>' +
+      '<input id="ws-name" name="name" type="text" required></div>' +
+      '<div><button type="submit" class="primary">Create workspace</button></div>' +
+      "</form>";
+    wsArea.innerHTML = html;
+    if (state.workspaceId && workspaces.some((w) => w.id === state.workspaceId)) {
+      renderProjects(state.workspaceId);
+    }
+  } catch (e) {
+    wsArea.innerHTML = errorHTML(e.message);
+  }
+}
+
+async function renderProjects(wsId) {
+  const area = document.getElementById("pr-area");
+  if (!area) return;
+  area.innerHTML = loadingHTML();
+  try {
+    const projects = await api("/workspaces/" + encodeURIComponent(wsId) + "/projects");
+    for (const p of projects) state.projectNames[p.id] = p.name;
+    let html = "";
+    if (!projects.length) {
+      html += emptyHTML("No projects in this workspace yet.");
+    } else {
+      html += '<div class="card-list">' + projects.map((p) =>
+        '<button type="button" class="card" data-action="open-project" data-pid="' + esc(p.id) + '">' +
+        '<span class="card-title">' + esc(p.name) + "</span>" +
+        (p.description ? '<br><span class="dim small-text">' + esc(trunc(p.description, 140)) + "</span>" : "") +
+        "</button>"
+      ).join("") + "</div>";
+    }
+    html +=
+      '<hr class="soft">' +
+      '<form class="stack" data-form="create-project" data-wsid="' + esc(wsId) + '">' +
+      '<div class="field"><label for="pr-name">New project name</label>' +
+      '<input id="pr-name" name="name" type="text" required></div>' +
+      '<div class="field"><label for="pr-desc">Description</label>' +
+      '<textarea id="pr-desc" name="description"></textarea></div>' +
+      '<div><button type="submit" class="primary">Create project</button></div>' +
+      "</form>";
+    area.innerHTML = html;
+  } catch (e) {
+    area.innerHTML = errorHTML(e.message);
+  }
+}
+
+/* ===================== project shell ===================== */
+
+function renderProject(view, pid, tab, sub) {
+  const name = state.projectNames[pid] || "Project";
+  view.innerHTML =
+    '<nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Home</a> / ' +
+    esc(name) + "</nav>" +
+    '<nav class="tabs" aria-label="Project sections">' +
+    TABS.map((t) =>
+      '<a href="#/project/' + esc(pid) + "/" + t + '"' +
+      (t === tab ? ' aria-current="page"' : "") + ">" +
+      esc(t.charAt(0).toUpperCase() + t.slice(1)) + "</a>"
+    ).join("") +
+    "</nav>" +
+    '<div id="tab-content"></div>';
+  const el = document.getElementById("tab-content");
+  const fns = {
+    objects: tabObjects, sources: tabSources, claims: tabClaims,
+    literature: tabLiterature, dialogue: tabDialogue, manuscripts: tabManuscripts,
+  };
+  guarded(el, (c) => fns[tab](c, pid, sub || []));
+}
+
+/* ===================== objects tab ===================== */
+
+async function tabObjects(el, pid) {
+  const objects = await api("/projects/" + encodeURIComponent(pid) + "/objects");
+  let rows;
+  if (!objects.length) {
+    rows = emptyHTML("No research objects yet. Create the first one below.");
+  } else {
+    rows = '<div class="table-wrap"><table><thead><tr>' +
+      "<th scope=\"col\">Kind</th><th scope=\"col\">Title</th><th scope=\"col\">Strength</th>" +
+      "<th scope=\"col\">Status</th><th scope=\"col\">Actions</th>" +
+      "</tr></thead><tbody>" +
+      objects.map((o) => {
+        let status = "";
+        if (o.ai_suggested && !o.accepted_by_user) status += badge("AI-suggested", "b-amber") + " ";
+        if (o.accepted_by_user) status += badge("accepted", "b-green");
+        if (!o.ai_suggested && !o.accepted_by_user) status += '<span class="dim">—</span>';
+        const accept = (!o.accepted_by_user)
+          ? '<button type="button" class="small approve" data-action="accept-object" data-id="' +
+            esc(o.id) + '">Accept</button>'
+          : "";
+        return "<tr><td>" + badge(o.kind, "b-gray") + "</td><td>" + esc(o.title) +
+          "</td><td>" + (o.strength ? badge(o.strength, "b-teal") : '<span class="dim">—</span>') +
+          "</td><td>" + status + "</td><td>" + accept + "</td></tr>";
+      }).join("") +
+      "</tbody></table></div>";
+  }
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="obj-h"><h2 id="obj-h">Research objects</h2>' +
+    rows + "</section>" +
+    '<section class="panel" aria-labelledby="obj-new-h"><h2 id="obj-new-h">New object</h2>' +
+    '<form class="stack" data-form="create-object" data-pid="' + esc(pid) + '">' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="obj-kind">Kind</label>' +
+    '<select id="obj-kind" name="kind">' + options(KINDS, "note") + "</select></div>" +
+    '<div class="field"><label for="obj-strength">Strength (optional)</label>' +
+    '<select id="obj-strength" name="strength">' + options(STRENGTHS, "", "— none —") + "</select></div>" +
+    "</div>" +
+    '<div class="field"><label for="obj-title">Title</label>' +
+    '<input id="obj-title" name="title" type="text" required></div>' +
+    '<div class="field"><label for="obj-body">Body (optional free text)</label>' +
+    '<textarea id="obj-body" name="body"></textarea></div>' +
+    '<div><button type="submit" class="primary">Create object</button></div>' +
+    "</form></section>";
+}
+
+/* ===================== sources tab ===================== */
+
+function accessBadge(access) {
+  return badge(access, ACCESS_COLOR[access] || "b-gray");
+}
+
+async function tabSources(el, pid, sub) {
+  const selectedSid = sub[0] || null;
+  const sources = await api("/projects/" + encodeURIComponent(pid) + "/sources");
+  let rows;
+  if (!sources.length) {
+    rows = emptyHTML("No sources registered yet.");
+  } else {
+    rows = '<div class="table-wrap"><table><thead><tr>' +
+      '<th scope="col">Title</th><th scope="col">Authors</th><th scope="col">Year</th>' +
+      '<th scope="col">Venue</th><th scope="col">Access</th><th scope="col">Verified</th>' +
+      '<th scope="col">DOI</th>' +
+      "</tr></thead><tbody>" +
+      sources.map((s) =>
+        '<tr class="' + (s.id === selectedSid ? "row-selected" : "") + '"><td>' +
+        '<button type="button" class="row-title-btn" data-action="open-source" data-pid="' +
+        esc(pid) + '" data-sid="' + esc(s.id) + '">' + esc(trunc(s.title, 90)) + "</button></td><td>" +
+        esc(trunc(fmtAuthors(s.authors), 60)) + "</td><td>" + esc(s.year || "") + "</td><td>" +
+        esc(trunc(s.venue, 40)) + "</td><td>" + accessBadge(s.access) + "</td><td>" +
+        (s.human_verified
+          ? '<span class="verified" title="Human verified">✓ verified</span>'
+          : '<span class="unverified">unverified</span>') +
+        '</td><td class="mono">' + esc(s.doi || "") + "</td></tr>"
+      ).join("") +
+      "</tbody></table></div>";
+  }
+
+  let excerptPanel = "";
+  if (selectedSid) {
+    const src = sources.find((s) => s.id === selectedSid);
+    excerptPanel =
+      '<section class="panel" aria-labelledby="exc-h"><h2 id="exc-h">Excerpts — ' +
+      esc(src ? trunc(src.title, 80) : selectedSid) + "</h2>" +
+      '<div id="excerpt-list">' + loadingHTML() + "</div>" +
+      '<hr class="soft">' +
+      '<form class="stack" data-form="add-excerpt" data-sid="' + esc(selectedSid) + '">' +
+      '<div class="field"><label for="exc-text">Excerpt text (verbatim)</label>' +
+      '<textarea id="exc-text" name="text" required></textarea></div>' +
+      '<div class="field"><label for="exc-loc">Locator (page, section, etc.)</label>' +
+      '<input id="exc-loc" name="locator" type="text" required></div>' +
+      '<div><button type="submit" class="primary">Capture excerpt</button></div>' +
+      "</form></section>";
+  }
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="src-h"><h2 id="src-h">Sources</h2>' +
+    '<p class="dim small-text">Click a source title to view and capture excerpts.</p>' +
+    rows + "</section>" +
+    excerptPanel +
+    '<div class="panel-row">' +
+    '<section class="panel" aria-labelledby="src-new-h"><h3 id="src-new-h">Register source</h3>' +
+    '<form class="stack" data-form="create-source" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="src-title">Title</label>' +
+    '<input id="src-title" name="title" type="text" required></div>' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="src-access">Access level</label>' +
+    '<select id="src-access" name="access">' + options(ACCESS_LEVELS, "metadata_only") + "</select></div>" +
+    '<div class="field"><label for="src-year">Year</label>' +
+    '<input id="src-year" name="year" type="number" min="0" max="3000"></div>' +
+    "</div>" +
+    '<div class="field"><label for="src-acq">Acquisition note ' +
+    '<span class="dim">(required for full-text access levels)</span></label>' +
+    '<textarea id="src-acq" name="acquisition"></textarea></div>' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="src-authors">Authors</label>' +
+    '<input id="src-authors" name="authors" type="text"></div>' +
+    '<div class="field"><label for="src-venue">Venue</label>' +
+    '<input id="src-venue" name="venue" type="text"></div>' +
+    "</div>" +
+    '<div class="field-row">' +
+    '<div class="field"><label for="src-doi">DOI</label>' +
+    '<input id="src-doi" name="doi" type="text"></div>' +
+    '<div class="field"><label for="src-url">URL</label>' +
+    '<input id="src-url" name="url" type="text"></div>' +
+    '<div class="field"><label for="src-license">License</label>' +
+    '<input id="src-license" name="license" type="text"></div>' +
+    "</div>" +
+    '<div><button type="submit" class="primary">Register source</button></div>' +
+    "</form></section>" +
+    '<section class="panel" aria-labelledby="ing-h"><h3 id="ing-h">Ingest local file</h3>' +
+    '<p class="dim small-text">Registers a file you already have on disk as a full-text (user-supplied) source.</p>' +
+    '<form class="stack" data-form="ingest-file" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="ing-path">Absolute file path</label>' +
+    '<input id="ing-path" name="path" type="text" required ' +
+    'placeholder="C:\\papers\\smith2024.pdf"></div>' +
+    '<div class="field"><label for="ing-title">Title (optional)</label>' +
+    '<input id="ing-title" name="title" type="text"></div>' +
+    '<div class="field"><label for="ing-license">License (optional)</label>' +
+    '<input id="ing-license" name="license" type="text"></div>' +
+    '<div><button type="submit" class="primary">Ingest file</button></div>' +
+    "</form></section></div>";
+
+  if (selectedSid) loadExcerpts(selectedSid);
+}
+
+async function loadExcerpts(sid) {
+  const box = document.getElementById("excerpt-list");
+  if (!box) return;
+  try {
+    const excerpts = await api("/sources/" + encodeURIComponent(sid) + "/excerpts");
+    if (!excerpts.length) {
+      box.innerHTML = emptyHTML("No excerpts captured for this source yet.");
+      return;
+    }
+    box.innerHTML = '<ul class="plain">' + excerpts.map((x) =>
+      '<li class="excerpt-item"><blockquote style="margin:0">' + esc(x.text) + "</blockquote>" +
+      '<div class="small-text dim">locator: ' + esc(x.locator) +
+      ' &middot; checksum: <span class="mono">' + esc(trunc(x.checksum, 16)) + "</span></div></li>"
+    ).join("") + "</ul>";
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+/* ===================== claims tab ===================== */
+
+async function tabClaims(el, pid, sub) {
+  const selectedCid = sub[0] || null;
+  if (state.pickedProject !== pid) {
+    state.pickedProject = pid;
+    state.pickedExcerpts = new Map();
+  }
+  const [claims, sources, objects] = await Promise.all([
+    api("/projects/" + encodeURIComponent(pid) + "/claims"),
+    api("/projects/" + encodeURIComponent(pid) + "/sources"),
+    api("/projects/" + encodeURIComponent(pid) + "/objects"),
+  ]);
+
+  let rows;
+  if (!claims.length) {
+    rows = emptyHTML("No claims yet. Every claim carries an explicit support state.");
+  } else {
+    rows = '<div class="table-wrap"><table><thead><tr>' +
+      '<th scope="col">Claim</th><th scope="col">Support</th>' +
+      '<th scope="col">Evidence</th><th scope="col">Notes</th>' +
+      "</tr></thead><tbody>" +
+      claims.map((c) =>
+        '<tr class="' + (c.id === selectedCid ? "row-selected" : "") + '"><td>' +
+        '<button type="button" class="row-title-btn" data-action="open-claim" data-pid="' +
+        esc(pid) + '" data-cid="' + esc(c.id) + '">' + esc(trunc(c.text, 130)) + "</button></td><td>" +
+        badge(c.support, SUPPORT_COLOR[c.support] || "b-gray") + "</td><td>" +
+        esc(c.evidence_count) + "</td><td>" + esc(trunc(c.notes, 70)) + "</td></tr>"
+      ).join("") +
+      "</tbody></table></div>";
+  }
+
+  let evidencePanel = "";
+  if (selectedCid) {
+    const claim = claims.find((c) => c.id === selectedCid);
+    evidencePanel =
+      '<section class="panel" aria-labelledby="ev-h"><h2 id="ev-h">Evidence — ' +
+      esc(claim ? trunc(claim.text, 90) : selectedCid) + "</h2>" +
+      (claim ? "<p>" + badge(claim.support, SUPPORT_COLOR[claim.support] || "b-gray") + "</p>" : "") +
+      '<div id="evidence-list">' + loadingHTML() + "</div></section>";
+  }
+
+  const sourceOpts = sources.map((s) =>
+    '<option value="' + esc(s.id) + '">' + esc(trunc(s.title, 70)) + "</option>").join("");
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="cl-h"><h2 id="cl-h">Claims</h2>' +
+    '<p class="dim small-text">Support states are always shown; they are never collapsed.</p>' +
+    rows + "</section>" +
+    evidencePanel +
+    '<section class="panel" aria-labelledby="cl-new-h"><h2 id="cl-new-h">New claim</h2>' +
+    '<form class="stack" data-form="create-claim" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="cl-text">Claim text</label>' +
+    '<textarea id="cl-text" name="text" required></textarea></div>' +
+    '<div class="field"><label for="cl-support">Support state</label>' +
+    '<select id="cl-support" name="support">' + options(SUPPORTS, "unsupported") + "</select></div>" +
+    '<div class="field"><label for="cl-notes">Notes</label>' +
+    '<textarea id="cl-notes" name="notes"></textarea></div>' +
+    '<fieldset><legend>Evidence: excerpts</legend>' +
+    '<div class="field"><label for="cl-source">Pick a source to list its excerpts</label>' +
+    '<select id="cl-source" data-change="claim-source" data-sid-holder>' +
+    '<option value="">— choose source —</option>' + sourceOpts + "</select></div>" +
+    '<div id="claim-excerpts" class="checklist" aria-live="polite"></div>' +
+    '<div class="field"><span class="dim small-text">Selected excerpts:</span>' +
+    '<div id="claim-picked" class="chips"></div></div>' +
+    "</fieldset>" +
+    '<div class="field"><label for="cl-objects">Evidence: research objects (multi-select)</label>' +
+    '<select id="cl-objects" multiple>' +
+    multiOptions(objects, (o) => "[" + o.kind + "] " + o.title) + "</select></div>" +
+    '<div><button type="submit" class="primary">Create claim</button></div>' +
+    "</form></section>";
+
+  renderPickedChips();
+  if (selectedCid) loadEvidence(selectedCid);
+}
+
+function renderPickedChips() {
+  const box = document.getElementById("claim-picked");
+  if (!box) return;
+  if (!state.pickedExcerpts.size) {
+    box.innerHTML = '<span class="dim small-text">none</span>';
+    return;
+  }
+  let html = "";
+  state.pickedExcerpts.forEach((label, id) => {
+    html += '<span class="chip">' + esc(trunc(label, 46)) +
+      '<button type="button" data-action="unpick-excerpt" data-id="' + esc(id) +
+      '" aria-label="Remove excerpt ' + esc(trunc(label, 30)) + '">×</button></span>';
+  });
+  box.innerHTML = html;
+}
+
+async function loadClaimExcerpts(sid) {
+  const box = document.getElementById("claim-excerpts");
+  if (!box) return;
+  if (!sid) { box.innerHTML = ""; return; }
+  box.innerHTML = loadingHTML();
+  try {
+    const excerpts = await api("/sources/" + encodeURIComponent(sid) + "/excerpts");
+    if (!excerpts.length) {
+      box.innerHTML = emptyHTML("This source has no excerpts yet (capture them on the Sources tab).");
+      return;
+    }
+    box.innerHTML = excerpts.map((x) =>
+      "<label><input type=\"checkbox\" data-change=\"pick-excerpt\" value=\"" + esc(x.id) +
+      "\" data-label=\"" + esc(trunc(x.text, 60)) + "\"" +
+      (state.pickedExcerpts.has(x.id) ? " checked" : "") + "> " +
+      esc(trunc(x.text, 110)) + ' <span class="dim">(' + esc(x.locator) + ")</span></label>"
+    ).join("");
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+async function loadEvidence(cid) {
+  const box = document.getElementById("evidence-list");
+  if (!box) return;
+  try {
+    const links = await api("/claims/" + encodeURIComponent(cid) + "/evidence");
+    if (!links.length) {
+      box.innerHTML = emptyHTML("No evidence linked to this claim.");
+      return;
+    }
+    box.innerHTML = '<ul class="plain">' + links.map((ln) =>
+      '<li class="evidence-item">' +
+      (ln.entailment ? badge(ln.entailment, "b-blue") + " " : "") +
+      (ln.excerpt_id
+        ? 'excerpt <span class="mono">' + esc(ln.excerpt_id) + "</span>"
+        : "") +
+      (ln.research_object_id
+        ? ' research object <span class="mono">' + esc(ln.research_object_id) + "</span>"
+        : "") +
+      "</li>"
+    ).join("") + "</ul>";
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+/* ===================== literature tab ===================== */
+
+async function tabLiterature(el, pid) {
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="lit-h"><h2 id="lit-h">Literature search</h2>' +
+    '<form class="stack" data-form="lit-search" data-pid="' + esc(pid) + '">' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="lit-provider">Provider</label>' +
+    '<select id="lit-provider" name="provider">' + options(["openalex", "crossref"], "openalex") + "</select></div>" +
+    '<div class="field"><label for="lit-count">Results</label>' +
+    '<input id="lit-count" name="count" type="number" value="10" min="1" max="50"></div>' +
+    "</div>" +
+    '<div class="field"><label for="lit-query">Query</label>' +
+    '<input id="lit-query" name="query" type="text" required></div>' +
+    '<div><button type="submit" class="primary">Search</button></div>' +
+    "</form>" +
+    '<div id="lit-results">' + emptyHTML("Run a search to see results.") + "</div>" +
+    "</section>" +
+    '<section class="panel" aria-labelledby="mat-h"><h2 id="mat-h">Screening matrix</h2>' +
+    '<div id="lit-matrix">' + loadingHTML() + "</div></section>" +
+    '<section class="panel" aria-labelledby="con-h"><h2 id="con-h">Contribution statement</h2>' +
+    '<form class="stack" data-form="contribution" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="con-title">Title</label>' +
+    '<input id="con-title" name="title" type="text" required></div>' +
+    '<div class="field"><label for="con-statement">Statement</label>' +
+    '<textarea id="con-statement" name="statement" required></textarea></div>' +
+    '<div class="field"><label for="con-novelty">Novelty assessment</label>' +
+    '<select id="con-novelty" name="novelty">' +
+    options(NOVELTY, "insufficient_evidence") + "</select></div>" +
+    '<div class="field"><label for="con-coverage">Coverage note (what was searched; mandatory)</label>' +
+    '<textarea id="con-coverage" name="coverage_note" required></textarea></div>' +
+    '<div class="field"><label for="con-prior">Closest prior sources (multi-select)</label>' +
+    '<select id="con-prior" multiple></select></div>' +
+    '<div><button type="submit" class="primary">Record contribution</button></div>' +
+    "</form></section>";
+  await loadMatrix(pid);
+}
+
+async function loadMatrix(pid) {
+  const box = document.getElementById("lit-matrix");
+  if (!box) return;
+  box.innerHTML = loadingHTML();
+  try {
+    const rows = await api("/projects/" + encodeURIComponent(pid) + "/literature/matrix");
+    const prior = document.getElementById("con-prior");
+    if (prior) {
+      prior.innerHTML = rows.map((r) =>
+        '<option value="' + esc(r.source_id) + '">' + esc(trunc(r.title, 80)) + "</option>").join("");
+    }
+    if (!rows.length) {
+      box.innerHTML = emptyHTML("No sources in the matrix yet. Import search results or register sources.");
+      return;
+    }
+    box.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+      '<th scope="col">Title</th><th scope="col">Year</th><th scope="col">Access</th>' +
+      '<th scope="col">Verified</th><th scope="col">State</th><th scope="col">Relationship</th>' +
+      '<th scope="col">Reason</th><th scope="col"><span class="visually-hidden">Save</span></th>' +
+      "</tr></thead><tbody>" +
+      rows.map((r, i) =>
+        '<tr data-sid="' + esc(r.source_id) + '"><td>' + esc(trunc(r.title, 70)) +
+        (r.doi ? '<br><span class="mono dim">' + esc(r.doi) + "</span>" : "") + "</td><td>" +
+        esc(r.year || "") + "</td><td>" + accessBadge(r.access) + "</td><td>" +
+        (r.human_verified ? '<span class="verified">✓</span>' : '<span class="unverified">–</span>') +
+        "</td><td>" +
+        '<label class="visually-hidden" for="mx-state-' + i + '">Screening state</label>' +
+        '<select id="mx-state-' + i + '" data-field="state">' +
+        options(SCREEN_STATES, r.state || "unread") + "</select> " +
+        badge(r.state || "unread", STATE_COLOR[r.state || "unread"]) +
+        "</td><td>" +
+        '<label class="visually-hidden" for="mx-rel-' + i + '">Relationship</label>' +
+        '<select id="mx-rel-' + i + '" data-field="relationship">' +
+        options(RELATIONSHIPS, r.relationship || "", "—") + "</select></td><td>" +
+        '<label class="visually-hidden" for="mx-reason-' + i + '">Reason</label>' +
+        '<input id="mx-reason-' + i + '" type="text" data-field="reason" value="' +
+        esc(r.reason || "") + '"></td><td>' +
+        '<button type="button" class="small" data-action="lit-screen" data-pid="' + esc(pid) +
+        '" data-sid="' + esc(r.source_id) + '">Save</button></td></tr>'
+      ).join("") +
+      "</tbody></table></div>";
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+function renderLitResults(pid, data) {
+  const box = document.getElementById("lit-results");
+  if (!box) return;
+  const works = data.works || [];
+  if (!works.length) {
+    box.innerHTML = emptyHTML("No results for this query.");
+    return;
+  }
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+    '<th scope="col">Title</th><th scope="col">Authors</th><th scope="col">Year</th>' +
+    '<th scope="col">Venue</th><th scope="col">Cited by</th><th scope="col">Abstract</th>' +
+    '<th scope="col"><span class="visually-hidden">Import</span></th>' +
+    "</tr></thead><tbody>" +
+    works.map((w) =>
+      "<tr><td>" + esc(trunc(w.title, 90)) +
+      (w.doi ? '<br><span class="mono dim">' + esc(w.doi) + "</span>" : "") + "</td><td>" +
+      esc(trunc(fmtAuthors(w.authors), 50)) + "</td><td>" + esc(w.year || "") + "</td><td>" +
+      esc(trunc(w.venue, 35)) + "</td><td>" + esc(w.cited_by_count == null ? "" : w.cited_by_count) +
+      "</td><td>" + (w.has_abstract ? badge("yes", "b-teal") : '<span class="dim">no</span>') +
+      "</td><td>" +
+      '<button type="button" class="small primary" data-action="lit-import" data-pid="' + esc(pid) +
+      '" data-provider="' + esc(w.provider) + '" data-provider-id="' + esc(w.provider_id) +
+      '" data-query="' + esc(data._query || "") + '">Import</button></td></tr>'
+    ).join("") +
+    "</tbody></table></div>";
+}
+
+/* ===================== dialogue tab ===================== */
+
+async function tabDialogue(el, pid, sub) {
+  const selectedTid = sub[0] || null;
+  const [threads, objects, sources] = await Promise.all([
+    api("/projects/" + encodeURIComponent(pid) + "/threads"),
+    api("/projects/" + encodeURIComponent(pid) + "/objects"),
+    api("/projects/" + encodeURIComponent(pid) + "/sources"),
+  ]);
+
+  let list;
+  if (!threads.length) {
+    list = emptyHTML("No dialogue threads yet.");
+  } else {
+    list = '<div class="card-list">' + threads.map((t) =>
+      '<button type="button" class="card' + (t.id === selectedTid ? " row-selected" : "") +
+      '" data-action="open-thread" data-pid="' + esc(pid) + '" data-tid="' + esc(t.id) + '">' +
+      '<span class="card-title">' + esc(t.title) + "</span>" +
+      (t.goal ? '<br><span class="dim small-text">' + esc(trunc(t.goal, 100)) + "</span>" : "") +
+      '<br><span class="dim small-text">' +
+      esc((t.pinned_object_ids || []).length) + " pinned objects · " +
+      esc((t.pinned_source_ids || []).length) + " pinned sources</span>" +
+      "</button>"
+    ).join("") + "</div>";
+  }
+
+  let threadView = "";
+  if (selectedTid) {
+    const th = threads.find((t) => t.id === selectedTid);
+    threadView =
+      '<section class="panel" aria-labelledby="th-h"><h2 id="th-h">' +
+      esc(th ? th.title : "Thread") + "</h2>" +
+      '<div id="chat-log" class="chat-log">' + loadingHTML() + "</div>" +
+      '<form class="stack" data-form="send-turn" data-pid="' + esc(pid) +
+      '" data-tid="' + esc(selectedTid) + '">' +
+      '<div class="field"><label for="turn-input">Your message</label>' +
+      '<textarea id="turn-input" name="content" required></textarea></div>' +
+      '<div><button type="submit" class="primary">Send</button></div>' +
+      "</form>" +
+      '<hr class="soft"><h3>Proposed actions</h3>' +
+      '<p class="dim small-text">AI-proposed actions run only after your explicit approval.</p>' +
+      '<div id="action-list">' + loadingHTML() + "</div>" +
+      "</section>";
+  }
+
+  el.innerHTML =
+    '<div class="panel-row">' +
+    "<div>" +
+    '<section class="panel" aria-labelledby="thl-h"><h2 id="thl-h">Threads</h2>' + list + "</section>" +
+    '<section class="panel" aria-labelledby="thn-h"><h3 id="thn-h">New thread</h3>' +
+    '<form class="stack" data-form="create-thread" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="th-title">Title</label>' +
+    '<input id="th-title" name="title" type="text" required></div>' +
+    '<div class="field"><label for="th-goal">Goal</label>' +
+    '<textarea id="th-goal" name="goal"></textarea></div>' +
+    '<div class="field"><label for="th-pin-obj">Pin research objects</label>' +
+    '<select id="th-pin-obj" multiple>' +
+    multiOptions(objects, (o) => "[" + o.kind + "] " + o.title) + "</select></div>" +
+    '<div class="field"><label for="th-pin-src">Pin sources</label>' +
+    '<select id="th-pin-src" multiple>' +
+    multiOptions(sources, (s) => s.title) + "</select></div>" +
+    '<div><button type="submit" class="primary">Create thread</button></div>' +
+    "</form></section>" +
+    "</div>" +
+    "<div>" + (threadView || '<section class="panel">' +
+      emptyHTML("Select a thread to view the conversation.") + "</section>") + "</div>" +
+    "</div>";
+
+  if (selectedTid) {
+    loadTurns(selectedTid);
+    loadActions(selectedTid);
+  }
+}
+
+async function loadTurns(tid) {
+  const box = document.getElementById("chat-log");
+  if (!box) return;
+  try {
+    const turns = await api("/threads/" + encodeURIComponent(tid) + "/turns");
+    if (!turns.length) {
+      box.innerHTML = emptyHTML("No messages yet. Say something below.");
+      return;
+    }
+    box.innerHTML = turns.map((t) => {
+      const p = t.provenance || {};
+      const isUser = t.role === "user";
+      let meta = '<span class="msg-meta">' +
+        "<strong>" + esc(isUser ? "you" : t.role) + "</strong>";
+      if (!isUser && p.model) meta += '<span class="mono">' + esc(p.model) + "</span>";
+      if (!isUser && p.simulated) meta += badge("SIMULATED", "b-amber");
+      meta += "</span>";
+      return '<div class="msg ' + (isUser ? "user" : "assistant") + '">' + meta +
+        esc(t.content) + "</div>";
+    }).join("");
+    box.scrollTop = box.scrollHeight;
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+async function loadActions(tid) {
+  const box = document.getElementById("action-list");
+  if (!box) return;
+  try {
+    const actions = await api("/threads/" + encodeURIComponent(tid) + "/actions");
+    if (!actions.length) {
+      box.innerHTML = emptyHTML("No proposed actions in this thread.");
+      return;
+    }
+    box.innerHTML = '<ul class="plain">' + actions.map((a) => {
+      const pending = a.status === "proposed";
+      let html = '<li class="action-item">' +
+        "<strong>" + esc(pretty(a.kind)) + "</strong> " +
+        badge(a.risk, RISK_COLOR[a.risk] || "b-gray") + " " +
+        badge(a.status, STATE_COLOR[a.status] || "b-gray");
+      html += jsonPre(a.payload);
+      if (a.result && Object.keys(a.result).length) {
+        html += '<div class="small-text dim" style="margin-top:0.3rem">result:</div>' + jsonPre(a.result);
+      }
+      if (pending) {
+        html += '<div style="margin-top:0.5rem;display:flex;gap:0.4rem">' +
+          '<button type="button" class="small approve" data-action="action-approve" data-tid="' +
+          esc(tid) + '" data-aid="' + esc(a.id) + '" data-hash="' + esc(a.plan_hash) +
+          '">Approve</button>' +
+          '<button type="button" class="small danger" data-action="action-reject" data-tid="' +
+          esc(tid) + '" data-aid="' + esc(a.id) + '">Reject</button></div>';
+      }
+      return html + "</li>";
+    }).join("") + "</ul>";
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+/* ===================== manuscripts tab ===================== */
+
+async function tabManuscripts(el, pid, sub) {
+  const selectedMid = sub[0] || null;
+  const [objects, claims] = await Promise.all([
+    api("/projects/" + encodeURIComponent(pid) + "/objects"),
+    api("/projects/" + encodeURIComponent(pid) + "/claims"),
+  ]);
+  const manuscripts = objects.filter((o) => o.kind === "manuscript");
+  const candidates = objects.filter((o) => o.kind === "paper_candidate");
+  const byId = {};
+  for (const o of objects) byId[o.id] = o;
+
+  let list;
+  if (!manuscripts.length) {
+    list = emptyHTML("No manuscripts yet. Create a paper candidate, then a manuscript.");
+  } else {
+    list = '<div class="card-list">' + manuscripts.map((m) =>
+      '<button type="button" class="card' + (m.id === selectedMid ? " row-selected" : "") +
+      '" data-action="open-manuscript" data-pid="' + esc(pid) + '" data-mid="' + esc(m.id) + '">' +
+      '<span class="card-title">' + esc(m.title) + "</span>" +
+      '<br><span class="dim small-text">' +
+      esc(((m.body || {}).section_order || []).length) + " sections</span>" +
+      "</button>"
+    ).join("") + "</div>";
+  }
+
+  let msView = "";
+  if (selectedMid) {
+    const m = manuscripts.find((x) => x.id === selectedMid);
+    const order = m ? ((m.body || {}).section_order || []) : [];
+    const sections = order.map((id) => byId[id]).filter(Boolean);
+    let secHtml;
+    if (!sections.length) {
+      secHtml = emptyHTML("No sections yet.");
+    } else {
+      secHtml = '<ul class="plain">' + sections.map((s, i) => {
+        const b = s.body || {};
+        return '<li class="finding section-item"><h4>' + (i + 1) + ". " + esc(s.title) + "</h4>" +
+          (b.purpose ? '<div class="dim small-text">purpose: ' + esc(b.purpose) + "</div>" : "") +
+          (b.text ? "<div>" + esc(trunc(b.text, 400)) + "</div>" : "") +
+          '<div class="dim small-text">' +
+          esc((b.claim_ids || []).length) + " linked claims" +
+          (b.word_budget ? " · budget " + esc(b.word_budget) + " words" : "") +
+          "</div></li>";
+      }).join("") + "</ul>";
+    }
+    msView =
+      '<section class="panel" aria-labelledby="ms-h"><h2 id="ms-h">Manuscript: ' +
+      esc(m ? m.title : selectedMid) + "</h2>" +
+      "<h3>Sections</h3>" + secHtml +
+      '<hr class="soft"><h3>Add section</h3>' +
+      '<form class="stack" data-form="add-section" data-mid="' + esc(selectedMid) + '">' +
+      '<div class="field-row">' +
+      '<div class="field"><label for="sec-heading">Heading</label>' +
+      '<input id="sec-heading" name="heading" type="text" required></div>' +
+      '<div class="field"><label for="sec-budget">Word budget</label>' +
+      '<input id="sec-budget" name="word_budget" type="number" min="1"></div>' +
+      '<div class="field"><label for="sec-pos">Position (0-based)</label>' +
+      '<input id="sec-pos" name="position" type="number" min="0"></div>' +
+      "</div>" +
+      '<div class="field"><label for="sec-purpose">Purpose</label>' +
+      '<input id="sec-purpose" name="purpose" type="text"></div>' +
+      '<div class="field"><label for="sec-text">Text</label>' +
+      '<textarea id="sec-text" name="text"></textarea></div>' +
+      '<div class="field"><label for="sec-claims">Linked claims (multi-select)</label>' +
+      '<select id="sec-claims" multiple>' +
+      multiOptions(claims, (c) => c.text) + "</select></div>" +
+      '<div><button type="submit" class="primary">Add section</button></div>' +
+      "</form>" +
+      '<hr class="soft"><h3>Checks &amp; export</h3>' +
+      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+      '<button type="button" data-action="ms-audit" data-mid="' + esc(selectedMid) + '">Run audit</button>' +
+      '<button type="button" data-action="ms-review" data-mid="' + esc(selectedMid) + '">Skeptical review</button>' +
+      "</div>" +
+      '<form class="stack" data-form="ms-export" data-mid="' + esc(selectedMid) +
+      '" style="margin-top:0.6rem">' +
+      "<fieldset><legend>Export formats</legend><div class=\"chips\">" +
+      EXPORT_FORMATS.map((f) =>
+        '<label class="chip"><input type="checkbox" name="fmt" value="' + esc(f) +
+        '" checked> ' + esc(f) + "</label>").join("") +
+      "</div></fieldset>" +
+      '<div><button type="submit" class="primary">Export</button></div>' +
+      "</form>" +
+      '<div id="ms-results" style="margin-top:0.8rem"></div>' +
+      "</section>";
+  }
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="msl-h"><h2 id="msl-h">Manuscripts</h2>' +
+    list + "</section>" +
+    msView +
+    '<div class="panel-row">' +
+    '<section class="panel" aria-labelledby="pc-h"><h3 id="pc-h">New paper candidate</h3>' +
+    '<form class="stack" data-form="create-candidate" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="pc-title">Title</label>' +
+    '<input id="pc-title" name="title" type="text" required></div>' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="pc-type">Paper type</label>' +
+    '<select id="pc-type" name="paper_type">' + options(PAPER_TYPES, "original_empirical") + "</select></div>" +
+    '<div class="field"><label for="pc-structure">Structure</label>' +
+    '<select id="pc-structure" name="structure">' + options(STRUCTURES, "imrad") + "</select></div>" +
+    "</div>" +
+    '<div class="field"><label for="pc-q">Central question</label>' +
+    '<textarea id="pc-q" name="central_question" required></textarea></div>' +
+    '<div class="field"><label for="pc-thesis">Thesis</label>' +
+    '<textarea id="pc-thesis" name="thesis" required></textarea></div>' +
+    '<div class="field"><label for="pc-audience">Audience</label>' +
+    '<input id="pc-audience" name="audience" type="text"></div>' +
+    '<div class="field"><label for="pc-caveat">Novelty caveat</label>' +
+    '<input id="pc-caveat" name="novelty_caveat" type="text"></div>' +
+    '<div class="field"><label for="pc-risks">Risks</label>' +
+    '<textarea id="pc-risks" name="risks"></textarea></div>' +
+    '<div class="field"><label for="pc-missing">Missing work</label>' +
+    '<textarea id="pc-missing" name="missing_work"></textarea></div>' +
+    '<div class="field"><label for="pc-objs">Included research objects</label>' +
+    '<select id="pc-objs" multiple>' +
+    multiOptions(objects.filter((o) => o.kind !== "manuscript" && o.kind !== "section"),
+      (o) => "[" + o.kind + "] " + o.title) + "</select></div>" +
+    '<div><button type="submit" class="primary">Create candidate</button></div>' +
+    "</form></section>" +
+    '<section class="panel" aria-labelledby="msn-h"><h3 id="msn-h">New manuscript</h3>' +
+    '<form class="stack" data-form="create-manuscript" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="ms-title">Title</label>' +
+    '<input id="ms-title" name="title" type="text" required></div>' +
+    '<div class="field"><label for="ms-cand">From candidate (optional)</label>' +
+    '<select id="ms-cand" name="from_candidate_id">' +
+    '<option value="">— none —</option>' +
+    multiOptions(candidates, (c) => c.title) + "</select></div>" +
+    '<div><button type="submit" class="primary">Create manuscript</button></div>' +
+    "</form></section></div>";
+}
+
+function renderAudit(data) {
+  const box = document.getElementById("ms-results");
+  if (!box) return;
+  const findings = data.findings || [];
+  const counts = data.counts || {};
+  let html = "<h3>Audit findings</h3>";
+  html += '<p class="chips">' + (Object.keys(counts).length
+    ? Object.keys(counts).map((k) =>
+        badge(k + ": " + counts[k], SEVERITY_COLOR[k] || "b-gray")).join(" ")
+    : badge("no findings", "b-green")) + "</p>";
+  if (!findings.length) {
+    box.innerHTML = html + emptyHTML("Audit passed with no findings.");
+    return;
+  }
+  const groups = {};
+  for (const f of findings) (groups[f.severity] = groups[f.severity] || []).push(f);
+  const order = ["blocker", "error", "high", "warning", "medium", "info", "low"];
+  const keys = Object.keys(groups).sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  for (const sev of keys) {
+    html += "<h4>" + badge(sev, SEVERITY_COLOR[sev] || "b-gray") + "</h4><ul class=\"plain\">" +
+      groups[sev].map((f) =>
+        '<li class="finding"><span class="mono">' + esc(f.code) + "</span> " + esc(f.message) +
+        (f.object_id ? ' <span class="dim mono small-text">(' + esc(f.object_id) + ")</span>" : "") +
+        "</li>").join("") + "</ul>";
+  }
+  box.innerHTML = html;
+}
+
+function renderReview(data) {
+  const box = document.getElementById("ms-results");
+  if (!box) return;
+  const objections = data.objections || [];
+  let html = "<h3>Skeptical review</h3>";
+  if (!objections.length) {
+    box.innerHTML = html + emptyHTML("No objections raised.");
+    return;
+  }
+  html += '<ul class="plain">' + objections.map((o) => {
+    const b = o.body || {};
+    const text = typeof b === "string" ? b : (b.text || b.note || "");
+    return '<li class="objection">' + badge("AI-suggested", "b-amber") + " " +
+      "<strong>" + esc(o.title) + "</strong>" +
+      (text ? "<div>" + esc(text) + "</div>" : (b && Object.keys(b).length ? jsonPre(b) : "")) +
+      "</li>";
+  }).join("") + "</ul>";
+  box.innerHTML = html;
+}
+
+function renderExport(data) {
+  const box = document.getElementById("ms-results");
+  if (!box) return;
+  const files = data.files || {};
+  let html = "<h3>Export complete</h3>" +
+    '<p>Output directory: <span class="mono">' + esc(data.out_dir) + "</span></p>";
+  const keys = Object.keys(files);
+  html += keys.length
+    ? '<ul class="plain">' + keys.map((k) =>
+        '<li class="finding"><strong>' + esc(k) + '</strong> <span class="mono">' +
+        esc(files[k]) + "</span></li>").join("") + "</ul>"
+    : emptyHTML("No files were written.");
+  if (data.audit_findings && data.audit_findings.length) {
+    html += '<p class="dim small-text">' + esc(data.audit_findings.length) +
+      " audit finding(s) recorded in the export manifest.</p>";
+  }
+  box.innerHTML = html;
+}
+
+/* ===================== event delegation: clicks ===================== */
+
+const clickActions = {
+  "open-project": (t) => { location.hash = "#/project/" + t.dataset.pid + "/objects"; },
+  "open-source": (t) => { location.hash = "#/project/" + t.dataset.pid + "/sources/" + t.dataset.sid; },
+  "open-claim": (t) => { location.hash = "#/project/" + t.dataset.pid + "/claims/" + t.dataset.cid; },
+  "open-thread": (t) => { location.hash = "#/project/" + t.dataset.pid + "/dialogue/" + t.dataset.tid; },
+  "open-manuscript": (t) => { location.hash = "#/project/" + t.dataset.pid + "/manuscripts/" + t.dataset.mid; },
+
+  "accept-object": (t) => withBusy(t, async () => {
+    try {
+      await api("/objects/" + encodeURIComponent(t.dataset.id) + "/accept", "POST", {});
+      toast("Object accepted.");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "unpick-excerpt": (t) => {
+    state.pickedExcerpts.delete(t.dataset.id);
+    renderPickedChips();
+    const cb = document.querySelector(
+      '#claim-excerpts input[value="' + CSS.escape(t.dataset.id) + '"]');
+    if (cb) cb.checked = false;
+  },
+
+  "lit-import": (t) => withBusy(t, async () => {
+    try {
+      const r = await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/literature/import",
+        "POST", {
+          provider: t.dataset.provider,
+          query: t.dataset.query || "",
+          provider_id: t.dataset.providerId,
+        });
+      toast(r.created
+        ? "Imported (" + pretty(r.access) + ")."
+        : "Already in project (" + pretty(r.access) + ").");
+      t.textContent = "Imported";
+      await loadMatrix(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "lit-screen": (t) => withBusy(t, async () => {
+    const tr = t.closest("tr");
+    const get = (f) => {
+      const inp = tr.querySelector('[data-field="' + f + '"]');
+      return inp ? inp.value.trim() : "";
+    };
+    const body = { source_id: t.dataset.sid, state: get("state") };
+    const rel = get("relationship");
+    const reason = get("reason");
+    if (rel) body.relationship = rel;
+    if (reason) body.reason = reason;
+    try {
+      await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/literature/screen", "POST", body);
+      toast("Screening saved.");
+      await loadMatrix(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "action-approve": (t) => withBusy(t, async () => {
+    try {
+      const r = await api("/actions/" + encodeURIComponent(t.dataset.aid) + "/approve",
+        "POST", { plan_hash: t.dataset.hash });
+      toast("Action approved (" + pretty(r.status) + ").");
+    } catch (e) {
+      toast(e.message, "err");
+    }
+    loadActions(t.dataset.tid);
+    loadTurns(t.dataset.tid);
+  }),
+
+  "action-reject": (t) => withBusy(t, async () => {
+    try {
+      await api("/actions/" + encodeURIComponent(t.dataset.aid) + "/reject", "POST", {});
+      toast("Action rejected.");
+    } catch (e) {
+      toast(e.message, "err");
+    }
+    loadActions(t.dataset.tid);
+  }),
+
+  "ms-audit": (t) => withBusy(t, async () => {
+    const box = document.getElementById("ms-results");
+    if (box) box.innerHTML = loadingHTML("Running audit…");
+    try {
+      renderAudit(await api("/manuscripts/" + encodeURIComponent(t.dataset.mid) + "/audit"));
+      toast("Audit complete.");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
+  }),
+
+  "ms-review": (t) => withBusy(t, async () => {
+    const box = document.getElementById("ms-results");
+    if (box) box.innerHTML = loadingHTML("Running skeptical review…");
+    try {
+      renderReview(await api("/manuscripts/" + encodeURIComponent(t.dataset.mid) +
+        "/skeptical-review", "POST", {}));
+      toast("Skeptical review complete.");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
+  }),
+};
+
+/* ===================== event delegation: forms ===================== */
+
+const formActions = {
+  "create-workspace": async (form) => {
+    const body = fd(form);
+    const w = await api("/workspaces", "POST", { name: body.name });
+    state.workspaceId = w.id;
+    toast('Workspace "' + w.name + '" created.');
+    route();
+  },
+
+  "create-project": async (form) => {
+    const body = fd(form);
+    const p = await api("/projects", "POST", {
+      workspace_id: form.dataset.wsid, name: body.name, description: body.description || "",
+    });
+    state.projectNames[p.id] = p.name;
+    toast('Project "' + p.name + '" created.');
+    renderProjects(form.dataset.wsid);
+  },
+
+  "create-object": async (form) => {
+    const body = fd(form);
+    const payload = { kind: body.kind, title: body.title };
+    if (body.body) payload.body = { text: body.body };
+    if (body.strength) payload.strength = body.strength;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/objects", "POST", payload);
+    toast("Object created.");
+    route();
+  },
+
+  "create-source": async (form) => {
+    const body = fd(form);
+    if (body.access.startsWith("full_text") && !body.acquisition) {
+      throw new Error("Full-text access levels require an acquisition note.");
+    }
+    const payload = { title: body.title, access: body.access };
+    if (body.acquisition) payload.acquisition = body.acquisition;
+    if (body.authors) payload.authors = body.authors;
+    if (body.year) payload.year = parseInt(body.year, 10);
+    if (body.venue) payload.venue = body.venue;
+    if (body.doi) payload.doi = body.doi;
+    if (body.url) payload.url = body.url;
+    if (body.license) payload.license = body.license;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/sources", "POST", payload);
+    toast("Source registered.");
+    route();
+  },
+
+  "ingest-file": async (form) => {
+    const body = fd(form);
+    const payload = { path: body.path };
+    if (body.title) payload.title = body.title;
+    if (body.license) payload.license = body.license;
+    const r = await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/ingest",
+      "POST", payload);
+    toast('Ingested "' + trunc(r.title, 50) + '" (' + pretty(r.access) + ").");
+    route();
+  },
+
+  "add-excerpt": async (form) => {
+    const body = fd(form);
+    await api("/sources/" + encodeURIComponent(form.dataset.sid) + "/excerpts", "POST", {
+      text: body.text, locator: body.locator,
+    });
+    toast("Excerpt captured.");
+    form.reset();
+    loadExcerpts(form.dataset.sid);
+  },
+
+  "create-claim": async (form) => {
+    const body = fd(form);
+    const payload = { text: body.text, support: body.support };
+    if (body.notes) payload.notes = body.notes;
+    const excerptIds = Array.from(state.pickedExcerpts.keys());
+    if (excerptIds.length) payload.excerpt_ids = excerptIds;
+    const objIds = selectedValues(form.querySelector("#cl-objects"));
+    if (objIds.length) payload.research_object_ids = objIds;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/claims", "POST", payload);
+    state.pickedExcerpts = new Map();
+    toast("Claim created.");
+    route();
+  },
+
+  "lit-search": async (form) => {
+    const body = fd(form);
+    const box = document.getElementById("lit-results");
+    if (box) box.innerHTML = loadingHTML("Searching " + body.provider + "…");
+    try {
+      const data = await api("/projects/" + encodeURIComponent(form.dataset.pid) +
+        "/literature/search", "POST", {
+          provider: body.provider, query: body.query,
+          count: parseInt(body.count, 10) || 10,
+        });
+      data._query = body.query;
+      renderLitResults(form.dataset.pid, data);
+      toast((data.works || []).length + " result(s).");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      throw e;
+    }
+  },
+
+  "contribution": async (form) => {
+    const body = fd(form);
+    const payload = {
+      title: body.title, statement: body.statement,
+      novelty: body.novelty, coverage_note: body.coverage_note,
+    };
+    const prior = selectedValues(form.querySelector("#con-prior"));
+    if (prior.length) payload.closest_prior_source_ids = prior;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/contributions",
+      "POST", payload);
+    toast("Contribution recorded.");
+    form.reset();
+  },
+
+  "create-thread": async (form) => {
+    const body = fd(form);
+    const payload = { title: body.title };
+    if (body.goal) payload.goal = body.goal;
+    const objs = selectedValues(form.querySelector("#th-pin-obj"));
+    const srcs = selectedValues(form.querySelector("#th-pin-src"));
+    if (objs.length) payload.pinned_object_ids = objs;
+    if (srcs.length) payload.pinned_source_ids = srcs;
+    const t = await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/threads",
+      "POST", payload);
+    toast("Thread created.");
+    location.hash = "#/project/" + form.dataset.pid + "/dialogue/" + t.id;
+  },
+
+  "send-turn": async (form) => {
+    const body = fd(form);
+    const tid = form.dataset.tid;
+    const r = await api("/threads/" + encodeURIComponent(tid) + "/turns", "POST",
+      { content: body.content });
+    form.reset();
+    const n = (r.proposed_actions || []).length;
+    toast(n ? "Reply received; " + n + " action(s) proposed." : "Reply received.");
+    loadTurns(tid);
+    loadActions(tid);
+  },
+
+  "create-candidate": async (form) => {
+    const body = fd(form);
+    const payload = {
+      title: body.title, paper_type: body.paper_type,
+      central_question: body.central_question, thesis: body.thesis,
+    };
+    if (body.structure) payload.structure = body.structure;
+    if (body.audience) payload.audience = body.audience;
+    if (body.novelty_caveat) payload.novelty_caveat = body.novelty_caveat;
+    if (body.risks) payload.risks = body.risks;
+    if (body.missing_work) payload.missing_work = body.missing_work;
+    const objs = selectedValues(form.querySelector("#pc-objs"));
+    if (objs.length) payload.included_object_ids = objs;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/paper-candidates",
+      "POST", payload);
+    toast("Paper candidate created.");
+    route();
+  },
+
+  "create-manuscript": async (form) => {
+    const body = fd(form);
+    const payload = { title: body.title };
+    if (body.from_candidate_id) payload.from_candidate_id = body.from_candidate_id;
+    const m = await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/manuscripts",
+      "POST", payload);
+    toast("Manuscript created.");
+    location.hash = "#/project/" + form.dataset.pid + "/manuscripts/" + m.id;
+  },
+
+  "add-section": async (form) => {
+    const body = fd(form);
+    const payload = { heading: body.heading };
+    if (body.purpose) payload.purpose = body.purpose;
+    if (body.text) payload.text = body.text;
+    if (body.word_budget) payload.word_budget = parseInt(body.word_budget, 10);
+    if (body.position !== "" && body.position !== undefined) {
+      const pos = parseInt(body.position, 10);
+      if (!Number.isNaN(pos)) payload.position = pos;
+    }
+    const claimIds = selectedValues(form.querySelector("#sec-claims"));
+    if (claimIds.length) payload.claim_ids = claimIds;
+    await api("/manuscripts/" + encodeURIComponent(form.dataset.mid) + "/sections",
+      "POST", payload);
+    toast("Section added.");
+    route();
+  },
+
+  "ms-export": async (form) => {
+    const formats = Array.from(form.querySelectorAll('input[name="fmt"]:checked'))
+      .map((c) => c.value);
+    if (!formats.length) throw new Error("Pick at least one export format.");
+    const box = document.getElementById("ms-results");
+    if (box) box.innerHTML = loadingHTML("Exporting…");
+    try {
+      const data = await api("/manuscripts/" + encodeURIComponent(form.dataset.mid) + "/export",
+        "POST", { formats });
+      renderExport(data);
+      toast("Export written to " + data.out_dir);
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      throw e;
+    }
+  },
+};
+
+/* ===================== event delegation: changes ===================== */
+
+const changeActions = {
+  "ws-select": (t) => {
+    state.workspaceId = t.value || null;
+    if (t.value) renderProjects(t.value);
+    else {
+      const area = document.getElementById("pr-area");
+      if (area) area.innerHTML = emptyHTML("Select a workspace to see its projects.");
+    }
+  },
+
+  "claim-source": (t) => loadClaimExcerpts(t.value),
+
+  "pick-excerpt": (t) => {
+    if (t.checked) state.pickedExcerpts.set(t.value, t.dataset.label || t.value);
+    else state.pickedExcerpts.delete(t.value);
+    renderPickedChips();
+  },
+};
+
+/* ===================== wiring ===================== */
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-action]");
+  if (!t) return;
+  const fn = clickActions[t.dataset.action];
+  if (fn) { e.preventDefault(); fn(t); }
+});
+
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest("form[data-form]");
+  if (!form) return;
+  e.preventDefault();
+  const fn = formActions[form.dataset.form];
+  if (!fn) return;
+  const btn = form.querySelector('button[type="submit"]');
+  withBusy(btn, async () => {
+    try { await fn(form); } catch (err) { toast(err.message, "err"); }
+  });
+});
+
+document.addEventListener("change", (e) => {
+  const t = e.target.closest("[data-change]");
+  if (!t) return;
+  const fn = changeActions[t.dataset.change];
+  if (fn) fn(t);
+});
+
+window.addEventListener("hashchange", route);
+loadHealth();
+route();

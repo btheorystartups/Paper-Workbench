@@ -13,7 +13,18 @@ from sqlalchemy.orm import Session
 from . import db
 from .config import get_settings
 from .models import Claim, ProposedAction, ResearchObject, Source, Thread, Turn
-from .services import audits, authoring, dialogue, export_service, literature, research
+from .services import (
+    audits,
+    authoring,
+    dialogue,
+    export_service,
+    literature,
+    portfolio,
+    research,
+    security,
+    semantic,
+    venues,
+)
 from .vocab import ClaimSupport, Novelty, ObjectKind, SourceAccess
 
 
@@ -25,6 +36,17 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Paper-Workbench", version="0.1.0", lifespan=lifespan)
 
+_STATIC_DIR = __import__("pathlib").Path(__file__).parent / "web" / "static"
+if _STATIC_DIR.is_dir():
+    from fastapi.responses import RedirectResponse
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    def _root():
+        return RedirectResponse("/ui/")
+
 
 def _session():
     yield from db.get_session()
@@ -34,6 +56,105 @@ def _session():
 def health():
     settings = get_settings()
     return {"status": "ok", "provider_mode": settings.provider_mode}
+
+
+@app.get("/workspaces")
+def list_workspaces(session: Session = Depends(_session)):
+    from .models import Workspace
+
+    return [
+        {"id": w.id, "name": w.name}
+        for w in session.scalars(select(Workspace).where(Workspace.deleted_at.is_(None)))
+    ]
+
+
+@app.get("/workspaces/{workspace_id}/projects")
+def list_projects(workspace_id: str, session: Session = Depends(_session)):
+    from .models import Project
+
+    return [
+        {"id": p.id, "name": p.name, "description": p.description}
+        for p in session.scalars(
+            select(Project).where(
+                Project.workspace_id == workspace_id, Project.deleted_at.is_(None)
+            )
+        )
+    ]
+
+
+@app.get("/projects/{project_id}/sources")
+def list_sources(project_id: str, session: Session = Depends(_session)):
+    rows = session.scalars(
+        select(Source).where(Source.project_id == project_id, Source.deleted_at.is_(None))
+    )
+    return [
+        {
+            "id": s.id, "title": s.title, "authors": s.authors, "year": s.year,
+            "venue": s.venue, "doi": s.doi, "url": s.url, "access": str(s.access),
+            "license": s.license, "human_verified": s.human_verified,
+        }
+        for s in rows
+    ]
+
+
+@app.get("/sources/{source_id}/excerpts")
+def list_excerpts(source_id: str, session: Session = Depends(_session)):
+    from .models import Excerpt
+
+    return [
+        {"id": e.id, "text": e.text, "locator": e.locator, "checksum": e.checksum}
+        for e in session.scalars(select(Excerpt).where(Excerpt.source_id == source_id))
+    ]
+
+
+@app.get("/projects/{project_id}/claims")
+def list_claims(project_id: str, session: Session = Depends(_session)):
+    out = []
+    for c in session.scalars(
+        select(Claim).where(Claim.project_id == project_id, Claim.deleted_at.is_(None))
+    ):
+        evidence = research.claim_evidence(session, c.id)
+        out.append(
+            {
+                "id": c.id, "text": c.text, "support": str(c.support), "notes": c.notes,
+                "evidence_count": len(evidence),
+            }
+        )
+    return out
+
+
+@app.get("/projects/{project_id}/threads")
+def list_threads(project_id: str, session: Session = Depends(_session)):
+    rows = session.scalars(
+        select(Thread).where(Thread.project_id == project_id, Thread.deleted_at.is_(None))
+    )
+    return [
+        {"id": t.id, "title": t.title, "goal": t.goal,
+         "pinned_object_ids": t.pinned_object_ids, "pinned_source_ids": t.pinned_source_ids}
+        for t in rows
+    ]
+
+
+@app.get("/threads/{thread_id}/actions")
+def list_actions(thread_id: str, session: Session = Depends(_session)):
+    rows = session.scalars(
+        select(ProposedAction).where(ProposedAction.thread_id == thread_id)
+    )
+    return [
+        {"id": a.id, "kind": a.kind, "risk": a.risk, "payload": a.payload,
+         "plan_hash": a.plan_hash, "status": str(a.status), "result": a.result}
+        for a in rows
+    ]
+
+
+@app.post("/objects/{object_id}/accept")
+def accept_object(object_id: str, session: Session = Depends(_session)):
+    try:
+        obj = research.accept_object(session, object_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
 
 
 # --- workspaces / projects ---
@@ -471,6 +592,148 @@ def export_manuscript(manuscript_id: str, body: ExportIn, session: Session = Dep
         raise HTTPException(404, str(exc)) from exc
     session.commit()
     return result
+
+
+# --- semantic retrieval (similarity, never evidence) ---
+
+
+@app.post("/projects/{project_id}/semantic/index")
+def semantic_index(project_id: str, session: Session = Depends(_session)):
+    try:
+        result = semantic.index_project(session, project_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return result
+
+
+class SemanticSearchIn(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=8, ge=1, le=50)
+
+
+@app.post("/projects/{project_id}/semantic/search")
+def semantic_search(project_id: str, body: SemanticSearchIn, session: Session = Depends(_session)):
+    return semantic.semantic_search(session, project_id, body.query, top_k=body.top_k)
+
+
+# --- open-access enrichment ---
+
+
+@app.post("/sources/{source_id}/open-access")
+def enrich_open_access(source_id: str, session: Session = Depends(_session)):
+    try:
+        info = literature.enrich_open_access(session, source_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return info
+
+
+# --- venues ---
+
+
+class VenueIn(BaseModel):
+    workspace_id: str
+    name: str
+    rules: dict = Field(default_factory=dict)
+    rules_source: str
+
+
+@app.post("/venues")
+def create_venue(body: VenueIn, session: Session = Depends(_session)):
+    try:
+        venue = venues.create_venue(
+            session, body.workspace_id, name=body.name, rules=body.rules,
+            rules_source=body.rules_source,
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": venue.id, "name": venue.name, "verified": venue.verified}
+
+
+@app.post("/venues/{venue_id}/verify")
+def verify_venue(venue_id: str, session: Session = Depends(_session)):
+    try:
+        venue = venues.verify_venue(session, venue_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return {"id": venue.id, "verified": venue.verified}
+
+
+@app.get("/manuscripts/{manuscript_id}/venue-compliance/{venue_id}")
+def venue_compliance(manuscript_id: str, venue_id: str, session: Session = Depends(_session)):
+    try:
+        findings = venues.audit_venue_compliance(session, manuscript_id, venue_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"findings": findings, "counts": _severity_counts(findings)}
+
+
+# --- users / collaboration roles (local trust model) ---
+
+
+class UserIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/users")
+def create_user(body: UserIn, session: Session = Depends(_session)):
+    user = security.create_user(session, body.name)
+    session.commit()
+    return {"id": user.id, "name": user.name, "api_key": user.api_key}
+
+
+class MemberIn(BaseModel):
+    user_id: str
+    role: str
+
+
+@app.post("/projects/{project_id}/members")
+def add_member(project_id: str, body: MemberIn, session: Session = Depends(_session)):
+    try:
+        member = security.add_member(session, project_id, body.user_id, body.role)
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": member.id, "user_id": member.user_id, "role": member.role}
+
+
+# --- cross-project research memory (workspace-scoped) ---
+
+
+@app.get("/workspaces/{workspace_id}/portfolio/unpublished-results")
+def unpublished_results(workspace_id: str, session: Session = Depends(_session)):
+    return portfolio.unpublished_results(session, workspace_id)
+
+
+@app.get("/objects/{object_id}/usage")
+def result_usage(object_id: str, session: Session = Depends(_session)):
+    try:
+        return portfolio.result_usage(session, object_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/saved-searches/{saved_search_id}/rerun")
+def rerun_saved_search(saved_search_id: str, session: Session = Depends(_session)):
+    try:
+        saved, works = portfolio.rerun_saved_search(session, saved_search_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return {"saved_search_id": saved.id, "result_count": len(works)}
+
+
+class WorkspaceSearchIn(BaseModel):
+    query: str = Field(min_length=1)
+
+
+@app.post("/workspaces/{workspace_id}/portfolio/search")
+def workspace_search(workspace_id: str, body: WorkspaceSearchIn, session: Session = Depends(_session)):
+    return portfolio.workspace_search(session, workspace_id, body.query)
 
 
 class ApproveIn(BaseModel):

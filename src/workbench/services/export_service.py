@@ -90,10 +90,103 @@ def _claims_block(claim_ids: list[str], claims: dict[str, Claim], sources: dict[
     return lines
 
 
+def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
+    """Dependency-free deterministic text PDF (concept from Nexus MinimalPdfRenderer):
+    Helvetica, naive wrap, A4-ish pages. A faithful fallback — not typeset output; the
+    LaTeX export is the publication-quality path."""
+
+    def esc(text: str) -> str:
+        return text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+    lines: list[str] = []
+    for para in [title, ""] + paragraphs:
+        for raw_line in para.splitlines() or [""]:
+            words, current = raw_line.split(), ""
+            if not words:
+                lines.append("")
+            while words:
+                word = words.pop(0)
+                if len(current) + len(word) + 1 > 90:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = f"{current} {word}".strip()
+            if current:
+                lines.append(current)
+        lines.append("")
+    pages = [lines[i : i + 48] for i in range(0, len(lines), 48)] or [[]]
+
+    objects: list[bytes] = []
+    page_ids = [4 + i * 2 for i in range(len(pages))]
+    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for pid, page in zip(page_ids, pages):
+        content = ["BT /F1 10 Tf 50 780 Td 14 TL"]
+        for line in page:
+            content.append(f"({esc(line)}) Tj T*")
+        content.append("ET")
+        stream = "\n".join(content).encode("latin-1", errors="replace")
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {pid + 1} 0 R >>".encode()
+        )
+        objects.append(
+            f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream"
+        )
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for off in offsets[1:]:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+def _jats_xml(manuscript, sections, claims, sources, session: Session) -> str:
+    """Minimal JATS 1.3-shaped article XML (front/body/back). Structural export for
+    interchange; not validated against the full JATS DTD."""
+    from xml.sax.saxutils import escape
+
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">',
+        "<front><article-meta>",
+        f"<title-group><article-title>{escape(manuscript.title)}</article-title></title-group>",
+        "</article-meta></front>",
+        "<body>",
+    ]
+    for s in sections:
+        parts.append(f'<sec id="{s.id}"><title>{escape(s.title)}</title>')
+        if s.body.get("text"):
+            parts.append(f"<p>{escape(s.body['text'])}</p>")
+        for line in _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md"):
+            parts.append(f"<p>{escape(line)}</p>")
+        parts.append("</sec>")
+    parts.append("</body><back><ref-list>")
+    for src in sources.values():
+        parts.append(
+            f'<ref id="{_bib_key(src)}"><mixed-citation>{escape(src.authors)} '
+            f"({src.year or 'n.d.'}). {escape(src.title)}. {escape(src.venue)}."
+            + (f" doi:{escape(src.doi)}" if src.doi else "")
+            + "</mixed-citation></ref>"
+        )
+    parts.append("</ref-list></back></article>")
+    return "\n".join(parts)
+
+
 def export_manuscript(
     session: Session, manuscript_id: str, *, formats: list[str] | None = None
 ) -> dict:
-    formats = formats or ["md", "tex", "html", "docx", "bib"]
+    formats = formats or ["md", "tex", "html", "docx", "bib", "pdf", "jats"]
     manuscript, sections, claims, sources = _collect(session, manuscript_id)
     out_dir = Path(get_settings().data_dir) / "exports" / manuscript_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -192,6 +285,26 @@ def export_manuscript(
             entries.append(f"@article{{{_bib_key(s)},\n" + ",\n".join(fields) + "\n}")
         written["bib"] = out_dir / "references.bib"
         written["bib"].write_text("\n\n".join(entries), encoding="utf-8")
+
+    # --- PDF (minimal deterministic fallback renderer) ---
+    if "pdf" in formats:
+        paragraphs = []
+        for s in sections:
+            paragraphs.append(s.title.upper())
+            if s.body.get("text"):
+                paragraphs.append(s.body["text"])
+            paragraphs.extend(
+                _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
+            )
+        written["pdf"] = out_dir / "manuscript.pdf"
+        written["pdf"].write_bytes(_minimal_pdf(manuscript.title, paragraphs))
+
+    # --- JATS XML ---
+    if "jats" in formats:
+        written["jats"] = out_dir / "manuscript.jats.xml"
+        written["jats"].write_text(
+            _jats_xml(manuscript, sections, claims, sources, session), encoding="utf-8"
+        )
 
     # --- Provenance manifest ---
     findings = audits.audit_manuscript(session, manuscript_id)

@@ -30,9 +30,18 @@ Implemented and tested (33 offline tests; live providers verified with user keys
 - **Export** (P6): Markdown, LaTeX, HTML, DOCX, BibTeX + provenance manifest with sha256
   checksums, source access levels, and audit findings at export time. Export ≠ submission.
 
+- **Web UI**: served at `/ui` (dependency-free SPA; light/dark; shows provider mode,
+  AI-suggested/simulated badges, support states, approval-gated AI actions).
+- **Expansion**: Semantic Scholar + Unpaywall adapters; project-scoped semantic search
+  (similarity ≠ evidence); venue profiles with verify-gated compliance audits;
+  collaboration roles (local trust model); PDF (fallback renderer) + JATS export;
+  cross-project memory (unpublished results, usage tracing, saved-search rerun);
+  audit eval harness (docs/eval-report.md — precision/recall 1.00 on 7 codes).
+
 Demos: `python -m workbench.demo` (offline) · `python -X utf8 scripts/golden_path.py`
 (full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (provider
-smoke tests). Migrations: `alembic upgrade head`.
+smoke tests) · `scripts/run_evals.py`. Migrations: `alembic upgrade head`.
+UI: `uvicorn workbench.main:app` then open http://127.0.0.1:8000/ (redirects to /ui).
 
 See `docs/audit/2026-07-20-phase0-decision-record.md` for the go/no-go record, ADRs,
 risk register, and the phased roadmap/continuation ledger.

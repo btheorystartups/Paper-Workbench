@@ -188,6 +188,69 @@ class CrossrefAdapter(_HttpBase):
         )
 
 
+class SemanticScholarAdapter(_HttpBase):
+    """Semantic Scholar Graph API (keyless, shared rate pool — be gentle)."""
+
+    BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
+    FIELDS = "title,authors,year,venue,externalIds,url,abstract,citationCount,openAccessPdf"
+
+    def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("rate_limit_seconds", 1.1)
+        super().__init__(**kwargs)
+
+    def search(self, query: str, *, count: int = 10) -> list[ScholarlyWork]:
+        data = self._get(self.BASE, {"query": query, "limit": count, "fields": self.FIELDS})
+        if not data:
+            return []
+        works = []
+        for item in data.get("data", []):
+            ext = item.get("externalIds") or {}
+            oa = item.get("openAccessPdf") or {}
+            works.append(
+                ScholarlyWork(
+                    title=item.get("title") or "",
+                    authors=[a.get("name", "") for a in item.get("authors", [])],
+                    year=item.get("year"),
+                    venue=item.get("venue") or "",
+                    doi=canonical_doi(ext.get("DOI")),
+                    url=item.get("url"),
+                    abstract=item.get("abstract"),
+                    cited_by_count=item.get("citationCount"),
+                    open_access_url=oa.get("url"),
+                    license=oa.get("license"),
+                    provider="semanticscholar",
+                    provider_id=item.get("paperId", ""),
+                    raw=item,
+                )
+            )
+        return works
+
+
+class UnpaywallAdapter(_HttpBase):
+    """Unpaywall: lawful open-access location lookup by DOI (email-identified, keyless).
+    Returns OA info only — it does not grant permission to copy arbitrary full text."""
+
+    BASE = "https://api.unpaywall.org/v2"
+
+    def lookup(self, doi: str) -> dict | None:
+        doi = canonical_doi(doi) or ""
+        if not doi:
+            return None
+        data = self._get(f"{self.BASE}/{doi}", {"email": MAILTO})
+        if not data:
+            return None
+        best = data.get("best_oa_location") or {}
+        return {
+            "doi": doi,
+            "is_oa": data.get("is_oa", False),
+            "oa_status": data.get("oa_status"),
+            "license": best.get("license"),
+            "oa_url": best.get("url"),
+            "version": best.get("version"),
+            "checked_via": "unpaywall",
+        }
+
+
 class FakeScholarlyProvider:
     """Deterministic works for offline tests; includes a DOI-duplicate pair to exercise dedup."""
 

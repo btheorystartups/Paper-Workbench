@@ -69,4 +69,13 @@ Ledger status (2026-07-20, end of second session):
 - **P6 DONE (core)** — export to MD/LaTeX/HTML/DOCX + BibTeX + provenance manifest (sha256, access levels, audit findings at export). PDF deferred (WeasyPrint/GTK on Windows); LaTeX compiles with any standard toolchain.
 - **Alembic adopted** — initial migration `115f9e0dd0da` covers full schema; verified against fresh DB. Tests still bootstrap via create_all for speed.
 - **End-to-end live proof**: `scripts/golden_path.py` — ingest real CM corpus → grounded live-GPT dialogue → OpenAlex import/screening → contribution map → candidate → manuscript → audit → live skeptical review (3 objections) → export bundle.
-- **Deferred / not started**: web UI (API+/docs only), venue profiles, PDF/JATS export, embeddings/semantic retrieval, collaboration roles, Unpaywall/Semantic Scholar adapters, evaluation harness with precision/recall metrics, cross-project research memory. 33 offline tests green.
+- **Expansion slice DONE (2026-07-20, session 3)** — everything previously deferred except noted:
+  - **Web UI**: dependency-free SPA at `/ui` (vanilla JS/CSS, light/dark, a11y states); all six tabs (Objects/Sources/Claims/Literature/Dialogue/Manuscripts) verified in-browser including a live GPT-4o dialogue turn rendered with model label and approval-gated action panel.
+  - **Semantic Scholar + Unpaywall adapters** (Unpaywall = OA-location lookup, explicitly not a full-text license); **embeddings/semantic retrieval** (fake hash vectors offline / OpenAI text-embedding-3-small live; project-scoped; results labeled kind="similarity", never evidence).
+  - **Venue profiles** with rules provenance + human-verify gate; compliance audit downgrades to advisory (info) findings until verified.
+  - **Collaboration roles** (users/project_members, reviewer<editor<coauthor<owner, local API-key trust model — honest scope: not hardened multi-tenant auth; grace mode when a project has no members).
+  - **PDF export** (dependency-free deterministic MinimalPdf renderer — fallback quality; LaTeX remains the typeset path) and **JATS XML** (structural, not DTD-validated).
+  - **Cross-project research memory**: unpublished-results finder, result-usage tracing, saved-search rerun, workspace-scoped title search (never crosses workspaces).
+  - **Eval harness**: 8 labeled scenarios scoring the deterministic audit layer — precision/recall 1.00 on all 7 finding codes (docs/eval-report.md; explicitly does NOT measure LLM quality).
+  - Migration `87d0b44a3f39` (embeddings/users/members/venues). 40 offline tests green.
+- **Still deferred**: hardened multi-user auth/OIDC, DTD-validated JATS, WeasyPrint typeset PDF, LLM-output quality evals, submission tracking, conference/poster outputs.

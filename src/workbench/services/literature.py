@@ -41,7 +41,33 @@ def get_scholarly_provider(name: str):
         return OpenAlexAdapter()
     if name == "crossref":
         return CrossrefAdapter()
+    if name == "semanticscholar":
+        from ..providers.scholarly import SemanticScholarAdapter
+
+        return SemanticScholarAdapter()
     return FakeScholarlyProvider()
+
+
+def enrich_open_access(session: Session, source_id: str) -> dict:
+    """Unpaywall lookup for a source's DOI; records OA status/license in provider_metadata.
+    OA info is a pointer to lawful locations, never an authorization to bulk-copy text."""
+    source = session.get(Source, source_id)
+    if source is None:
+        raise research.IntegrityError("source not found")
+    if not source.doi:
+        raise research.IntegrityError("source has no DOI to look up")
+    from ..providers.registry import provider_mode
+
+    if provider_mode() != "live":
+        info = {"doi": source.doi, "is_oa": False, "oa_status": "simulated",
+                "license": None, "oa_url": None, "version": None, "checked_via": "fake"}
+    else:
+        from ..providers.scholarly import UnpaywallAdapter
+
+        info = UnpaywallAdapter().lookup(source.doi) or {"doi": source.doi, "is_oa": None,
+                                                         "checked_via": "unpaywall-failed"}
+    source.provider_metadata = {**source.provider_metadata, "open_access": info}
+    return info
 
 
 def run_search(
