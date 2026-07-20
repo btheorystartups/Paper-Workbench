@@ -228,11 +228,17 @@ class Embedding(_Stamped, Base):
 
 
 class User(_Stamped, Base):
-    """Local collaboration identity (single-machine trust model: API key ≈ dev token)."""
+    """Collaboration identity. `api_key` is the local dev-token path; `email` +
+    `password_hash` enable real password auth; `oidc_subject` links a federated identity.
+    None of these are populated in local single-user mode until auth is enabled."""
 
     __tablename__ = "users"
     name: Mapped[str] = mapped_column(String(200))
     api_key: Mapped[str] = mapped_column(String(64), unique=True)
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, default=None)
+    password_hash: Mapped[str | None] = mapped_column(String(255), default=None)
+    oidc_subject: Mapped[str | None] = mapped_column(String(255), unique=True, default=None)
+    email_verified: Mapped[bool] = mapped_column(default=False)
 
 
 class ProjectMember(_Stamped, Base):

@@ -5,12 +5,12 @@ Run: uvicorn workbench.main:app --reload
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import db
+from . import auth, db
 from .config import get_settings
 from .models import Claim, ProposedAction, ResearchObject, Source, Thread, Turn
 from .services import (
@@ -50,6 +50,88 @@ if _STATIC_DIR.is_dir():
 
 def _session():
     yield from db.get_session()
+
+
+def _principal(
+    session: Session = Depends(_session),
+    authorization: str | None = Header(default=None),
+):
+    """Resolve the acting user from an optional `Authorization: Bearer <token>` header.
+    In local mode (auth_required=false) an absent token yields the default local user."""
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    try:
+        return auth.principal_from_bearer(session, token)
+    except auth.AuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+
+
+def _require(session, project_id: str, user, minimum: str) -> None:
+    """Enforce a project role — but only when auth is switched on. In local single-user
+    mode this is a no-op so the workbench stays frictionless."""
+    if not get_settings().auth_required:
+        return
+    try:
+        security.require_role(session, project_id, user.id, minimum)
+    except security.Forbidden as exc:
+        raise HTTPException(403, str(exc)) from exc
+
+
+# --- auth endpoints ---
+
+
+class RegisterIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=200)
+
+
+@app.post("/auth/register")
+def auth_register(body: RegisterIn, session: Session = Depends(_session)):
+    try:
+        user = auth.register_local_user(
+            session, name=body.name, email=body.email, password=body.password
+        )
+    except auth.AuthError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"id": user.id, "name": user.name, "email": user.email}
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginIn, session: Session = Depends(_session)):
+    try:
+        user, token = auth.login_password(session, email=body.email, password=body.password)
+    except auth.AuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    session.commit()
+    return {"access_token": token, "token_type": "bearer", "user_id": user.id}
+
+
+class OidcLoginIn(BaseModel):
+    id_token: str
+
+
+@app.post("/auth/oidc/login")
+def auth_oidc_login(body: OidcLoginIn, session: Session = Depends(_session)):
+    try:
+        user, token = auth.login_oidc(session, body.id_token)
+    except auth.AuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    session.commit()
+    return {"access_token": token, "token_type": "bearer", "user_id": user.id}
+
+
+@app.get("/auth/me")
+def auth_me(user=Depends(_principal)):
+    return {"id": user.id, "name": user.name, "email": user.email,
+            "oidc_linked": bool(user.oidc_subject)}
 
 
 @app.get("/health")
@@ -198,7 +280,11 @@ class ObjectIn(BaseModel):
 
 
 @app.post("/projects/{project_id}/objects")
-def create_object(project_id: str, body: ObjectIn, session: Session = Depends(_session)):
+def create_object(
+    project_id: str, body: ObjectIn,
+    session: Session = Depends(_session), user=Depends(_principal),
+):
+    _require(session, project_id, user, "coauthor")
     try:
         obj = research.create_object(
             session, project_id, kind=body.kind, title=body.title,
@@ -540,7 +626,14 @@ class SectionIn(BaseModel):
 
 
 @app.post("/manuscripts/{manuscript_id}/sections")
-def add_section(manuscript_id: str, body: SectionIn, session: Session = Depends(_session)):
+def add_section(
+    manuscript_id: str, body: SectionIn,
+    session: Session = Depends(_session), user=Depends(_principal),
+):
+    manuscript = session.get(ResearchObject, manuscript_id)
+    if manuscript is None:
+        raise HTTPException(404, "manuscript not found")
+    _require(session, manuscript.project_id, user, "editor")
     try:
         obj = authoring.add_section(session, manuscript_id, **body.model_dump())
     except research.IntegrityError as exc:
@@ -692,7 +785,11 @@ class MemberIn(BaseModel):
 
 
 @app.post("/projects/{project_id}/members")
-def add_member(project_id: str, body: MemberIn, session: Session = Depends(_session)):
+def add_member(
+    project_id: str, body: MemberIn,
+    session: Session = Depends(_session), user=Depends(_principal),
+):
+    _require(session, project_id, user, "owner")
     try:
         member = security.add_member(session, project_id, body.user_id, body.role)
     except research.IntegrityError as exc:

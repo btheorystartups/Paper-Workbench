@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5"
     llm_max_output_tokens: int = 4096
 
+    # Auth (off by default — local single-user needs no credentials)
+    auth_required: bool = False
+    auth_secret: str = "dev-insecure-secret"  # MUST be overridden when auth_required
+    auth_ttl_minutes: int = 720
+
+    # OIDC (used only when provider_mode=live and oidc_issuer set)
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+
+    # Export
+    pdf_renderer: str = "auto"  # "auto" | "weasyprint" | "minimal"
+
 
 def brave_api_key() -> str:
     return os.environ.get("WB_BRAVE_SEARCH_API_KEY") or os.environ.get(
