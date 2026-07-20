@@ -60,4 +60,8 @@ Build Paper-Workbench as a **standalone, evidence-controlled general research wo
 - **P5 Integrity & reproducibility**: audits, adversarial review mode, eval harness.
 - **P6 Publishing**: venue profiles, export bundles (MD/LaTeX/HTML/PDF/DOCX), submission package.
 
-Ledger status: P1 in progress (started 2026-07-20). Each phase's exit criteria: tests green, README updated, demo path documented.
+Ledger status (2026-07-20):
+- **P1 DONE** — schema, evidence rules, dialogue engine, providers+fakes, 19 tests, server smoke-tested. Provisional shortcut: create_all instead of Alembic (adopt Alembic at first post-P1 schema change).
+- **P2 ingestion slice DONE** — file ingestion (md/txt/tex/csv/pdf) with artifact copies, checksums, extractor labeling; `/projects/{id}/ingest` endpoint; `python -m workbench.demo` runs the golden path against the real CM corpus (5 files incl. 36-page PDF) fully offline; 22 tests.
+- **P2 remaining**: result-card review UI surface, live extraction provider, live-LLM dialogue verification (needs a key), excerpt capture from ingested text.
+- P3-P6: not started. Each phase's exit criteria: tests green, README updated, demo path documented.

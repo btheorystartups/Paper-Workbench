@@ -132,6 +132,32 @@ def register_source(project_id: str, body: SourceIn, session: Session = Depends(
     return {"id": source.id, "title": source.title, "access": str(source.access)}
 
 
+class IngestIn(BaseModel):
+    path: str
+    title: str | None = None
+    license: str = "author-owned"
+
+
+@app.post("/projects/{project_id}/ingest")
+def ingest_local_file(project_id: str, body: IngestIn, session: Session = Depends(_session)):
+    """Ingest a local file (single-user local deployment; the path is the user's own disk)."""
+    from .ingest.files import IngestError, ingest_file
+
+    try:
+        source = ingest_file(
+            session, project_id, body.path, title=body.title, license=body.license
+        )
+    except (IngestError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {
+        "id": source.id,
+        "title": source.title,
+        "access": str(source.access),
+        "ingest": source.provider_metadata["ingest"],
+    }
+
+
 class ExcerptIn(BaseModel):
     text: str = Field(min_length=1)
     locator: str = Field(min_length=1)
