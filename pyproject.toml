@@ -15,6 +15,7 @@ dependencies = [
     "bcrypt>=4.1",
     "python-docx>=1.1",
     "alembic>=1.13",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -26,8 +27,6 @@ dev = [
 # Windows box); the export pipeline probes availability and falls back to the built-in
 # deterministic renderer when they are missing.
 pdf = ["weasyprint>=60"]
-# Strict JATS validation and richer XML handling.
-xml = ["lxml>=5.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

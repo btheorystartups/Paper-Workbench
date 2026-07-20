@@ -38,9 +38,21 @@ Implemented and tested (33 offline tests; live providers verified with user keys
   cross-project memory (unpublished results, usage tracing, saved-search rerun);
   audit eval harness (docs/eval-report.md — precision/recall 1.00 on 7 codes).
 
+- **Auth** (optional, off by default): bcrypt passwords + short-lived JWTs + OIDC login;
+  role enforcement (reviewer<editor<coauthor<owner) activates only when
+  `WB_AUTH_REQUIRED=true`. Endpoints under `/auth/*`.
+- **Submission tracking**: audited state machine (drafting → submitted → under review →
+  revision requested → resubmitted → accepted/rejected/withdrawn) with response-to-reviewers.
+- **Export hardening**: JATS validated against a bundled DTD (lxml); PDF via WeasyPrint when
+  its GTK libraries are present, else the deterministic fallback (the manifest records which).
+- **LLM-quality evals** (`scripts/run_llm_evals.py`): grounding, injection-resistance,
+  hallucinated-citation, action-safety, abstention — 6/6 against live gpt-4o
+  (docs/llm-eval-report.md). A regression signal, not a correctness certificate.
+
 Demos: `python -m workbench.demo` (offline) · `python -X utf8 scripts/golden_path.py`
-(full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (provider
-smoke tests) · `scripts/run_evals.py`. Migrations: `alembic upgrade head`.
+(full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (providers) ·
+`scripts/run_evals.py` (audit evals) · `scripts/run_llm_evals.py` (LLM evals).
+Migrations: `alembic upgrade head`.
 UI: `uvicorn workbench.main:app` then open http://127.0.0.1:8000/ (redirects to /ui).
 
 See `docs/audit/2026-07-20-phase0-decision-record.md` for the go/no-go record, ADRs,

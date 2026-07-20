@@ -90,6 +90,48 @@ def _claims_block(claim_ids: list[str], claims: dict[str, Claim], sources: dict[
     return lines
 
 
+_WEASYPRINT_CACHE: bool | None = None
+
+
+def weasyprint_available() -> bool:
+    """Probe whether WeasyPrint can actually be USED (import succeeds AND its native
+    GTK/Pango libraries load). Catches OSError from missing DLLs, not just ImportError.
+    Cached because the probe is not free."""
+    global _WEASYPRINT_CACHE
+    if _WEASYPRINT_CACHE is None:
+        try:
+            import weasyprint  # noqa: F401
+
+            _WEASYPRINT_CACHE = True
+        except Exception:  # ImportError, OSError (missing libgobject), etc.
+            _WEASYPRINT_CACHE = False
+    return _WEASYPRINT_CACHE
+
+
+def _weasyprint_pdf(html: str) -> bytes:
+    import weasyprint
+
+    return weasyprint.HTML(string=html).write_pdf()
+
+
+def _render_pdf(title: str, html: str, paragraphs: list[str], mode: str) -> tuple[bytes, str]:
+    """Return (pdf_bytes, renderer_used). mode: auto|weasyprint|minimal.
+    'weasyprint' requires it; 'auto' uses it when available and falls back; 'minimal'
+    always uses the built-in deterministic renderer."""
+    if mode == "minimal":
+        return _minimal_pdf(title, paragraphs), "minimal"
+    if mode == "weasyprint":
+        if not weasyprint_available():
+            raise research.IntegrityError(
+                "pdf_renderer=weasyprint but WeasyPrint/GTK is unavailable on this system"
+            )
+        return _weasyprint_pdf(html), "weasyprint"
+    # auto
+    if weasyprint_available():
+        return _weasyprint_pdf(html), "weasyprint"
+    return _minimal_pdf(title, paragraphs), "minimal"
+
+
 def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
     """Dependency-free deterministic text PDF (concept from Nexus MinimalPdfRenderer):
     Helvetica, naive wrap, A4-ish pages. A faithful fallback — not typeset output; the
@@ -286,25 +328,43 @@ def export_manuscript(
         written["bib"] = out_dir / "references.bib"
         written["bib"].write_text("\n\n".join(entries), encoding="utf-8")
 
-    # --- PDF (minimal deterministic fallback renderer) ---
+    # --- PDF (WeasyPrint typeset when available, else deterministic fallback) ---
+    extra_manifest: dict = {}
     if "pdf" in formats:
         paragraphs = []
+        html_parts = [f"<h1>{__import__('html').escape(manuscript.title)}</h1>"]
         for s in sections:
             paragraphs.append(s.title.upper())
+            html_parts.append(f"<h2>{__import__('html').escape(s.title)}</h2>")
             if s.body.get("text"):
                 paragraphs.append(s.body["text"])
-            paragraphs.extend(
-                _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
-            )
-        written["pdf"] = out_dir / "manuscript.pdf"
-        written["pdf"].write_bytes(_minimal_pdf(manuscript.title, paragraphs))
-
-    # --- JATS XML ---
-    if "jats" in formats:
-        written["jats"] = out_dir / "manuscript.jats.xml"
-        written["jats"].write_text(
-            _jats_xml(manuscript, sections, claims, sources, session), encoding="utf-8"
+                html_parts.append(f"<p>{__import__('html').escape(s.body['text'])}</p>")
+            block = _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
+            paragraphs.extend(block)
+            if block:
+                html_parts.append(
+                    "<ul>" + "".join(f"<li>{__import__('html').escape(b)}</li>" for b in block)
+                    + "</ul>"
+                )
+        pdf_html = (
+            "<!doctype html><meta charset='utf-8'><title>"
+            + __import__("html").escape(manuscript.title) + "</title>" + "\n".join(html_parts)
         )
+        pdf_bytes, renderer_used = _render_pdf(
+            manuscript.title, pdf_html, paragraphs, get_settings().pdf_renderer
+        )
+        written["pdf"] = out_dir / "manuscript.pdf"
+        written["pdf"].write_bytes(pdf_bytes)
+        extra_manifest["pdf_renderer"] = renderer_used
+
+    # --- JATS XML (validated against bundled JATS-subset DTD when lxml present) ---
+    if "jats" in formats:
+        from .jats import validate_jats
+
+        jats_text = _jats_xml(manuscript, sections, claims, sources, session)
+        written["jats"] = out_dir / "manuscript.jats.xml"
+        written["jats"].write_text(jats_text, encoding="utf-8")
+        extra_manifest["jats_validation"] = validate_jats(jats_text).as_dict()
 
     # --- Provenance manifest ---
     findings = audits.audit_manuscript(session, manuscript_id)
@@ -327,6 +387,7 @@ def export_manuscript(
         },
         "audit_findings_at_export": findings,
         "files": {},
+        **extra_manifest,
     }
     for fmt, path in written.items():
         manifest["files"][fmt] = {
@@ -340,4 +401,5 @@ def export_manuscript(
         "out_dir": str(out_dir),
         "files": {fmt: str(p) for fmt, p in written.items()} | {"manifest": str(manifest_path)},
         "audit_findings": len(findings),
+        **extra_manifest,
     }

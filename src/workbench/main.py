@@ -23,6 +23,7 @@ from .services import (
     research,
     security,
     semantic,
+    submissions,
     venues,
 )
 from .vocab import ClaimSupport, Novelty, ObjectKind, SourceAccess
@@ -796,6 +797,78 @@ def add_member(
         raise HTTPException(422, str(exc)) from exc
     session.commit()
     return {"id": member.id, "user_id": member.user_id, "role": member.role}
+
+
+# --- submission tracking ---
+
+
+class SubmissionIn(BaseModel):
+    manuscript_id: str
+    venue_id: str | None = None
+    venue_name: str = ""
+    deadline: str | None = None
+
+
+@app.post("/projects/{project_id}/submissions")
+def create_submission(project_id: str, body: SubmissionIn, session: Session = Depends(_session)):
+    try:
+        sub = submissions.create_submission(session, project_id, **body.model_dump())
+    except submissions.SubmissionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _submission_out(sub)
+
+
+def _submission_out(sub) -> dict:
+    return {
+        "id": sub.id, "manuscript_id": sub.manuscript_id, "venue_name": sub.venue_name,
+        "status": sub.status, "deadline": sub.deadline, "history": sub.history,
+        "revisions": sub.revisions,
+    }
+
+
+@app.get("/projects/{project_id}/submissions")
+def list_submissions(project_id: str, session: Session = Depends(_session)):
+    return [_submission_out(s) for s in submissions.list_submissions(session, project_id)]
+
+
+@app.get("/submissions/{submission_id}")
+def get_submission(submission_id: str, session: Session = Depends(_session)):
+    try:
+        return _submission_out(submissions.get_submission(session, submission_id))
+    except submissions.SubmissionError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class TransitionIn(BaseModel):
+    to_status: str
+    note: str = ""
+
+
+@app.post("/submissions/{submission_id}/transition")
+def transition_submission(submission_id: str, body: TransitionIn, session: Session = Depends(_session)):
+    try:
+        sub = submissions.transition(session, submission_id, body.to_status, note=body.note)
+    except submissions.SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return _submission_out(sub)
+
+
+class RevisionIn(BaseModel):
+    summary: str
+    response_to_reviewers: str
+    changes: list[str] = Field(default_factory=list)
+
+
+@app.post("/submissions/{submission_id}/revisions")
+def add_revision(submission_id: str, body: RevisionIn, session: Session = Depends(_session)):
+    try:
+        sub = submissions.add_revision(session, submission_id, **body.model_dump())
+    except submissions.SubmissionError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return _submission_out(sub)
 
 
 # --- cross-project research memory (workspace-scoped) ---

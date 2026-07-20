@@ -263,6 +263,24 @@ class VenueProfile(_Stamped, Base):
     verified: Mapped[bool] = mapped_column(default=False)
 
 
+class Submission(_Stamped, Base):
+    """Tracks a manuscript's journey to a venue through an explicit state machine.
+    `history` is an append-only list of {at, from, to, note}; `revisions` holds
+    response-to-reviewers documents. Nothing here submits anything externally — it is a
+    record the researcher maintains."""
+
+    __tablename__ = "submissions"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    manuscript_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
+    venue_id: Mapped[str | None] = mapped_column(ForeignKey("venue_profiles.id"), default=None)
+    venue_name: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(30), default="drafting")
+    deadline: Mapped[str | None] = mapped_column(String(40), default=None)  # ISO date
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    revisions: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
 class AuditEvent(_Stamped, Base):
     __tablename__ = "audit_events"
     workspace_id: Mapped[str] = mapped_column(String(32), index=True)

@@ -55,9 +55,12 @@ class FakeChatProvider:
             (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
         )
         context_ids = sorted(set(_extract_context_ids(system)))
+        # Cite context using the same [ctx:ID] convention the real model is instructed to
+        # use, so the fake is a faithful stand-in for a grounded, injection-safe model.
+        cited = ", ".join(f"[ctx:{c}]" for c in context_ids) if context_ids else "none"
         reply = (
             "[FAKE-MODEL] This is a simulated reply (no live provider configured). "
-            f"Context objects visible: {', '.join(context_ids) if context_ids else 'none'}. "
+            f"Context objects visible: {cited}. "
             f"You said: {last_user[:200]}"
         )
         actions: list[dict] = []
