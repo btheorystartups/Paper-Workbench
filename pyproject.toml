@@ -1,0 +1,37 @@
+[project]
+name = "paper-workbench"
+version = "0.1.0"
+description = "Evidence-controlled general research workbench: research graph, grounded dialogue, provenance-preserving authoring and export."
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

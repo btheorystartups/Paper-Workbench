@@ -1,0 +1,190 @@
+"""Canonical research-graph schema (Phase 0 decision record: canonical model).
+
+Design rules:
+- stable UUID string ids; workspace/project isolation on every row that needs scoping;
+- soft delete via deleted_at; timestamps in UTC;
+- provenance never optional: sources carry access level + license + acquisition,
+  excerpts carry locator + checksum, AI turns carry model/prompt provenance;
+- claims link to evidence explicitly; support states from vocab are NOT nullable.
+"""
+
+import hashlib
+import json
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import JSON, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from .vocab import (
+    ActionStatus,
+    ClaimSupport,
+    ObjectKind,
+    Relation,
+    ResultStrength,
+    SourceAccess,
+)
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def stable_hash(payload: dict) -> str:
+    """Deterministic hash for plan binding and audit (pattern from POP core/audit.py)."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class _Stamped:
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class Workspace(_Stamped, Base):
+    __tablename__ = "workspaces"
+    name: Mapped[str] = mapped_column(String(200))
+
+
+class Project(_Stamped, Base):
+    __tablename__ = "projects"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+
+
+class ResearchObject(_Stamped, Base):
+    """One node of the research graph. `kind` from vocab.ObjectKind; kind-specific payload
+    (formal statement, task state, dataset path, section text, ...) in `body` JSON."""
+
+    __tablename__ = "research_objects"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[ObjectKind] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(500))
+    body: Mapped[dict] = mapped_column(JSON, default=dict)
+    strength: Mapped[ResultStrength | None] = mapped_column(String(60), default=None)
+    ai_suggested: Mapped[bool] = mapped_column(default=False)
+    accepted_by_user: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (Index("ix_objects_project_kind", "project_id", "kind"),)
+
+
+class Edge(_Stamped, Base):
+    """Typed relationship between two research objects (same project)."""
+
+    __tablename__ = "edges"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    src_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
+    dst_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
+    relation: Mapped[Relation] = mapped_column(String(40))
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (UniqueConstraint("src_id", "dst_id", "relation"),)
+
+
+class Source(_Stamped, Base):
+    """External source record. Snippets/search hits are discovery, never evidence:
+    a Source becomes citable evidence only through Excerpts or verified metadata."""
+
+    __tablename__ = "sources"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(600))
+    authors: Mapped[str] = mapped_column(Text, default="")  # "A; B; C"
+    year: Mapped[int | None] = mapped_column(default=None)
+    venue: Mapped[str] = mapped_column(String(300), default="")
+    doi: Mapped[str | None] = mapped_column(String(200), default=None, index=True)
+    url: Mapped[str | None] = mapped_column(String(1000), default=None)
+    access: Mapped[SourceAccess] = mapped_column(String(40))
+    license: Mapped[str] = mapped_column(String(200), default="unknown")
+    acquisition: Mapped[str] = mapped_column(String(200), default="")  # how we got it
+    human_verified: Mapped[bool] = mapped_column(default=False)
+    integrity_note: Mapped[str] = mapped_column(Text, default="")  # retraction/correction flags
+    provider_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Excerpt(_Stamped, Base):
+    """Bounded quotation/extract from a Source with a durable locator and checksum."""
+
+    __tablename__ = "excerpts"
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    locator: Mapped[str] = mapped_column(String(300))  # page/section/offset descriptor
+    checksum: Mapped[str] = mapped_column(String(64))
+
+
+class Claim(_Stamped, Base):
+    """A substantive claim. Support state is mandatory; evidence links are checked by
+    services.claims (an EXTERNAL_SOURCE/BOTH claim without excerpt evidence is rejected)."""
+
+    __tablename__ = "claims"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    support: Mapped[ClaimSupport] = mapped_column(String(40))
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+
+class ClaimEvidence(_Stamped, Base):
+    __tablename__ = "claim_evidence"
+    claim_id: Mapped[str] = mapped_column(ForeignKey("claims.id"), index=True)
+    excerpt_id: Mapped[str | None] = mapped_column(ForeignKey("excerpts.id"), default=None)
+    research_object_id: Mapped[str | None] = mapped_column(
+        ForeignKey("research_objects.id"), default=None
+    )
+    entailment: Mapped[str] = mapped_column(String(40), default="asserted")  # asserted|verified
+
+
+class Thread(_Stamped, Base):
+    """Persistent research dialogue thread; summary is user-editable continuation state."""
+
+    __tablename__ = "threads"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    goal: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    pinned_object_ids: Mapped[list] = mapped_column(JSON, default=list)
+    pinned_source_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class Turn(_Stamped, Base):
+    __tablename__ = "turns"
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))  # user|assistant|system
+    content: Mapped[str] = mapped_column(Text)
+    # AI provenance: model, provider, prompt hash, context object/source ids, usage.
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ProposedAction(_Stamped, Base):
+    """Dialogue conclusions become explicit reviewable actions; nothing mutates the graph
+    silently (plan→confirm→execute→audit harness, pattern from POP command module)."""
+
+    __tablename__ = "proposed_actions"
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(60))  # e.g. create_object, link_objects
+    risk: Mapped[str] = mapped_column(String(20))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[ActionStatus] = mapped_column(String(20), default=ActionStatus.PROPOSED)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AuditEvent(_Stamped, Base):
+    __tablename__ = "audit_events"
+    workspace_id: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str] = mapped_column(String(100))  # "user" | "assistant" | job name
+    action: Mapped[str] = mapped_column(String(100))
+    object_type: Mapped[str] = mapped_column(String(60))
+    object_id: Mapped[str] = mapped_column(String(32))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)

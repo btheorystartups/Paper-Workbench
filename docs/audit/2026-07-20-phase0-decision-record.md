@@ -1,0 +1,63 @@
+# Phase 0 Decision Record — Paper-Workbench
+
+Date: 2026-07-20 · Author: Claude (implementation lead), decisions confirmed by Brian Droncheff where noted.
+
+## Verdict: **GO WITH CONDITIONS**
+
+Build Paper-Workbench as a **standalone, evidence-controlled general research workbench**. Conditions:
+
+1. Live provider calls (OpenAI/Anthropic dialogue, Brave search, scholarly APIs) stay **disabled by default** (`WB_PROVIDER_MODE=fake`); enabling live mode requires the user to supply API keys via environment.
+2. Single-user local deployment is the assumed target (Windows, SQLite). Multi-user hosting, collaboration roles, and cloud deployment are deferred until requested (schema keeps `workspace_id` scoping from day one so this is not a rewrite later).
+3. Scholarly providers (OpenAlex, Crossref, Semantic Scholar, Unpaywall) are fresh builds added incrementally behind one provider interface; no single provider is load-bearing.
+4. WeasyPrint PDF export on Windows requires GTK runtime DLLs; the export pipeline therefore ships with a dependency-free fallback renderer and Markdown/HTML/LaTeX outputs that don't need it.
+
+## Product boundary — DECIDED BY USER (verified)
+
+**Standalone application.** Brian stated (2026-07-20): code may be *copied* from POP Card Studio / Nexus, but the projects are **disjoint** — no runtime integration, no Nexus bridges. All "optional Nexus bridge" items in the original spec are **out of scope**.
+
+## What the surveys established (all verified by direct file inspection; full reports in session transcript)
+
+| Source | Verdict | Take |
+|---|---|---|
+| `Paper-Workbench/` | empty | Greenfield; this repo is the product. |
+| POP Card Studio (`PoP\PoP-Card-Generator-Software\PoPCards`) | healthy, active, tested | Copy: Brave adapter (`providers/brave.py`), `SearchProvider`/`SearchResult` protocol, SSRF-safe fetch + HTML extractor (`modules/research/safe_fetch.py`), evidence-capture pattern, provider registry + fakes, audit/idempotency/jobs patterns, plan→confirm→execute→audit command harness. |
+| Nexus (`Documents\Nexus`) | healthy but different domain (outreach ops) | Copy: document renderer (sandboxed Jinja2 + WeasyPrint + minimal fallback), Brave *caching* layer, LLM adapter patterns (OpenAI structured-output with prompt-injection fencing; raw-httpx Anthropic call). |
+| CM corpus (`Correspondence_Matrices`, `CM_Computation`, `CM Testing`) | rich, heterogeneous | Demo/eval corpus: incomplete LaTeX manuscript + prior 111 KB draft, 208 KB benchmark driver + hundreds of CSVs + pytest suite, ChatGPT transcripts, notes, publication PNGs. Perfect fixture material. |
+| Gaps (nothing to copy anywhere) | — | Multi-turn conversation engine with memory; scholarly API clients; PDF/DOCX *ingestion*; DOCX/LaTeX *output*; embeddings (legacy FAISS skeleton only). These are fresh builds. |
+
+## Architecture decisions (ADRs, condensed)
+
+- **ADR-1 Stack**: Python 3.13 + FastAPI modular monolith, SQLAlchemy 2 + Alembic, Pydantic v2, SQLite (dev/default) with Postgres-compatible schema. Rationale: matches the two donor codebases so copied code stays idiomatic; solo-maintainable; offline-first.
+- **ADR-2 Storage**: Relational DB modelling a typed research graph (nodes + edges tables with typed payloads), **not** Neo4j. The query load is lookup/join/provenance-chain, not deep graph traversal; portability and zero-install win. Revisit only if traversal queries demonstrably hurt.
+- **ADR-3 Providers**: Every external capability (search, scholarly metadata, LLM text, embeddings, fetch) sits behind a Protocol with a deterministic fake; registry selects fake/live from config. Copied from PoP's registry pattern.
+- **ADR-4 Dialogue engine**: New build. Persistent threads + turns in DB; per-turn context assembled from pinned research objects and scoped retrieval (no ever-growing transcript); LLM planner proposes typed actions that go through a plan→confirm→execute→audit pipeline (harness pattern copied from PoP `command` module). Provider-agnostic: OpenAI and Anthropic adapters, fake by default.
+- **ADR-5 Evidence rules**: Snippets/search results are discovery, never evidence. Claims carry explicit support states (`research_result`, `external_source`, `interpretation`, `unsupported`, `verification_required`, …); source records carry access level (`metadata_only` … `full_text_user_supplied`) and license/acquisition provenance. Enforced at the schema level, surfaced in UI/exports.
+- **ADR-6 Export**: Canonical manuscript is structured (sections + claim references) in DB; renderers produce Markdown/LaTeX/HTML always, PDF via WeasyPrint when GTK present, DOCX via python-docx later. Never PDF-as-source.
+
+## Risk register
+
+| Risk | Mitigation |
+|---|---|
+| Scope is enormous (13-point definition of done) | Vertical slices; continuation ledger below; each slice leaves repo runnable + tested. |
+| LLM hallucinated citations/claims | Structured outputs referencing object IDs only; validation before persistence; claim-support states; citation resolution required before a reference is accepted. |
+| Prompt injection via ingested documents/web pages | Untrusted content fenced (Nexus pattern); tools only callable via typed registry; retrieval scoped per project. |
+| Provider terms (Brave ≠ full-text license) | Access-level + license fields mandatory on sources; full text stored only when user-supplied/openly licensed; excerpt+hash retention otherwise. |
+| WeasyPrint/GTK on Windows | Fallback renderer + non-PDF formats first-class. |
+| Solo-user data loss | SQLite file + artifact store under one data dir; export/import of whole projects as ZIP with checksums (PoP pattern). |
+
+## Blocking decisions left with the user (safe defaults chosen meanwhile)
+
+1. **LLM provider + key** for live dialogue (default: fake mode; both OpenAI and Anthropic adapters shipped). The spec says "converse with GPT" — OpenAI assumed primary.
+2. **Brave API key** for live discovery (default: fake mode).
+3. Whether any corpus files should NOT be ingested into demo fixtures (default: only CM materials listed above, read-only, copies not moves).
+
+## Phased plan and continuation ledger
+
+- **P1 Foundation (this session)**: repo scaffold, config, DB schema + migrations for workspace/project/research-object/source/excerpt/claim/edge/thread/turn/audit, provider protocols + fakes, vendored Brave adapter + safe_fetch, pytest suite, runnable API.
+- **P2 Research-first vertical slice**: ingest CM materials (Markdown/CSV/TXT/LaTeX first; PDF via pypdf), result cards, grounded multi-turn dialogue (fake + live adapters), accepted-suggestion → task/object, minimal web or CLI surface.
+- **P3 Literature core**: OpenAlex + Crossref adapters, dedup/canonicalization, literature matrix, saved searches, novelty map states.
+- **P4 Authoring core**: paper candidates, argument planner, manuscript sections with claim refs, citation integrity audit.
+- **P5 Integrity & reproducibility**: audits, adversarial review mode, eval harness.
+- **P6 Publishing**: venue profiles, export bundles (MD/LaTeX/HTML/PDF/DOCX), submission package.
+
+Ledger status: P1 in progress (started 2026-07-20). Each phase's exit criteria: tests green, README updated, demo path documented.
