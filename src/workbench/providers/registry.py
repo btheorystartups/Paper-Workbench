@@ -29,7 +29,10 @@ def get_search_provider() -> SearchProvider:
 
 
 def get_extraction_provider() -> ExtractionProvider:
-    # Live HTTP extraction arrives with the ingestion slice (P2); fake until then.
+    if provider_mode() == "live":
+        from .extraction import HttpExtractionProvider
+
+        return HttpExtractionProvider()
     return FakeExtractionProvider()
 
 
@@ -52,4 +55,8 @@ def chat_model_name() -> str:
     settings = get_settings()
     if provider_mode() != "live":
         return "fake"
-    return settings.anthropic_model if settings.llm_provider == "anthropic" else settings.llm_model
+    if settings.llm_provider == "anthropic":
+        return settings.anthropic_model
+    from ..config import openai_model_override
+
+    return openai_model_override() or settings.llm_model

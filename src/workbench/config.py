@@ -53,7 +53,16 @@ def brave_api_key() -> str:
 
 
 def openai_api_key() -> str:
-    return os.environ.get("WB_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    # Accept the user's actual .env spellings, most specific first.
+    return (
+        os.environ.get("WB_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("OPEN_AI_API_KEY", "")
+    )
+
+
+def openai_model_override() -> str:
+    return os.environ.get("OPENAI_MODEL", "")
 
 
 def anthropic_api_key() -> str:

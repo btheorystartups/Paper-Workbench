@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from . import db
 from .config import get_settings
 from .models import Claim, ProposedAction, ResearchObject, Source, Thread, Turn
-from .services import dialogue, research
-from .vocab import ClaimSupport, ObjectKind, SourceAccess
+from .services import audits, authoring, dialogue, export_service, literature, research
+from .vocab import ClaimSupport, Novelty, ObjectKind, SourceAccess
 
 
 @asynccontextmanager
@@ -266,6 +266,211 @@ def list_turns(thread_id: str, session: Session = Depends(_session)):
         {"id": t.id, "role": t.role, "content": t.content, "provenance": t.provenance}
         for t in rows
     ]
+
+
+# --- literature (P3) ---
+
+
+class LitSearchIn(BaseModel):
+    provider: str = "openalex"  # openalex | crossref
+    query: str = Field(min_length=1)
+    count: int = Field(default=10, ge=1, le=50)
+
+
+@app.post("/projects/{project_id}/literature/search")
+def literature_search(project_id: str, body: LitSearchIn, session: Session = Depends(_session)):
+    try:
+        saved, works = literature.run_search(
+            session, project_id, provider=body.provider, query=body.query, count=body.count
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {
+        "saved_search_id": saved.id,
+        "works": [
+            {
+                "title": w.title, "authors": w.authors, "year": w.year, "venue": w.venue,
+                "doi": w.doi, "url": w.url, "cited_by_count": w.cited_by_count,
+                "has_abstract": bool(w.abstract), "provider": w.provider,
+                "provider_id": w.provider_id,
+            }
+            for w in works
+        ],
+    }
+
+
+class LitImportIn(BaseModel):
+    provider: str
+    query: str
+    provider_id: str
+
+
+@app.post("/projects/{project_id}/literature/import")
+def literature_import(project_id: str, body: LitImportIn, session: Session = Depends(_session)):
+    """Re-runs the search (cached/fake-safe) and imports the selected work by provider_id."""
+    adapter = literature.get_scholarly_provider(body.provider)
+    works = [w for w in adapter.search(body.query, count=25) if w.provider_id == body.provider_id]
+    if not works:
+        raise HTTPException(404, "work not found in search results")
+    try:
+        source, created = literature.import_work(session, project_id, works[0])
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"source_id": source.id, "created": created, "access": str(source.access)}
+
+
+class ScreenIn(BaseModel):
+    source_id: str
+    state: str | None = None
+    reason: str | None = None
+    relationship: str | None = None
+    question: str | None = None
+    method: str | None = None
+    result_summary: str | None = None
+    limitations: str | None = None
+    relevance: str | None = None
+
+
+@app.post("/projects/{project_id}/literature/screen")
+def literature_screen(project_id: str, body: ScreenIn, session: Session = Depends(_session)):
+    data = body.model_dump()
+    source_id = data.pop("source_id")
+    try:
+        entry = literature.set_screening(session, project_id, source_id, **data)
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": entry.id, "state": entry.state}
+
+
+@app.get("/projects/{project_id}/literature/matrix")
+def get_literature_matrix(project_id: str, session: Session = Depends(_session)):
+    return literature.literature_matrix(session, project_id)
+
+
+class ContributionIn(BaseModel):
+    title: str
+    statement: str
+    novelty: Novelty
+    coverage_note: str
+    closest_prior_source_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/projects/{project_id}/contributions")
+def assess_contribution(project_id: str, body: ContributionIn, session: Session = Depends(_session)):
+    try:
+        obj = literature.assess_contribution(session, project_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
+
+
+# --- authoring (P4) ---
+
+
+class CandidateIn(BaseModel):
+    title: str
+    paper_type: str
+    central_question: str
+    thesis: str
+    audience: str = ""
+    structure: str = "imrad"
+    included_object_ids: list[str] = Field(default_factory=list)
+    novelty_caveat: str = ""
+    risks: str = ""
+    missing_work: list[str] = Field(default_factory=list)
+
+
+@app.post("/projects/{project_id}/paper-candidates")
+def create_candidate(project_id: str, body: CandidateIn, session: Session = Depends(_session)):
+    try:
+        obj = authoring.create_paper_candidate(session, project_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
+
+
+class ManuscriptIn(BaseModel):
+    title: str
+    from_candidate_id: str | None = None
+
+
+@app.post("/projects/{project_id}/manuscripts")
+def create_manuscript(project_id: str, body: ManuscriptIn, session: Session = Depends(_session)):
+    try:
+        obj = authoring.create_manuscript(session, project_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
+
+
+class SectionIn(BaseModel):
+    heading: str
+    purpose: str = ""
+    text: str = ""
+    claim_ids: list[str] = Field(default_factory=list)
+    word_budget: int | None = None
+    position: int | None = None
+
+
+@app.post("/manuscripts/{manuscript_id}/sections")
+def add_section(manuscript_id: str, body: SectionIn, session: Session = Depends(_session)):
+    try:
+        obj = authoring.add_section(session, manuscript_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
+
+
+# --- audits + export (P5/P6) ---
+
+
+@app.get("/manuscripts/{manuscript_id}/audit")
+def run_audit(manuscript_id: str, session: Session = Depends(_session)):
+    try:
+        findings = audits.audit_manuscript(session, manuscript_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"findings": findings, "counts": _severity_counts(findings)}
+
+
+def _severity_counts(findings: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    return counts
+
+
+@app.post("/manuscripts/{manuscript_id}/skeptical-review")
+def run_skeptical_review(manuscript_id: str, session: Session = Depends(_session)):
+    try:
+        notes = audits.skeptical_review(session, manuscript_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return {"objections": [_object_out(n) for n in notes]}
+
+
+class ExportIn(BaseModel):
+    formats: list[str] = Field(default_factory=lambda: ["md", "tex", "html", "docx", "bib"])
+
+
+@app.post("/manuscripts/{manuscript_id}/export")
+def export_manuscript(manuscript_id: str, body: ExportIn, session: Session = Depends(_session)):
+    try:
+        result = export_service.export_manuscript(
+            session, manuscript_id, formats=body.formats
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return result
 
 
 class ApproveIn(BaseModel):

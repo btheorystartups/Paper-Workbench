@@ -179,6 +179,38 @@ class ProposedAction(_Stamped, Base):
     result: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class SavedSearch(_Stamped, Base):
+    """A literature/discovery query with provenance: provider, filters, when last run.
+    Results are imported explicitly as Sources — a search run never auto-creates evidence."""
+
+    __tablename__ = "saved_searches"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(40))  # openalex|crossref|brave|fake
+    query: Mapped[str] = mapped_column(Text)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_result_count: Mapped[int] = mapped_column(default=0)
+    protocol_note: Mapped[str] = mapped_column(Text, default="exploratory")  # never "systematic" by default
+
+
+class LiteratureEntry(_Stamped, Base):
+    """Screening decision + structured literature-matrix row for one Source."""
+
+    __tablename__ = "literature_entries"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
+    state: Mapped[str] = mapped_column(String(20), default="unread")  # unread|maybe|include|exclude
+    reason: Mapped[str] = mapped_column(Text, default="")
+    relationship: Mapped[str] = mapped_column(String(20), default="background")  # supports|contradicts|background
+    question: Mapped[str] = mapped_column(Text, default="")
+    method: Mapped[str] = mapped_column(Text, default="")
+    result_summary: Mapped[str] = mapped_column(Text, default="")
+    limitations: Mapped[str] = mapped_column(Text, default="")
+    relevance: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (UniqueConstraint("project_id", "source_id"),)
+
+
 class AuditEvent(_Stamped, Base):
     __tablename__ = "audit_events"
     workspace_id: Mapped[str] = mapped_column(String(32), index=True)

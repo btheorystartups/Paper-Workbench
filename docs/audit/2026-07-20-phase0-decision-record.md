@@ -60,8 +60,13 @@ Build Paper-Workbench as a **standalone, evidence-controlled general research wo
 - **P5 Integrity & reproducibility**: audits, adversarial review mode, eval harness.
 - **P6 Publishing**: venue profiles, export bundles (MD/LaTeX/HTML/PDF/DOCX), submission package.
 
-Ledger status (2026-07-20):
-- **P1 DONE** — schema, evidence rules, dialogue engine, providers+fakes, 19 tests, server smoke-tested. Provisional shortcut: create_all instead of Alembic (adopt Alembic at first post-P1 schema change).
-- **P2 ingestion slice DONE** — file ingestion (md/txt/tex/csv/pdf) with artifact copies, checksums, extractor labeling; `/projects/{id}/ingest` endpoint; `python -m workbench.demo` runs the golden path against the real CM corpus (5 files incl. 36-page PDF) fully offline; 22 tests.
-- **P2 remaining**: result-card review UI surface, live extraction provider, live-LLM dialogue verification (needs a key), excerpt capture from ingested text.
-- P3-P6: not started. Each phase's exit criteria: tests green, README updated, demo path documented.
+Ledger status (2026-07-20, end of second session):
+- **P1 DONE** — schema, evidence rules, dialogue engine, providers+fakes, server smoke-tested.
+- **P2 DONE** — file ingestion (md/txt/tex/csv/pdf) with artifact copies + extraction labeling; live HTTP extraction provider (SSRF-guarded); live OpenAI (gpt-4o via OPENAI_MODEL env) and Brave verified with user-supplied keys (`scripts/verify_live.py`).
+- **P3 DONE** — OpenAlex + Crossref adapters (normalized ScholarlyWork, DOI canonicalization, dedup; live-verified via `scripts/verify_scholarly.py`), saved searches (protocol_note defaults "exploratory", never "systematic"), explicit import (metadata/abstract-only, dedup by DOI), screening states + literature matrix, novelty/contribution map requiring coverage notes.
+- **P4 DONE** — paper candidates (16 types, 7 structures), manuscripts, ordered sections with validated claim references, argument-map purposes/word budgets.
+- **P5 DONE** — deterministic audits (claim coverage, verification debt, unaccepted-AI citation, unverified sources, dangling refs, unreferenced quantitative prose) + LLM skeptical review persisting objections as open AI-suggested notes.
+- **P6 DONE (core)** — export to MD/LaTeX/HTML/DOCX + BibTeX + provenance manifest (sha256, access levels, audit findings at export). PDF deferred (WeasyPrint/GTK on Windows); LaTeX compiles with any standard toolchain.
+- **Alembic adopted** — initial migration `115f9e0dd0da` covers full schema; verified against fresh DB. Tests still bootstrap via create_all for speed.
+- **End-to-end live proof**: `scripts/golden_path.py` — ingest real CM corpus → grounded live-GPT dialogue → OpenAlex import/screening → contribution map → candidate → manuscript → audit → live skeptical review (3 objections) → export bundle.
+- **Deferred / not started**: web UI (API+/docs only), venue profiles, PDF/JATS export, embeddings/semantic retrieval, collaboration roles, Unpaywall/Semantic Scholar adapters, evaluation harness with precision/recall metrics, cross-project research memory. 33 offline tests green.

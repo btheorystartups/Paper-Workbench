@@ -8,19 +8,31 @@ defensible manuscripts. Not a paper generator: paper creation is optional and do
 Standalone by design. Selected components were copied from (and are now owned independently
 of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
-## Status (P1 Foundation — 2026-07-20)
+## Status (P1–P6 core — 2026-07-20)
 
-Implemented and tested (offline, fake providers):
-- Canonical research graph: workspaces, projects, research objects (typed kinds), edges,
-  sources (access level + license + acquisition mandatory), checksummed excerpts with
-  locators, claims with enforced support states and claim→evidence links.
-- Research dialogue engine: persistent threads, pinned context, fenced untrusted content,
-  full AI provenance per turn, and a propose → human-approve → execute → audit pipeline
-  (plan-hash bound; speculation is never silently promoted to fact).
-- Providers behind protocols with deterministic fakes (default `WB_PROVIDER_MODE=fake`,
-  zero network): Brave Search (with response cache), OpenAI and Anthropic chat adapters,
-  SSRF-safe URL validation + HTML metadata extraction.
-- Audit events written in-transaction for every consequential mutation.
+Implemented and tested (33 offline tests; live providers verified with user keys):
+- **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
+  (access level + license + acquisition mandatory), checksummed excerpts with locators,
+  claims with enforced support states and claim→evidence links; audit-in-transaction.
+- **Dialogue engine** (P1/P2): persistent threads, pinned context, fenced untrusted
+  content, full AI provenance per turn, propose → human-approve → execute pipeline
+  (plan-hash bound). Live OpenAI (model from `OPENAI_MODEL`) and Anthropic adapters.
+- **Ingestion** (P2): md/txt/tex/bib/csv/pdf → content-addressed artifact copies,
+  honestly-labeled extraction; SSRF-guarded live web extraction.
+- **Literature core** (P3): OpenAlex + Crossref adapters (normalized, DOI-canonicalized,
+  deduped), saved searches (exploratory by default — never auto-"systematic"), explicit
+  imports, screening states + literature matrix, novelty map with mandatory coverage notes.
+- **Authoring** (P4): paper candidates (16 types / 7 structures), manuscripts, ordered
+  sections whose claims are validated references into the claim ledger.
+- **Audits** (P5): claim-coverage/verification-debt/unverified-source/dangling-ref/
+  unreferenced-numbers checks + LLM skeptical review (objections persist as open,
+  AI-suggested notes).
+- **Export** (P6): Markdown, LaTeX, HTML, DOCX, BibTeX + provenance manifest with sha256
+  checksums, source access levels, and audit findings at export time. Export ≠ submission.
+
+Demos: `python -m workbench.demo` (offline) · `python -X utf8 scripts/golden_path.py`
+(full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (provider
+smoke tests). Migrations: `alembic upgrade head`.
 
 See `docs/audit/2026-07-20-phase0-decision-record.md` for the go/no-go record, ADRs,
 risk register, and the phased roadmap/continuation ledger.
