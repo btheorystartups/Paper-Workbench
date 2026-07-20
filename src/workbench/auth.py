@@ -218,7 +218,8 @@ def principal_from_bearer(session: Session, token: str | None) -> User:
             raise AuthError("token subject not found")
         return user
     except AuthError:
+        # JWT didn't validate — fall back to the api-key path (not an error to chain).
         user = session.scalars(select(User).where(User.api_key == token)).first()
         if user is None:
-            raise AuthError("invalid bearer token")
+            raise AuthError("invalid bearer token") from None
         return user

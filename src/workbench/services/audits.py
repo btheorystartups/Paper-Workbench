@@ -53,7 +53,8 @@ def audit_claims(session: Session, project_id: str) -> list[dict]:
                 if obj is not None and obj.ai_suggested and not obj.accepted_by_user:
                     findings.append(
                         {"severity": "error", "code": "claim-cites-unaccepted-ai",
-                         "message": f"claim '{claim.text[:60]}' cites unaccepted AI-suggested object '{obj.title[:50]}'",
+                         "message": f"claim '{claim.text[:60]}' cites unaccepted AI-suggested "
+                                    f"object '{obj.title[:50]}'",
                          "object_id": claim.id}
                     )
             if e.excerpt_id:
@@ -62,7 +63,8 @@ def audit_claims(session: Session, project_id: str) -> list[dict]:
                 if src is not None and not src.human_verified:
                     findings.append(
                         {"severity": "warning", "code": "claim-source-unverified",
-                         "message": f"claim '{claim.text[:60]}' relies on unverified source '{src.title[:50]}'",
+                         "message": f"claim '{claim.text[:60]}' relies on unverified source "
+                                    f"'{src.title[:50]}'",
                          "object_id": claim.id}
                     )
     return findings
@@ -113,7 +115,8 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
         if _NUM_RE.search(text) and not claim_ids:
             findings.append(
                 {"severity": "warning", "code": "section-unreferenced-numbers",
-                 "message": f"section '{section.title}' contains quantitative statements but references no claims",
+                 "message": f"section '{section.title}' contains quantitative statements but "
+                            "references no claims",
                  "object_id": section.id}
             )
         if not body.get("purpose"):

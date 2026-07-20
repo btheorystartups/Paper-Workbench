@@ -4,7 +4,6 @@ treats findings as authoritative (unverified profiles produce advisory findings 
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import ResearchObject, VenueProfile

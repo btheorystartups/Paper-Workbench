@@ -48,7 +48,7 @@ def index_project(session: Session, project_id: str) -> dict:
     )
     if targets:
         vectors = provider.embed([t[2] for t in targets])
-        for (ttype, tid, text), vec in zip(targets, vectors):
+        for (ttype, tid, text), vec in zip(targets, vectors, strict=True):
             session.add(
                 Embedding(
                     project_id=project_id, target_type=ttype, target_id=tid,

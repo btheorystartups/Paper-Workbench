@@ -164,7 +164,7 @@ def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
     objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
     objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    for pid, page in zip(page_ids, pages):
+    for pid, page in zip(page_ids, pages, strict=True):
         content = ["BT /F1 10 Tf 50 780 Td 14 TL"]
         for line in page:
             content.append(f"({esc(line)}) Tj T*")

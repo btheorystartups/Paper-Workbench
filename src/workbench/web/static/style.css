@@ -516,3 +516,89 @@ pre.payload {
 .section-item h4 { margin: 0 0 0.2rem; font-size: 0.95rem; }
 
 hr.soft { border: none; border-top: 1px solid var(--border); margin: 0.9rem 0; }
+
+/* ---------- submissions ---------- */
+
+.submission-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  background: var(--panel-2);
+}
+
+.sub-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.55rem 0;
+}
+
+.sub-actions .sub-note { width: auto; flex: 1 1 12rem; }
+
+.sub-details { margin-top: 0.4rem; }
+
+.sub-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.2rem 0;
+}
+
+ul.timeline { gap: 0; }
+
+.timeline .timeline-item {
+  border: none;
+  background: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0.35rem 0;
+}
+
+.timeline .timeline-item:last-child { border-bottom: none; }
+
+/* ---------- auth ---------- */
+
+.auth-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4rem 1rem;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+  width: 100%;
+  max-width: 22rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 1.2rem 1.4rem;
+}
+
+.modal h2 { margin-top: 0; font-size: 1.05rem; }
+
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}

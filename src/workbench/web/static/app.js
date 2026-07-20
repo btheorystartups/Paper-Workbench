@@ -87,6 +87,25 @@ const STATE_COLOR = {
   rejected: "b-red", invalidated: "b-gray",
 };
 
+const SUBMISSION_STATUS_COLOR = {
+  drafting: "b-gray",
+  submitted: "b-blue", under_review: "b-blue", resubmitted: "b-blue",
+  revision_requested: "b-amber",
+  accepted: "b-green",
+  rejected: "b-red", withdrawn: "b-red",
+};
+
+const SUBMISSION_TRANSITIONS = {
+  drafting: ["submitted", "withdrawn"],
+  submitted: ["under_review", "withdrawn", "rejected"],
+  under_review: ["revision_requested", "accepted", "rejected", "withdrawn"],
+  revision_requested: ["resubmitted", "withdrawn"],
+  resubmitted: ["under_review", "withdrawn", "rejected"],
+  accepted: [],
+  rejected: [],
+  withdrawn: [],
+};
+
 /* ===================== state ===================== */
 
 const state = {
@@ -106,10 +125,15 @@ function esc(v) {
 
 async function api(path, method = "GET", body) {
   let res;
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  let token = null;
+  try { token = localStorage.getItem("wb_token"); } catch (_e) { token = null; }
+  if (token) headers["Authorization"] = "Bearer " + token;
   try {
     res = await fetch(path, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (_e) {
@@ -219,9 +243,66 @@ async function loadHealth() {
   }
 }
 
+/* ===================== auth ===================== */
+
+async function loadAuth() {
+  const area = document.getElementById("auth-area");
+  if (!area) return;
+  try {
+    const me = await api("/auth/me");
+    const name = (me && (me.name || me.email)) ? (me.name || me.email) : "user";
+    area.innerHTML =
+      '<span class="dim small-text">Signed in as ' + esc(name) + "</span> " +
+      '<button type="button" class="small" data-action="sign-out">Sign out</button>';
+  } catch (_e) {
+    // 401 in local mode (auth off) or any error: the app keeps working without a token.
+    area.innerHTML =
+      '<button type="button" class="small" data-action="sign-in">Sign in</button>';
+  }
+}
+
+function openAuthModal(mode) {
+  const modal = document.getElementById("auth-modal");
+  if (!modal) return;
+  const isReg = mode === "register";
+  modal.innerHTML =
+    '<div class="modal">' +
+    '<h2 id="auth-modal-title">' + (isReg ? "Register" : "Sign in") + "</h2>" +
+    '<form class="stack" data-form="' + (isReg ? "auth-register" : "auth-login") + '">' +
+    (isReg
+      ? '<div class="field"><label for="auth-name">Name</label>' +
+        '<input id="auth-name" name="name" type="text" autocomplete="name" required></div>'
+      : "") +
+    '<div class="field"><label for="auth-email">Email</label>' +
+    '<input id="auth-email" name="email" type="email" autocomplete="email" required></div>' +
+    '<div class="field"><label for="auth-password">Password</label>' +
+    '<input id="auth-password" name="password" type="password" autocomplete="' +
+    (isReg ? "new-password" : "current-password") + '" required></div>' +
+    '<div class="modal-actions">' +
+    '<button type="submit" class="primary">' + (isReg ? "Register" : "Sign in") + "</button>" +
+    '<button type="button" class="small" data-action="auth-cancel">Cancel</button>' +
+    "</div>" +
+    '<p class="small-text dim">' +
+    (isReg
+      ? 'Already have an account? <a href="#" data-action="auth-show-login">Sign in</a>'
+      : 'No account? <a href="#" data-action="auth-show-register">Register</a>') +
+    "</p>" +
+    "</form></div>";
+  modal.hidden = false;
+  const first = modal.querySelector("input");
+  if (first) first.focus();
+}
+
+function closeAuthModal() {
+  const modal = document.getElementById("auth-modal");
+  if (!modal) return;
+  modal.hidden = true;
+  modal.innerHTML = "";
+}
+
 /* ===================== router ===================== */
 
-const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts"];
+const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions"];
 
 function route() {
   const view = document.getElementById("view");
@@ -340,6 +421,7 @@ function renderProject(view, pid, tab, sub) {
   const fns = {
     objects: tabObjects, sources: tabSources, claims: tabClaims,
     literature: tabLiterature, dialogue: tabDialogue, manuscripts: tabManuscripts,
+    submissions: tabSubmissions,
   };
   guarded(el, (c) => fns[tab](c, pid, sub || []));
 }
@@ -1096,6 +1178,125 @@ function renderExport(data) {
   box.innerHTML = html;
 }
 
+/* ===================== submissions tab ===================== */
+
+async function tabSubmissions(el, pid) {
+  const [submissions, objects] = await Promise.all([
+    api("/projects/" + encodeURIComponent(pid) + "/submissions"),
+    api("/projects/" + encodeURIComponent(pid) + "/objects"),
+  ]);
+  const manuscripts = objects.filter((o) => o.kind === "manuscript");
+  const titleById = {};
+  for (const o of objects) titleById[o.id] = o.title;
+
+  let list;
+  if (!submissions.length) {
+    list = emptyHTML("No submissions yet. Create one below.");
+  } else {
+    list = '<ul class="plain">' +
+      submissions.map((s) => renderSubmission(s, titleById)).join("") + "</ul>";
+  }
+
+  let newForm;
+  if (!manuscripts.length) {
+    newForm = emptyHTML(
+      "Create a manuscript first (on the Manuscripts tab) before submitting to a venue.");
+  } else {
+    newForm =
+      '<form class="stack" data-form="create-submission" data-pid="' + esc(pid) + '">' +
+      '<div class="field"><label for="sub-ms">Manuscript</label>' +
+      '<select id="sub-ms" name="manuscript_id" required>' +
+      multiOptions(manuscripts, (m) => m.title) + "</select></div>" +
+      '<div class="field-row">' +
+      '<div class="field"><label for="sub-venue">Venue name (optional)</label>' +
+      '<input id="sub-venue" name="venue_name" type="text"></div>' +
+      '<div class="field"><label for="sub-deadline">Deadline (optional)</label>' +
+      '<input id="sub-deadline" name="deadline" type="date"></div>' +
+      "</div>" +
+      '<div><button type="submit" class="primary">Create submission</button></div>' +
+      "</form>";
+  }
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="sub-h"><h2 id="sub-h">Submissions</h2>' +
+    '<p class="dim small-text">Only legal next states are offered for each submission.</p>' +
+    list + "</section>" +
+    '<section class="panel" aria-labelledby="sub-new-h"><h2 id="sub-new-h">New submission</h2>' +
+    newForm + "</section>";
+}
+
+function statusBadge(status) {
+  return badge(status, SUBMISSION_STATUS_COLOR[status] || "b-gray");
+}
+
+function renderSubmission(s, titleById) {
+  const title = titleById[s.manuscript_id] || s.manuscript_id;
+  const nexts = SUBMISSION_TRANSITIONS[s.status] || [];
+  const history = s.history || [];
+  const revisions = s.revisions || [];
+
+  const head =
+    '<div class="sub-head"><div><strong>' + esc(title) + "</strong>" +
+    (s.venue_name ? ' <span class="dim">— ' + esc(s.venue_name) + "</span>" : "") +
+    "</div><div>" + statusBadge(s.status) + "</div></div>" +
+    '<div class="small-text dim">' +
+    (s.deadline ? "deadline: " + esc(s.deadline) : "no deadline") + "</div>";
+
+  let transitions;
+  if (nexts.length) {
+    transitions =
+      '<div class="sub-actions">' +
+      '<label class="visually-hidden" for="sub-note-' + esc(s.id) + '">Transition note</label>' +
+      '<input id="sub-note-' + esc(s.id) + '" type="text" class="sub-note" ' +
+      'placeholder="optional note">' +
+      nexts.map((to) =>
+        '<button type="button" class="small" data-action="submission-transition" data-sid="' +
+        esc(s.id) + '" data-to="' + esc(to) + '">' + esc(pretty(to)) + "</button>").join("") +
+      "</div>";
+  } else {
+    transitions = '<div class="small-text dim">Terminal state — no further transitions.</div>';
+  }
+
+  let historyHtml;
+  if (!history.length) {
+    historyHtml = emptyHTML("No status changes recorded yet.");
+  } else {
+    historyHtml = '<ul class="plain timeline">' + history.map((h) =>
+      '<li class="timeline-item">' +
+      statusBadge(h.from) + ' <span class="dim">→</span> ' + statusBadge(h.to) +
+      (h.note ? " <span>" + esc(h.note) + "</span>" : "") +
+      '<div class="small-text dim mono">' + esc(h.at || "") + "</div></li>").join("") + "</ul>";
+  }
+
+  let revHtml;
+  if (!revisions.length) {
+    revHtml = emptyHTML("No revisions or responses to reviewers yet.");
+  } else {
+    revHtml = '<ul class="plain">' + revisions.map((r) =>
+      '<li class="finding"><strong>Round ' + esc(r.round) + "</strong>" +
+      (r.status_when_added ? " " + statusBadge(r.status_when_added) : "") +
+      "<div>" + esc(r.summary) + "</div>" +
+      '<div class="small-text dim mono">' + esc(r.at || "") + "</div></li>").join("") + "</ul>";
+  }
+
+  const revForm =
+    '<form class="stack" data-form="add-revision" data-sid="' + esc(s.id) + '">' +
+    '<div class="field"><label for="rev-sum-' + esc(s.id) + '">Revision summary</label>' +
+    '<textarea id="rev-sum-' + esc(s.id) + '" name="summary" required></textarea></div>' +
+    '<div class="field"><label for="rev-resp-' + esc(s.id) + '">Response to reviewers</label>' +
+    '<textarea id="rev-resp-' + esc(s.id) + '" name="response_to_reviewers" required></textarea></div>' +
+    '<div class="field"><label for="rev-chg-' + esc(s.id) + '">Changes (one per line, optional)</label>' +
+    '<textarea id="rev-chg-' + esc(s.id) + '" name="changes"></textarea></div>' +
+    '<div><button type="submit" class="primary small">Add revision</button></div>' +
+    "</form>";
+
+  return '<li class="submission-item">' + head + transitions +
+    '<details class="sub-details"><summary>History (' + history.length + ")</summary>" +
+    historyHtml + "</details>" +
+    '<details class="sub-details"><summary>Revisions / responses to reviewers (' +
+    revisions.length + ")</summary>" + revHtml + '<hr class="soft">' + revForm + "</details></li>";
+}
+
 /* ===================== event delegation: clicks ===================== */
 
 const clickActions = {
@@ -1104,6 +1305,29 @@ const clickActions = {
   "open-claim": (t) => { location.hash = "#/project/" + t.dataset.pid + "/claims/" + t.dataset.cid; },
   "open-thread": (t) => { location.hash = "#/project/" + t.dataset.pid + "/dialogue/" + t.dataset.tid; },
   "open-manuscript": (t) => { location.hash = "#/project/" + t.dataset.pid + "/manuscripts/" + t.dataset.mid; },
+
+  "submission-transition": (t) => withBusy(t, async () => {
+    const noteInput = document.getElementById("sub-note-" + t.dataset.sid);
+    const note = noteInput ? noteInput.value.trim() : "";
+    const payload = { to_status: t.dataset.to };
+    if (note) payload.note = note;
+    try {
+      await api("/submissions/" + encodeURIComponent(t.dataset.sid) + "/transition", "POST", payload);
+      toast("Status changed to " + pretty(t.dataset.to) + ".");
+    } catch (e) {
+      toast(e.message, "err");
+    }
+    route();
+  }),
+
+  "sign-in": () => openAuthModal("login"),
+  "sign-out": () => {
+    try { localStorage.removeItem("wb_token"); } catch (_e) { /* ignore */ }
+    location.reload();
+  },
+  "auth-cancel": () => closeAuthModal(),
+  "auth-show-login": () => openAuthModal("login"),
+  "auth-show-register": () => openAuthModal("register"),
 
   "accept-object": (t) => withBusy(t, async () => {
     try {
@@ -1393,6 +1617,54 @@ const formActions = {
     route();
   },
 
+  "create-submission": async (form) => {
+    const body = fd(form);
+    const payload = { manuscript_id: body.manuscript_id };
+    if (body.venue_name) payload.venue_name = body.venue_name;
+    if (body.deadline) payload.deadline = body.deadline;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/submissions", "POST", payload);
+    toast("Submission created.");
+    route();
+  },
+
+  "add-revision": async (form) => {
+    const body = fd(form);
+    const payload = {
+      summary: body.summary,
+      response_to_reviewers: body.response_to_reviewers,
+    };
+    if (body.changes) {
+      const changes = body.changes.split("\n").map((c) => c.trim()).filter(Boolean);
+      if (changes.length) payload.changes = changes;
+    }
+    await api("/submissions/" + encodeURIComponent(form.dataset.sid) + "/revisions", "POST", payload);
+    toast("Revision added.");
+    route();
+  },
+
+  "auth-login": async (form) => {
+    const body = fd(form);
+    const pwEl = form.querySelector('[name="password"]');
+    const password = pwEl ? pwEl.value : "";
+    const r = await api("/auth/login", "POST", { email: body.email, password });
+    if (!r || !r.access_token) throw new Error("Login failed: no access token returned.");
+    try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    toast("Signed in.");
+    location.reload();
+  },
+
+  "auth-register": async (form) => {
+    const body = fd(form);
+    const pwEl = form.querySelector('[name="password"]');
+    const password = pwEl ? pwEl.value : "";
+    await api("/auth/register", "POST", { name: body.name, email: body.email, password });
+    const r = await api("/auth/login", "POST", { email: body.email, password });
+    if (!r || !r.access_token) throw new Error("Registered, but auto-login failed.");
+    try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    toast("Registered and signed in.");
+    location.reload();
+  },
+
   "ms-export": async (form) => {
     const formats = Array.from(form.querySelectorAll('input[name="fmt"]:checked'))
       .map((c) => c.value);
@@ -1460,6 +1732,12 @@ document.addEventListener("change", (e) => {
   if (fn) fn(t);
 });
 
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const modal = document.getElementById("auth-modal");
+  if (modal && !modal.hidden) closeAuthModal();
+});
+
 window.addEventListener("hashchange", route);
-loadHealth();
+loadHealth().then(loadAuth);
 route();

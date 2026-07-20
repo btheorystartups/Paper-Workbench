@@ -31,7 +31,9 @@ from .vocab import ClaimSupport, Novelty, ObjectKind, SourceAccess
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    db.create_all()
+    # Alembic is the schema source of truth; this builds a fresh DB or migrates a managed
+    # one. (Tests call db.create_all() directly for speed.)
+    db.upgrade_to_head()
     yield
 
 

@@ -201,7 +201,8 @@ class LiteratureEntry(_Stamped, Base):
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
     state: Mapped[str] = mapped_column(String(20), default="unread")  # unread|maybe|include|exclude
     reason: Mapped[str] = mapped_column(Text, default="")
-    relationship: Mapped[str] = mapped_column(String(20), default="background")  # supports|contradicts|background
+    # supports | contradicts | background
+    relationship: Mapped[str] = mapped_column(String(20), default="background")
     question: Mapped[str] = mapped_column(Text, default="")
     method: Mapped[str] = mapped_column(Text, default="")
     result_summary: Mapped[str] = mapped_column(Text, default="")
