@@ -35,6 +35,8 @@ const NOVELTY = [
 const SCREEN_STATES = ["unread", "maybe", "include", "exclude"];
 const RELATIONSHIPS = ["supports", "contradicts", "background"];
 
+const FIGURE_KINDS = ["bar", "line", "scatter", "scree", "heatmap"];
+
 const PAPER_TYPES = [
   "original_empirical", "mathematical_theoretical", "methodological",
   "computational", "applied", "proof_of_concept", "short_communication",
@@ -307,7 +309,7 @@ function closeAuthModal() {
 
 /* ===================== router ===================== */
 
-const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions"];
+const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions", "figures"];
 
 function route() {
   const view = document.getElementById("view");
@@ -426,7 +428,7 @@ function renderProject(view, pid, tab, sub) {
   const fns = {
     objects: tabObjects, sources: tabSources, claims: tabClaims,
     literature: tabLiterature, dialogue: tabDialogue, manuscripts: tabManuscripts,
-    submissions: tabSubmissions,
+    submissions: tabSubmissions, figures: tabFigures,
   };
   guarded(el, (c) => fns[tab](c, pid, sub || []));
 }
@@ -1311,6 +1313,196 @@ function renderSubmission(s, titleById) {
     revisions.length + ")</summary>" + revHtml + '<hr class="soft">' + revForm + "</details></li>";
 }
 
+/* ===================== figures tab ===================== */
+
+async function tabFigures(el, pid) {
+  const objects = await api("/projects/" + encodeURIComponent(pid) + "/objects");
+  const datasets = objects.filter((o) => o.kind === "dataset");
+  const figures = objects.filter((o) => o.kind === "figure");
+  const tables = objects.filter((o) => o.kind === "table");
+
+  let dsList;
+  if (!datasets.length) {
+    dsList = emptyHTML("No datasets yet. Create one below.");
+  } else {
+    dsList = '<ul class="plain">' + datasets.map((d) => {
+      const b = d.body || {};
+      const cols = b.columns || [];
+      return '<li class="finding"><strong>' + esc(d.title) + "</strong>" +
+        '<div class="small-text dim">' + esc(cols.length) + " columns · " +
+        esc(b.n_rows == null ? 0 : b.n_rows) + " rows</div>" +
+        (cols.length ? '<div class="small-text mono">' + esc(cols.join(", ")) + "</div>" : "") +
+        "</li>";
+    }).join("") + "</ul>";
+  }
+
+  const dsOpts = '<option value="">— choose dataset —</option>' +
+    datasets.map((d) =>
+      '<option value="' + esc(d.id) + '">' + esc(trunc(d.title, 70)) + "</option>").join("");
+
+  const figList = figures.length
+    ? figures.map((f) => renderFigureCard(f)).join("")
+    : emptyHTML("No figures rendered yet.");
+
+  const tblList = tables.length
+    ? tables.map((t) => renderTableCard(t)).join("")
+    : emptyHTML("No tables built yet.");
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="fig-audit-h"><h2 id="fig-audit-h">Artifact audit</h2>' +
+    '<p class="dim small-text">Surface stale, orphan, or uncaptioned figures and tables.</p>' +
+    '<div><button type="button" data-action="run-artifact-audit" data-pid="' + esc(pid) +
+    '">Run artifact audit</button></div>' +
+    '<div id="fig-audit-results" style="margin-top:0.6rem"></div>' +
+    "</section>" +
+
+    '<section class="panel" aria-labelledby="ds-h"><h2 id="ds-h">Datasets</h2>' +
+    dsList +
+    '<hr class="soft"><h3>New dataset</h3>' +
+    '<form class="stack" data-form="create-dataset" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="ds-name">Name</label>' +
+    '<input id="ds-name" name="name" type="text" required></div>' +
+    '<div class="field"><label for="ds-cols">Columns (comma-separated)</label>' +
+    '<input id="ds-cols" name="columns" type="text" required placeholder="year, value, group"></div>' +
+    '<div class="field"><label for="ds-rows">Rows (one per line, comma-separated cells)</label>' +
+    '<textarea id="ds-rows" name="rows" required ' +
+    'placeholder="2020, 3.1, a&#10;2021, 4.7, b"></textarea></div>' +
+    '<div><button type="submit" class="primary">Create dataset</button></div>' +
+    "</form></section>" +
+
+    '<section class="panel" aria-labelledby="figs-h"><h2 id="figs-h">Figures</h2>' +
+    "<h3>Render figure</h3>" +
+    '<form class="stack" data-form="render-figure" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="fig-title">Title</label>' +
+    '<input id="fig-title" name="title" type="text" required></div>' +
+    '<div class="field-row">' +
+    '<div class="field"><label for="fig-dataset">Dataset</label>' +
+    '<select id="fig-dataset" name="dataset_id" required>' + dsOpts + "</select></div>" +
+    '<div class="field"><label for="fig-kind">Kind</label>' +
+    '<select id="fig-kind" name="kind">' + options(FIGURE_KINDS, "bar") + "</select></div>" +
+    "</div>" +
+    '<div class="field-row">' +
+    '<div class="field"><label for="fig-x">X column</label>' +
+    '<input id="fig-x" name="x" type="text"></div>' +
+    '<div class="field"><label for="fig-series">Series (comma-separated columns)</label>' +
+    '<input id="fig-series" name="series" type="text"></div>' +
+    "</div>" +
+    '<div class="field-row">' +
+    '<div class="field"><label for="fig-xlabel">X label (optional)</label>' +
+    '<input id="fig-xlabel" name="xlabel" type="text"></div>' +
+    '<div class="field"><label for="fig-ylabel">Y label (optional)</label>' +
+    '<input id="fig-ylabel" name="ylabel" type="text"></div>' +
+    "</div>" +
+    '<div class="field"><label class="checkbox-label">' +
+    '<input type="checkbox" name="grayscale"> Grayscale (print-safe)</label></div>' +
+    '<div><button type="submit" class="primary">Render figure</button></div>' +
+    "</form>" +
+    '<hr class="soft">' + figList +
+    "</section>" +
+
+    '<section class="panel" aria-labelledby="tbl-h"><h2 id="tbl-h">Tables</h2>' +
+    "<h3>Build table</h3>" +
+    '<form class="stack" data-form="build-table" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="tbl-title">Title</label>' +
+    '<input id="tbl-title" name="title" type="text" required></div>' +
+    '<div class="field"><label for="tbl-dataset">Dataset</label>' +
+    '<select id="tbl-dataset" name="dataset_id" required>' + dsOpts + "</select></div>" +
+    '<div class="field"><label for="tbl-cols">Columns subset (comma-separated, optional)</label>' +
+    '<input id="tbl-cols" name="columns" type="text"></div>' +
+    '<div><button type="submit" class="primary">Build table</button></div>' +
+    "</form>" +
+    '<hr class="soft">' + tblList +
+    "</section>";
+}
+
+function renderFigureCard(f) {
+  const b = f.body || {};
+  const num = b.number == null ? "" : b.number;
+  let badges = "";
+  if (b.palette) badges += " " + badge(b.palette, "b-gray");
+  if (b.colorblind_safe) badges += " " + badge("colour-blind-safe", "b-green");
+  if (b.renderer) badges += " " + badge(b.renderer, "b-blue");
+
+  const caption = b.caption
+    ? '<div class="fig-caption">' + esc(b.caption) + "</div>"
+    : '<div><button type="button" class="small" data-action="generate-caption" data-id="' +
+      esc(f.id) + '">Generate caption</button></div>';
+
+  let accept = "";
+  if (f.ai_suggested && !f.accepted_by_user) {
+    accept = '<div class="fig-accept">' + badge("AI-suggested", "b-amber") +
+      '<button type="button" class="small approve" data-action="accept-object" data-id="' +
+      esc(f.id) + '">Accept</button></div>';
+  }
+
+  return '<figure class="fig-item">' +
+    '<figcaption class="fig-head"><strong>Figure ' + esc(num) + "</strong> — " +
+    esc(f.title) + badges + "</figcaption>" +
+    '<img class="fig-image" src="/figures/' + esc(f.id) + '/image" alt="' +
+    esc(b.alt_text || f.title) + '">' +
+    caption + accept +
+    "</figure>";
+}
+
+function renderTableCard(t) {
+  const b = t.body || {};
+  const num = b.number == null ? "" : b.number;
+  return '<div class="tbl-item">' +
+    '<div class="fig-head"><strong>Table ' + esc(num) + "</strong> — " + esc(t.title) + "</div>" +
+    '<div class="table-wrap">' + markdownTableToHTML(b.markdown) + "</div></div>";
+}
+
+function markdownTableToHTML(md) {
+  const lines = String(md == null ? "" : md).split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return emptyHTML("No table content.");
+  const splitRow = (line) => {
+    const cells = line.split("|");
+    if (cells.length && cells[0].trim() === "") cells.shift();
+    if (cells.length && cells[cells.length - 1].trim() === "") cells.pop();
+    return cells.map((c) => c.trim());
+  };
+  const isSep = (line) => line.indexOf("-") >= 0 && /^[\s|:-]+$/.test(line);
+  const header = splitRow(lines[0]);
+  let rest = lines.slice(1);
+  if (rest.length && isSep(rest[0])) rest = rest.slice(1);
+  return "<table><thead><tr>" +
+    header.map((h) => '<th scope="col">' + esc(h) + "</th>").join("") +
+    "</tr></thead><tbody>" +
+    rest.map((line) =>
+      "<tr>" + splitRow(line).map((c) => "<td>" + esc(c) + "</td>").join("") + "</tr>").join("") +
+    "</tbody></table>";
+}
+
+function renderArtifactAudit(data) {
+  const box = document.getElementById("fig-audit-results");
+  if (!box) return;
+  const findings = data.findings || [];
+  const counts = data.counts || {};
+  let html = '<p class="chips">' + (Object.keys(counts).length
+    ? Object.keys(counts).map((k) =>
+        badge(k + ": " + counts[k], SEVERITY_COLOR[k] || "b-gray")).join(" ")
+    : badge("no findings", "b-green")) + "</p>";
+  if (!findings.length) {
+    box.innerHTML = html + emptyHTML("No artifact issues found.");
+    return;
+  }
+  const groups = {};
+  for (const f of findings) (groups[f.severity] = groups[f.severity] || []).push(f);
+  const order = ["blocker", "error", "high", "warning", "medium", "info", "low"];
+  const keys = Object.keys(groups).sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  for (const sev of keys) {
+    html += "<h4>" + badge(sev, SEVERITY_COLOR[sev] || "b-gray") + "</h4><ul class=\"plain\">" +
+      groups[sev].map((f) =>
+        '<li class="finding"><span class="mono">' + esc(f.code) + "</span> " + esc(f.message) +
+        (f.object_id ? ' <span class="dim mono small-text">(' + esc(f.object_id) + ")</span>" : "") +
+        "</li>").join("") + "</ul>";
+  }
+  box.innerHTML = html;
+}
+
 /* ===================== event delegation: clicks ===================== */
 
 const clickActions = {
@@ -1413,6 +1605,27 @@ const clickActions = {
       toast(e.message, "err");
     }
     loadActions(t.dataset.tid);
+  }),
+
+  "run-artifact-audit": (t) => withBusy(t, async () => {
+    const box = document.getElementById("fig-audit-results");
+    if (box) box.innerHTML = loadingHTML("Running artifact audit…");
+    try {
+      renderArtifactAudit(await api("/projects/" + encodeURIComponent(t.dataset.pid) +
+        "/artifacts/audit"));
+      toast("Artifact audit complete.");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
+  }),
+
+  "generate-caption": (t) => withBusy(t, async () => {
+    try {
+      await api("/artifacts/" + encodeURIComponent(t.dataset.id) + "/caption", "POST", {});
+      toast("Caption generated (AI-suggested; review it).");
+      route();
+    } catch (e) { toast(e.message, "err"); }
   }),
 
   "ms-audit": (t) => withBusy(t, async () => {
@@ -1674,6 +1887,57 @@ const formActions = {
     if (body.deadline) payload.deadline = body.deadline;
     await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/submissions", "POST", payload);
     toast("Submission created.");
+    route();
+  },
+
+  "create-dataset": async (form) => {
+    const body = fd(form);
+    const columns = body.columns.split(",").map((c) => c.trim()).filter(Boolean);
+    if (!columns.length) throw new Error("Provide at least one column name.");
+    const lines = body.rows.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) throw new Error("Provide at least one data row.");
+    const rows = [];
+    for (let i = 0; i < lines.length; i++) {
+      const cells = lines[i].split(",").map((c) => {
+        const v = c.trim();
+        const n = Number(v);
+        return (v !== "" && !Number.isNaN(n)) ? n : v;
+      });
+      if (cells.length !== columns.length) {
+        throw new Error("Row " + (i + 1) + " has " + cells.length + " cells but there are " +
+          columns.length + " columns.");
+      }
+      rows.push(cells);
+    }
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/datasets", "POST",
+      { name: body.name, columns, rows });
+    toast("Dataset created.");
+    route();
+  },
+
+  "render-figure": async (form) => {
+    const body = fd(form);
+    const spec = { kind: body.kind };
+    if (body.x) spec.x = body.x;
+    const series = (body.series || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (series.length) spec.series = series;
+    if (body.xlabel) spec.xlabel = body.xlabel;
+    if (body.ylabel) spec.ylabel = body.ylabel;
+    const payload = { title: body.title, dataset_id: body.dataset_id, spec };
+    const gs = form.querySelector('[name="grayscale"]');
+    if (gs && gs.checked) payload.grayscale = true;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/figures", "POST", payload);
+    toast("Figure rendered.");
+    route();
+  },
+
+  "build-table": async (form) => {
+    const body = fd(form);
+    const payload = { title: body.title, dataset_id: body.dataset_id };
+    const cols = (body.columns || "").split(",").map((c) => c.trim()).filter(Boolean);
+    if (cols.length) payload.columns = cols;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/tables", "POST", payload);
+    toast("Table built.");
     route();
   },
 
