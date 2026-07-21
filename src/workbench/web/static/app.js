@@ -52,6 +52,11 @@ const STRUCTURES = [
 
 const EXPORT_FORMATS = ["md", "tex", "html", "docx", "bib", "pdf", "jats"];
 
+const OUTPUT_TYPES = [
+  "conference_abstract", "poster_outline", "plain_language_summary",
+  "teaching_explanation", "graphical_abstract_brief",
+];
+
 const ACCESS_COLOR = {
   metadata_only: "b-gray",
   abstract_only: "b-blue",
@@ -1060,6 +1065,15 @@ async function tabManuscripts(el, pid, sub) {
       '<div><button type="submit" class="primary">Export</button></div>' +
       "</form>" +
       '<div id="ms-results" style="margin-top:0.8rem"></div>' +
+      '<hr class="soft"><h3>Alternative outputs</h3>' +
+      '<p class="empty">Grounded in this manuscript only; each is AI-suggested and awaits ' +
+      "your review.</p>" +
+      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+      '<label class="visually-hidden" for="out-type">Output type</label>' +
+      '<select id="out-type">' + options(OUTPUT_TYPES) + "</select>" +
+      '<button type="button" data-action="ms-output" data-mid="' + esc(selectedMid) +
+      '">Generate</button></div>' +
+      '<div id="ms-outputs" style="margin-top:0.6rem"></div>' +
       "</section>";
   }
 
@@ -1425,7 +1439,43 @@ const clickActions = {
       toast(e.message, "err");
     }
   }),
+
+  "ms-output": (t) => withBusy(t, async () => {
+    const box = document.getElementById("ms-outputs");
+    const sel = document.getElementById("out-type");
+    const otype = sel ? sel.value : "";
+    if (box) box.innerHTML = loadingHTML("Generating (may call the model)…");
+    try {
+      await api("/manuscripts/" + encodeURIComponent(t.dataset.mid) + "/outputs",
+        "POST", { output_type: otype });
+      toast("Output generated (AI-suggested; review it).");
+      await loadOutputs(t.dataset.mid);
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
+  }),
 };
+
+async function loadOutputs(mid) {
+  const box = document.getElementById("ms-outputs");
+  if (!box) return;
+  box.innerHTML = loadingHTML("Loading outputs…");
+  try {
+    const items = await api("/manuscripts/" + encodeURIComponent(mid) + "/outputs");
+    if (!items.length) { box.innerHTML = emptyHTML("No alternative outputs yet."); return; }
+    box.innerHTML = items.map((o) =>
+      '<div class="panel" style="margin-top:0.5rem">' +
+      badge(o.output_kind, "b-purple") + " " +
+      (o.simulated ? badge("simulated", "b-amber") : "") +
+      badge("AI-suggested", "b-amber") +
+      ' <span class="muted">' + esc(o.word_count || 0) + " words</span>" +
+      '<pre class="payload" style="white-space:pre-wrap">' + esc(o.content || "") + "</pre>" +
+      "</div>").join("");
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
 
 /* ===================== event delegation: forms ===================== */
 
