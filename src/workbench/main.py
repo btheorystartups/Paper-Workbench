@@ -21,6 +21,7 @@ from .services import (
     figures,
     literature,
     outputs,
+    paper_design,
     portfolio,
     research,
     security,
@@ -609,6 +610,49 @@ def create_candidate(project_id: str, body: CandidateIn, session: Session = Depe
 class ManuscriptIn(BaseModel):
     title: str
     from_candidate_id: str | None = None
+
+
+class DesignIn(BaseModel):
+    object_ids: list[str]
+    audience: str = ""
+    venue_class: str = ""
+    constraints: str = ""
+    n: int = Field(default=3, ge=1, le=5)
+
+
+@app.post("/projects/{project_id}/paper-candidates/generate")
+def generate_candidates(project_id: str, body: DesignIn, session: Session = Depends(_session)):
+    try:
+        cands = paper_design.generate_candidates(
+            session, project_id, object_ids=body.object_ids, audience=body.audience,
+            venue_class=body.venue_class, constraints=body.constraints, n=body.n,
+        )
+    except paper_design.DesignError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"candidates": [_object_out(c) for c in cands]}
+
+
+class CompareIn(BaseModel):
+    candidate_ids: list[str]
+
+
+@app.post("/projects/{project_id}/paper-candidates/compare")
+def compare_candidates(project_id: str, body: CompareIn, session: Session = Depends(_session)):
+    try:
+        return paper_design.compare_candidates(session, body.candidate_ids)
+    except paper_design.DesignError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/paper-candidates/{candidate_id}/freeze")
+def freeze_candidate(candidate_id: str, session: Session = Depends(_session)):
+    try:
+        obj = paper_design.freeze_candidate(session, candidate_id)
+    except paper_design.DesignError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
 
 
 @app.post("/projects/{project_id}/manuscripts")
