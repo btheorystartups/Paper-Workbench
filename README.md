@@ -43,6 +43,9 @@ Implemented and tested (33 offline tests; live providers verified with user keys
   `WB_AUTH_REQUIRED=true`. Endpoints under `/auth/*`.
 - **Submission tracking**: audited state machine (drafting → submitted → under review →
   revision requested → resubmitted → accepted/rejected/withdrawn) with response-to-reviewers.
+- **Figures & tables**: rendered from content-hashed datasets (matplotlib, colour-blind-safe
+  palette); records the source data hash so figures go **stale** if the data changes;
+  grounded, review-gated captions; export bundles them into `supplements/` with provenance.
 - **Export hardening**: JATS validated against a bundled DTD (lxml); PDF via WeasyPrint when
   its GTK libraries are present, else the deterministic fallback (the manifest records which).
 - **LLM-quality evals** (`scripts/run_llm_evals.py`): grounding, injection-resistance,

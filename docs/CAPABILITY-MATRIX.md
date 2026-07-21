@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-07-21. Tests: 65 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-07-21. Tests: 73 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -95,8 +95,12 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 | Capability | Status | Notes |
 |---|---|---|
-| Figure/table object kinds + unreferenced/stale detection | Partial | kinds exist; audit flags quantitative prose without claims |
-| Canonical data→figure rendering, captions, alt text, color-blind checks | Planned | not built (no plotting engine wired) |
+| Canonical data→figure/table rendering with provenance | Implemented | `services/figures.py`; datasets content-hashed, matplotlib PNG+SVG, records source data hash + renderer |
+| Staleness / orphan / unreferenced-artifact detection | Implemented | `figures.audit_artifacts` (stale when source data changes, orphan when dataset removed) folded into manuscript audit |
+| Colour-blind-safe palettes + grayscale render | Implemented | Okabe–Ito default; `grayscale=True` option; `colorblind_safe` recorded |
+| Captions & alt text generated from the artifact/data, review-gated | Implemented | `figures.generate_caption`; AI-suggested, grounded in data summary only |
+| Supplements assembly with provenance | Implemented | export copies figures/tables into `supplements/` with data hash + live staleness in manifest |
+| Auto-numbering + cross-reference | Partial | per-project figure/table numbering; unreferenced-in-prose check is heuristic |
 
 ## 10. Journal / audience / submission adaptation
 
