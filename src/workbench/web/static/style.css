@@ -515,6 +515,33 @@ pre.payload {
 
 .section-item h4 { margin: 0 0 0.2rem; font-size: 0.95rem; }
 
+/* ---------- paper candidates ---------- */
+
+.candidate-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.7rem;
+  background: var(--panel-2);
+}
+
+.candidate-card .cand-head { margin-bottom: 0.3rem; font-size: 0.98rem; }
+
+.candidate-card details { margin-top: 0.5rem; }
+
+.candidate-card details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.2rem 0;
+}
+
+.candidate-card ol.section-plan { margin: 0.2rem 0 0.4rem 1.2rem; padding: 0; }
+
+.compare-table th[scope="row"] { white-space: nowrap; }
+
+.compare-table td, .compare-table thead th { min-width: 9rem; }
+
 hr.soft { border: none; border-top: 1px solid var(--border); margin: 0.9rem 0; }
 
 /* ---------- figures ---------- */

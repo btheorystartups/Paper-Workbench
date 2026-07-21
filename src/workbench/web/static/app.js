@@ -59,6 +59,13 @@ const OUTPUT_TYPES = [
   "teaching_explanation", "graphical_abstract_brief",
 ];
 
+// Research-object kinds eligible for AI paper-candidate generation (source material,
+// not manuscript scaffolding or bookkeeping objects).
+const GENERATE_ELIGIBLE_KINDS = new Set([
+  "result", "question", "hypothesis", "conjecture", "method",
+  "analysis", "dataset", "figure", "table",
+]);
+
 const ACCESS_COLOR = {
   metadata_only: "b-gray",
   abstract_only: "b-blue",
@@ -1079,10 +1086,55 @@ async function tabManuscripts(el, pid, sub) {
       "</section>";
   }
 
+  const eligibleObjs = objects.filter((o) => GENERATE_ELIGIBLE_KINDS.has(o.kind));
+  const eligibleOpts = eligibleObjs.length
+    ? multiOptions(eligibleObjs, (o) => o.kind + ": " + o.title)
+    : "";
+
+  const generatePanel =
+    '<section class="panel" aria-labelledby="gen-h"><h3 id="gen-h">Generate paper candidates (AI)</h3>' +
+    '<p class="dim small-text">Pick research objects and the model proposes several distinct ' +
+    "paper angles. Each is AI-suggested and awaits your review.</p>" +
+    '<form class="stack" data-form="generate-candidates" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="gen-objs">Research objects (multi-select)</label>' +
+    '<select id="gen-objs" multiple>' + eligibleOpts + "</select>" +
+    (eligibleObjs.length ? "" :
+      '<span class="dim small-text">No eligible research objects yet.</span>') +
+    "</div>" +
+    '<div class="field-row">' +
+    '<div class="field"><label for="gen-audience">Audience (optional)</label>' +
+    '<input id="gen-audience" name="audience" type="text"></div>' +
+    '<div class="field"><label for="gen-venue">Venue class (optional)</label>' +
+    '<input id="gen-venue" name="venue_class" type="text"></div>' +
+    '<div class="field"><label for="gen-n">How many (1–5)</label>' +
+    '<input id="gen-n" name="n" type="number" min="1" max="5" value="3"></div>' +
+    "</div>" +
+    '<div class="field"><label for="gen-constraints">Constraints (optional)</label>' +
+    '<input id="gen-constraints" name="constraints" type="text"></div>' +
+    '<div><button type="submit" class="primary">Generate candidates</button></div>' +
+    "</form></section>";
+
+  const candCards = candidates.length
+    ? candidates.map((c) => renderCandidateCard(c)).join("")
+    : emptyHTML("No paper candidates yet. Generate some above, or create one manually below.");
+
+  const candSection =
+    '<section class="panel" aria-labelledby="cand-h"><h2 id="cand-h">Paper candidates</h2>' +
+    (candidates.length
+      ? '<div style="margin-bottom:0.7rem"><button type="button" ' +
+        'data-action="compare-candidates" data-pid="' + esc(pid) + '" data-cids="' +
+        esc(candidates.map((c) => c.id).join(",")) + '">Compare all</button></div>'
+      : "") +
+    '<div id="candidate-compare-results"></div>' +
+    candCards +
+    "</section>";
+
   el.innerHTML =
     '<section class="panel" aria-labelledby="msl-h"><h2 id="msl-h">Manuscripts</h2>' +
     list + "</section>" +
     msView +
+    generatePanel +
+    candSection +
     '<div class="panel-row">' +
     '<section class="panel" aria-labelledby="pc-h"><h3 id="pc-h">New paper candidate</h3>' +
     '<form class="stack" data-form="create-candidate" data-pid="' + esc(pid) + '">' +
@@ -1122,6 +1174,103 @@ async function tabManuscripts(el, pid, sub) {
     multiOptions(candidates, (c) => c.title) + "</select></div>" +
     '<div><button type="submit" class="primary">Create manuscript</button></div>' +
     "</form></section></div>";
+}
+
+function renderCandidateCard(c) {
+  const b = c.body || {};
+  const frozen = !!b.frozen;
+
+  let badges = "";
+  if (b.angle) badges += badge(b.angle, "b-purple") + " ";
+  if (b.paper_type) badges += badge(b.paper_type, "b-blue") + " ";
+  if (b.recommendation) badges += badge(b.recommendation, "b-teal") + " ";
+  badges += frozen ? badge("frozen", "b-green") : badge("proposal", "b-amber");
+
+  const included = (b.included_object_ids || []).length;
+  const excluded = b.excluded || [];
+  const missing = b.missing_work || [];
+  const plan = b.section_plan || [];
+
+  let details = "";
+  if (b.central_question) {
+    details += '<div class="small-text"><strong>Central question:</strong> ' +
+      esc(b.central_question) + "</div>";
+  }
+  if (b.scope) {
+    details += '<div class="small-text"><strong>Scope:</strong> ' + esc(b.scope) + "</div>";
+  }
+  details += '<div class="small-text"><strong>Included objects:</strong> ' +
+    esc(included) + "</div>";
+  if (excluded.length) {
+    details += '<div class="small-text"><strong>Excluded:</strong></div><ul class="plain">' +
+      excluded.map((x) =>
+        '<li class="finding">' + esc((x && x.ref) || "") +
+        (x && x.reason ? " — " + esc(x.reason) : "") + "</li>").join("") + "</ul>";
+  }
+  if (missing.length) {
+    details += '<div class="small-text"><strong>Missing work:</strong></div><ul class="plain">' +
+      missing.map((m) =>
+        '<li class="finding">' +
+        esc(typeof m === "string" ? m : (m && (m.text || m.title)) || JSON.stringify(m)) +
+        "</li>").join("") + "</ul>";
+  }
+  if (plan.length) {
+    details += '<div class="small-text"><strong>Section plan:</strong></div><ol class="section-plan">' +
+      plan.map((s) => {
+        if (typeof s === "string") return "<li>" + esc(s) + "</li>";
+        const heading = (s && (s.heading || s.title || s.name)) || "";
+        const purpose = (s && s.purpose) ? " — " + esc(s.purpose) : "";
+        return "<li>" + esc(heading) + purpose + "</li>";
+      }).join("") + "</ol>";
+  }
+
+  const footer = frozen
+    ? '<p class="small-text dim">Frozen — available in the manuscript ' +
+      "'From candidate' picker.</p>"
+    : '<div><button type="button" class="small approve" data-action="freeze-candidate" ' +
+      'data-cid="' + esc(c.id) + '">Freeze this plan</button></div>';
+
+  return '<div class="candidate-card">' +
+    '<div class="cand-head"><strong>' + esc(c.title) + "</strong></div>" +
+    '<p class="chips">' + badges + "</p>" +
+    (b.thesis ? "<div>" + esc(b.thesis) + "</div>" : "") +
+    (b.novelty_caveat
+      ? '<div class="small-text dim">Novelty caveat: ' + esc(b.novelty_caveat) + "</div>"
+      : "") +
+    '<details><summary>Plan details</summary>' + details + "</details>" +
+    footer +
+    "</div>";
+}
+
+function renderCompare(data) {
+  const box = document.getElementById("candidate-compare-results");
+  if (!box) return;
+  const cands = data.candidates || [];
+  const fields = data.fields || [];
+  const matrix = data.matrix || {};
+  if (!cands.length || !fields.length) {
+    box.innerHTML = emptyHTML("Nothing to compare.");
+    return;
+  }
+  const cell = (v) => {
+    if (v === null || v === undefined) return "—";
+    if (Array.isArray(v)) return v.length ? v.join("; ") : "—";
+    return String(v);
+  };
+  box.innerHTML = '<div class="table-wrap"><table class="compare-table"><thead><tr>' +
+    '<th scope="col">Field</th>' +
+    cands.map((c) =>
+      '<th scope="col">' + esc(trunc(c.title, 40)) +
+      (c.frozen ? " " + badge("frozen", "b-green") : "") +
+      '<br><span class="dim small-text">' + esc(c.included_count == null ? 0 : c.included_count) +
+      " objects</span></th>").join("") +
+    "</tr></thead><tbody>" +
+    fields.map((f) => {
+      const row = matrix[f] || {};
+      return '<tr><th scope="row">' + esc(pretty(f)) + "</th>" +
+        cands.map((c) => "<td>" + esc(cell(row[c.id])) + "</td>").join("") + "</tr>";
+    }).join("") +
+    "</tbody></table></div>";
 }
 
 function renderAudit(data) {
@@ -1628,6 +1777,33 @@ const clickActions = {
     } catch (e) { toast(e.message, "err"); }
   }),
 
+  "freeze-candidate": (t) => withBusy(t, async () => {
+    try {
+      await api("/paper-candidates/" + encodeURIComponent(t.dataset.cid) + "/freeze", "POST", {});
+      toast("Candidate frozen; available in the manuscript picker.");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "compare-candidates": (t) => withBusy(t, async () => {
+    const ids = (t.dataset.cids || "").split(",").filter(Boolean);
+    if (ids.length < 2) {
+      toast("Need at least two candidates to compare.", "err");
+      return;
+    }
+    const box = document.getElementById("candidate-compare-results");
+    if (box) box.innerHTML = loadingHTML("Comparing candidates…");
+    try {
+      const data = await api("/projects/" + encodeURIComponent(t.dataset.pid) +
+        "/paper-candidates/compare", "POST", { candidate_ids: ids });
+      renderCompare(data);
+      toast("Comparison ready.");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
+  }),
+
   "ms-audit": (t) => withBusy(t, async () => {
     const box = document.getElementById("ms-results");
     if (box) box.innerHTML = loadingHTML("Running audit…");
@@ -1849,6 +2025,28 @@ const formActions = {
     await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/paper-candidates",
       "POST", payload);
     toast("Paper candidate created.");
+    route();
+  },
+
+  "generate-candidates": async (form) => {
+    const objIds = selectedValues(form.querySelector("#gen-objs"));
+    if (!objIds.length) {
+      toast("Select at least one research object to generate from.", "err");
+      return;
+    }
+    const body = fd(form);
+    const payload = { object_ids: objIds };
+    if (body.audience) payload.audience = body.audience;
+    if (body.venue_class) payload.venue_class = body.venue_class;
+    if (body.constraints) payload.constraints = body.constraints;
+    let n = parseInt(body.n, 10);
+    if (Number.isNaN(n)) n = 3;
+    n = Math.max(1, Math.min(5, n));
+    payload.n = n;
+    const r = await api("/projects/" + encodeURIComponent(form.dataset.pid) +
+      "/paper-candidates/generate", "POST", payload);
+    const count = (r && r.candidates) ? r.candidates.length : 0;
+    toast("Generated " + count + " candidate(s) (AI-suggested; review them).");
     route();
   },
 
