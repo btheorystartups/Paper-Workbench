@@ -27,6 +27,8 @@ dev = [
 # Windows box); the export pipeline probes availability and falls back to the built-in
 # deterministic renderer when they are missing.
 pdf = ["weasyprint>=60"]
+# Figure/table rendering (matplotlib + numpy). Render functions raise a clear error if absent.
+figures = ["matplotlib>=3.8"]
 
 [build-system]
 requires = ["setuptools>=68"]

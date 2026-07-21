@@ -18,6 +18,7 @@ from .services import (
     authoring,
     dialogue,
     export_service,
+    figures,
     literature,
     outputs,
     portfolio,
@@ -713,6 +714,99 @@ def export_manuscript(manuscript_id: str, body: ExportIn, session: Session = Dep
         raise HTTPException(404, str(exc)) from exc
     session.commit()
     return result
+
+
+# --- figures & tables (canonical data provenance) ---
+
+
+class DatasetIn(BaseModel):
+    name: str
+    columns: list[str]
+    rows: list[list]
+
+
+@app.post("/projects/{project_id}/datasets")
+def create_dataset(project_id: str, body: DatasetIn, session: Session = Depends(_session)):
+    try:
+        ds = figures.create_dataset(
+            session, project_id, name=body.name, columns=body.columns, rows=body.rows
+        )
+    except (figures.FigureError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(ds)
+
+
+class FigureIn(BaseModel):
+    title: str
+    dataset_id: str
+    spec: dict
+    grayscale: bool = False
+
+
+@app.post("/projects/{project_id}/figures")
+def render_figure(project_id: str, body: FigureIn, session: Session = Depends(_session)):
+    try:
+        fig = figures.render_figure(
+            session, project_id, title=body.title, dataset_id=body.dataset_id,
+            spec=body.spec, grayscale=body.grayscale,
+        )
+    except (figures.FigureError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(fig)
+
+
+class TableIn(BaseModel):
+    title: str
+    dataset_id: str
+    columns: list[str] | None = None
+
+
+@app.post("/projects/{project_id}/tables")
+def build_table(project_id: str, body: TableIn, session: Session = Depends(_session)):
+    try:
+        tbl = figures.build_table(
+            session, project_id, title=body.title, dataset_id=body.dataset_id,
+            columns=body.columns,
+        )
+    except (figures.FigureError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(tbl)
+
+
+@app.post("/artifacts/{artifact_id}/caption")
+def generate_caption(artifact_id: str, session: Session = Depends(_session)):
+    try:
+        art = figures.generate_caption(session, artifact_id)
+    except figures.FigureError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return {"id": art.id, "caption": art.body.get("caption"),
+            "alt_text": art.body.get("alt_text"), "accepted_by_user": art.accepted_by_user}
+
+
+@app.get("/figures/{figure_id}/image")
+def figure_image(figure_id: str, session: Session = Depends(_session)):
+    from fastapi.responses import FileResponse
+
+    from .models import ResearchObject as _RO
+    from .vocab import ObjectKind as _OK
+
+    fig = session.get(_RO, figure_id)
+    if fig is None or fig.kind != _OK.FIGURE:
+        raise HTTPException(404, "figure not found")
+    path = fig.body.get("png_path")
+    if not path:
+        raise HTTPException(404, "no rendered image")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get("/projects/{project_id}/artifacts/audit")
+def audit_artifacts(project_id: str, session: Session = Depends(_session)):
+    findings = figures.audit_artifacts(session, project_id)
+    return {"findings": findings, "counts": _severity_counts(findings)}
 
 
 # --- semantic retrieval (similarity, never evidence) ---

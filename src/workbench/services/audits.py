@@ -134,6 +134,9 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
             )
     findings.extend(audit_claims(session, manuscript.project_id))
     findings.extend(audit_sources(session, manuscript.project_id))
+    from .figures import audit_artifacts
+
+    findings.extend(audit_artifacts(session, manuscript.project_id))
     return findings
 
 

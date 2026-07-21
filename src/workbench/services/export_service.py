@@ -225,6 +225,51 @@ def _jats_xml(manuscript, sections, claims, sources, session: Session) -> str:
     return "\n".join(parts)
 
 
+def _export_supplements(session: Session, project_id: str, out_dir: Path) -> list[dict]:
+    """Copy the project's figures/tables into the bundle with their data-provenance and a
+    live staleness check, so a reviewer can trace every artifact back to its data."""
+    from sqlalchemy import select
+
+    from ..models import ResearchObject
+    from ..vocab import ObjectKind
+    from .figures import Dataset
+
+    supp_dir = out_dir / "supplements"
+    out: list[dict] = []
+    for kind in (ObjectKind.FIGURE, ObjectKind.TABLE):
+        for art in session.scalars(
+            select(ResearchObject).where(
+                ResearchObject.project_id == project_id, ResearchObject.kind == kind,
+                ResearchObject.deleted_at.is_(None),
+            )
+        ):
+            supp_dir.mkdir(parents=True, exist_ok=True)
+            ds = session.get(ResearchObject, art.body.get("dataset_id"))
+            stale = None
+            if ds is not None:
+                current = Dataset(ds.body["columns"], ds.body["rows"]).hash()
+                stale = current != art.body.get("data_hash")
+            entry = {"id": art.id, "kind": str(kind), "number": art.body.get("number"),
+                     "title": art.title, "data_hash": art.body.get("data_hash"),
+                     "stale": stale, "caption": art.body.get("caption")}
+            if kind == ObjectKind.FIGURE:
+                png = art.body.get("png_path")
+                if png and Path(png).is_file():
+                    dest = supp_dir / f"figure_{art.body.get('number')}.png"
+                    dest.write_bytes(Path(png).read_bytes())
+                    svg = art.body.get("svg_path")
+                    if svg and Path(svg).is_file():
+                        (supp_dir / f"figure_{art.body.get('number')}.svg").write_text(
+                            Path(svg).read_text(encoding="utf-8"), encoding="utf-8")
+                    entry["file"] = dest.name
+            else:
+                dest = supp_dir / f"table_{art.body.get('number')}.md"
+                dest.write_text(art.body.get("markdown", ""), encoding="utf-8")
+                entry["file"] = dest.name
+            out.append(entry)
+    return out
+
+
 def export_manuscript(
     session: Session, manuscript_id: str, *, formats: list[str] | None = None
 ) -> dict:
@@ -365,6 +410,11 @@ def export_manuscript(
         written["jats"] = out_dir / "manuscript.jats.xml"
         written["jats"].write_text(jats_text, encoding="utf-8")
         extra_manifest["jats_validation"] = validate_jats(jats_text).as_dict()
+
+    # --- Supplements: figures & tables with data provenance ---
+    supplements = _export_supplements(session, manuscript.project_id, out_dir)
+    if supplements:
+        extra_manifest["supplements"] = supplements
 
     # --- Provenance manifest ---
     findings = audits.audit_manuscript(session, manuscript_id)
