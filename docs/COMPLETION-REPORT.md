@@ -10,10 +10,12 @@ runnable, tested, and verified against live providers. It is **not** a paper gen
 research organization and grounded dialogue are the core; manuscript authoring and export
 are optional downstream steps that preserve provenance and evidence states throughout.
 
-- **9 commits**, working tree clean.
-- **37 source modules** (~5,700 LOC) in `src/workbench/`, **14 test files, 65 tests**, all
-  passing offline.
+- Working tree clean; committed in coherent slices.
+- **~40 source modules** in `src/workbench/`, **79 tests** across the suite, all passing
+  offline (live provider paths verified separately with the user's keys).
 - **4 Alembic migrations**; startup runs `alembic upgrade head`.
+- Post-P6 additions: alternative outputs, figures/tables with data provenance, and
+  multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
 - Phase 0 decision record, capability matrix, and this report in `docs/`.
 

@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-07-21. Tests: 73 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-07-21. Tests: 79 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -55,7 +55,8 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Capability | Status | Notes |
 |---|---|---|
 | Paper candidates (16 types, 7 structures) with included/excluded, risks, missing-work | Implemented | `services/authoring.py`; not forced into IMRaD |
-| Several genuinely different candidates auto-generated | Partial | candidates are created/edited; multi-candidate LLM generation not automated |
+| Several genuinely different candidates auto-generated | Implemented | `services/paper_design.py`; distinct strategic angles, LLM-driven (live gpt-4o verified: 3 distinct grounded designs) with deterministic offline fallback; review-gated |
+| Compare candidates side-by-side; freeze one; manuscript-from-frozen | Implemented | `compare_candidates`, `freeze_candidate`, `create_manuscript(from_candidate_id)` |
 
 ## 5. Evidence discovery & literature workspace
 
