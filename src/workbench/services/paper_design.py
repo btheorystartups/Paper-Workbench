@@ -43,8 +43,8 @@ of research objects, propose distinct candidate paper designs. Rules:
 Reply as JSON only:
 {"candidates": [{
   "title": "...",
-  "paper_type": "computational|mathematical_theoretical|methodological|expository|short_communication|technical_note|comparative|...",
-  "structure": "imrad|definition_theorem_proof_example|algorithm_correctness_complexity_experiments|...",
+  "paper_type": "computational|mathematical_theoretical|methodological|expository|short_communication|technical_note|comparative",
+  "structure": "imrad|definition_theorem_proof_example|algorithm_correctness_complexity_experiments",
   "central_question": "...", "thesis": "...", "audience": "...",
   "scope": "...", "anticipated_length": "...",
   "included_object_ids": ["<id>", ...], "excluded": [{"ref": "<id or topic>", "reason": "..."}],
