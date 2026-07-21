@@ -19,6 +19,7 @@ from .services import (
     dialogue,
     export_service,
     literature,
+    outputs,
     portfolio,
     research,
     security,
@@ -672,6 +673,30 @@ def run_skeptical_review(manuscript_id: str, session: Session = Depends(_session
         raise HTTPException(404, str(exc)) from exc
     session.commit()
     return {"objections": [_object_out(n) for n in notes]}
+
+
+class OutputIn(BaseModel):
+    output_type: str
+
+
+@app.post("/manuscripts/{manuscript_id}/outputs")
+def generate_output(manuscript_id: str, body: OutputIn, session: Session = Depends(_session)):
+    try:
+        obj = outputs.generate_output(session, manuscript_id, body.output_type)
+    except outputs.OutputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return _object_out(obj)
+
+
+@app.get("/manuscripts/{manuscript_id}/outputs")
+def list_outputs(manuscript_id: str, session: Session = Depends(_session)):
+    return [
+        {"id": o.id, "output_kind": o.body.get("output_kind"),
+         "content": o.body.get("content"), "word_count": o.body.get("word_count"),
+         "simulated": o.body.get("simulated"), "accepted_by_user": o.accepted_by_user}
+        for o in outputs.list_outputs(session, manuscript_id)
+    ]
 
 
 class ExportIn(BaseModel):
