@@ -422,7 +422,11 @@ function renderProject(view, pid, tab, sub) {
   const name = state.projectNames[pid] || "Project";
   view.innerHTML =
     '<nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Home</a> / ' +
-    esc(name) + "</nav>" +
+    esc(name) +
+    ' <span id="usage-line" class="dim small-text"></span>' +
+    ' <button type="button" class="small" data-action="set-budget" data-pid="' + esc(pid) + '">Budget</button>' +
+    ' <button type="button" class="small" data-action="export-project" data-pid="' + esc(pid) + '">Export bundle</button>' +
+    "</nav>" +
     '<nav class="tabs" aria-label="Project sections">' +
     TABS.map((t) =>
       '<a href="#/project/' + esc(pid) + "/" + t + '"' +
@@ -438,6 +442,23 @@ function renderProject(view, pid, tab, sub) {
     submissions: tabSubmissions, figures: tabFigures,
   };
   guarded(el, (c) => fns[tab](c, pid, sub || []));
+  loadUsageLine(pid);
+}
+
+async function loadUsageLine(pid) {
+  const el = document.getElementById("usage-line");
+  if (!el) return;
+  try {
+    const u = await api("/projects/" + encodeURIComponent(pid) + "/usage");
+    let text = "LLM this month: " + u.live_total_tokens.toLocaleString() + " live tokens";
+    if (u.monthly_token_ceiling) {
+      text += " / " + u.monthly_token_ceiling.toLocaleString() + " ceiling";
+    }
+    el.textContent = text;
+    if (u.ceiling_reached) {
+      el.innerHTML = esc(text) + " " + badge("CEILING REACHED", "b-amber");
+    }
+  } catch (_e) { el.textContent = ""; }
 }
 
 /* ===================== objects tab ===================== */
@@ -1656,6 +1677,28 @@ function renderArtifactAudit(data) {
 
 const clickActions = {
   "open-project": (t) => { location.hash = "#/project/" + t.dataset.pid + "/objects"; },
+
+  "set-budget": (t) => withBusy(t, async () => {
+    const current = window.prompt(
+      "Monthly live-token ceiling for this project (0 = unlimited):", "0");
+    if (current === null) return;
+    const ceiling = parseInt(current, 10);
+    if (isNaN(ceiling) || ceiling < 0) { toast("Enter a number >= 0.", "err"); return; }
+    try {
+      await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/budget", "POST",
+        { monthly_token_ceiling: ceiling });
+      toast(ceiling ? "Ceiling set to " + ceiling.toLocaleString() + " tokens/month."
+                    : "Budget set to unlimited.");
+      loadUsageLine(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "export-project": (t) => withBusy(t, async () => {
+    try {
+      const r = await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/export", "POST", {});
+      toast("Bundle written: " + r.path);
+    } catch (e) { toast(e.message, "err"); }
+  }),
   "open-source": (t) => { location.hash = "#/project/" + t.dataset.pid + "/sources/" + t.dataset.sid; },
   "open-claim": (t) => { location.hash = "#/project/" + t.dataset.pid + "/claims/" + t.dataset.cid; },
   "open-thread": (t) => { location.hash = "#/project/" + t.dataset.pid + "/dialogue/" + t.dataset.tid; },

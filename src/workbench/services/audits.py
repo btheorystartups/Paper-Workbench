@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
-from ..providers.registry import chat_model_name, get_chat_provider
 from ..vocab import ClaimSupport, ObjectKind, SourceAccess
 from . import authoring, research
 
@@ -163,11 +162,12 @@ def skeptical_review(session: Session, manuscript_id: str) -> list[ResearchObjec
             f"{s.body.get('text', '')[:800]} | claims: {claim_text or 'none'}"
         )
     context_lines.append("</untrusted_context>")
-    provider = get_chat_provider()
-    result = provider.chat(
+    from . import usage as usage_service
+
+    result = usage_service.charged_chat(
+        session, manuscript.project_id, "skeptical_review",
         system=SKEPTIC_SYSTEM + "\n" + "\n".join(context_lines),
         messages=[{"role": "user", "content": "Review this manuscript skeptically."}],
-        model=chat_model_name(),
         max_output_tokens=2048,
     )
     objections = [

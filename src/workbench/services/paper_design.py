@@ -74,7 +74,8 @@ def generate_candidates(
     if not objects:
         raise DesignError("select at least one research object to design around")
 
-    parsed = _llm_candidates(objects, audience, venue_class, constraints, n)
+    parsed = _llm_candidates(session, project_id, objects, audience, venue_class,
+                             constraints, n)
     if not parsed:
         parsed = _template_candidates(objects, audience, n)
 
@@ -84,8 +85,10 @@ def generate_candidates(
     return created
 
 
-def _llm_candidates(objects, audience, venue_class, constraints, n) -> list[dict]:
-    from ..providers.registry import chat_model_name, get_chat_provider
+def _llm_candidates(
+    session, project_id, objects, audience, venue_class, constraints, n
+) -> list[dict]:
+    from . import usage as usage_service
 
     angle_hint = "; ".join(f"{a}: {d}" for a, d in ANGLES[:n])
     obj_lines = ["<objects>"]
@@ -99,9 +102,11 @@ def _llm_candidates(objects, audience, venue_class, constraints, n) -> list[dict
         f"{venue_class or 'unspecified'}. Constraints: {constraints or 'none'}.\n"
         + "\n".join(obj_lines)
     )
-    provider = get_chat_provider()
-    result = provider.chat(system=_SYSTEM, messages=[{"role": "user", "content": user}],
-                           model=chat_model_name(), max_output_tokens=3000)
+    result = usage_service.charged_chat(
+        session, project_id, "paper_design",
+        system=_SYSTEM, messages=[{"role": "user", "content": user}],
+        max_output_tokens=3000,
+    )
     cands = _parse_candidates(result.text)
     for c in cands:
         c["_model"] = result.model

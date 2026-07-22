@@ -259,14 +259,14 @@ def generate_caption(session: Session, artifact_id: str) -> ResearchObject:
         "n_rows": (ds_obj.body.get("n_rows") if ds_obj else None),
         "sample_rows": (ds_obj.body.get("rows", [])[:5] if ds_obj else None),
     }
-    from ..providers.registry import chat_model_name, get_chat_provider
+    from . import usage as usage_service
 
-    provider = get_chat_provider()
-    result = provider.chat(
+    result = usage_service.charged_chat(
+        session, art.project_id, "caption",
         system=_CAPTION_SYSTEM,
         messages=[{"role": "user",
                    "content": f"Write caption and alt text.\n<data>{json.dumps(summary)}</data>"}],
-        model=chat_model_name(), max_output_tokens=512,
+        max_output_tokens=512,
     )
     caption, alt = _parse_caption(result.text)
     body = dict(art.body)

@@ -282,6 +282,34 @@ class Submission(_Stamped, Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
+class UsageEvent(_Stamped, Base):
+    """One provider call's token usage, attributed to a project and a call kind.
+    `simulated` rows (fake provider) are recorded for observability but never count
+    toward a cost ceiling."""
+
+    __tablename__ = "usage_events"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(60))  # dialogue|skeptical_review|outputs|...
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    total_tokens: Mapped[int] = mapped_column(default=0)
+    simulated: Mapped[bool] = mapped_column(default=False)
+
+
+class CostBudget(_Stamped, Base):
+    """Per-project ceiling on live LLM token spend per UTC calendar month.
+    ceiling 0 = unlimited. Enforcement is fail-closed: when the ceiling is reached,
+    live calls raise before the provider is contacted."""
+
+    __tablename__ = "cost_budgets"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), unique=True)
+    monthly_token_ceiling: Mapped[int] = mapped_column(default=0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
 class AuditEvent(_Stamped, Base):
     __tablename__ = "audit_events"
     workspace_id: Mapped[str] = mapped_column(String(32), index=True)

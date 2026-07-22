@@ -30,6 +30,7 @@ from ..config import get_settings
 from ..models import (
     Claim,
     ClaimEvidence,
+    CostBudget,
     Edge,
     Embedding,
     Excerpt,
@@ -42,6 +43,7 @@ from ..models import (
     Submission,
     Thread,
     Turn,
+    UsageEvent,
     Workspace,
 )
 from . import research
@@ -65,6 +67,8 @@ _TABLES = [
     ("literature_entries", LiteratureEntry, "project"),
     ("embeddings", Embedding, "project"),
     ("submissions", Submission, "project"),
+    ("usage_events", UsageEvent, "project"),
+    ("cost_budgets", CostBudget, "project"),
 ]
 
 

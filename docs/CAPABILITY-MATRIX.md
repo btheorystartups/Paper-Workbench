@@ -16,7 +16,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Controlled state vocabularies (claim support, result strength, novelty, source access) | Implemented | `vocab.py`; enforced in services, never collapsed in UI/export |
 | Workspace/project isolation + soft delete + timestamps | Implemented | `workspace_id`/`project_id` scoping on every row |
 | Provenance that survives export | Implemented | export manifest: checksums, access levels, audit findings, AI provenance |
-| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 4 migrations, reversibility checked |
+| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 5 migrations, reversibility checked |
 | Audit-in-transaction | Implemented | `audit.py`; every consequential mutation writes an AuditEvent |
 | Provider abstraction + offline fakes (default) | Implemented | `providers/`, `WB_PROVIDER_MODE=fake` → zero network |
 | Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; artifact files bundled, paths portable, tamper-detected |
@@ -147,4 +147,5 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | SSRF-safe fetching, secret-as-env, no secret logging | Implemented | `ingest/safe_fetch.py`, `config.py` |
 | Web UI (7 tabs + login + submissions) | Implemented | `web/static/`; browser-verified incl. live dialogue |
 | Hardened multi-tenant production deployment / real IdP integration | Out of scope | single-machine trust model; documented migration path |
-| Cost budgets / token metering / cancellation | Partial | usage recorded in turn provenance; no budget ceiling UI |
+| Cost budgets / token metering | Implemented | `services/usage.py`; every LLM call metered per project/kind; monthly ceiling fail-closed before live calls (fakes never blocked); UI readout + budget setter |
+| Mid-call cancellation | Out of scope | calls are single short requests; ceiling bounds total spend |

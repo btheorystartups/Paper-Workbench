@@ -311,6 +311,55 @@ def import_project_bundle(body: ImportIn, session: Session = Depends(_session)):
     return result
 
 
+# --- usage & cost budgets ---
+
+
+@app.exception_handler(Exception)
+async def _budget_handler(request, exc):
+    from fastapi.responses import JSONResponse
+
+    from .services.usage import BudgetExceeded
+
+    if isinstance(exc, BudgetExceeded):
+        return JSONResponse(status_code=402, content={"detail": str(exc)})
+    raise exc
+
+
+@app.get("/projects/{project_id}/usage")
+def project_usage(project_id: str, session: Session = Depends(_session)):
+    from .services import usage as usage_service
+
+    try:
+        return usage_service.month_usage(session, project_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class BudgetIn(BaseModel):
+    monthly_token_ceiling: int = Field(ge=0)
+    note: str = ""
+
+
+@app.post("/projects/{project_id}/budget")
+def set_project_budget(
+    project_id: str, body: BudgetIn,
+    session: Session = Depends(_session), user=Depends(_principal),
+):
+    from .services import usage as usage_service
+
+    _require(session, project_id, user, "owner")
+    try:
+        budget = usage_service.set_budget(
+            session, project_id,
+            monthly_token_ceiling=body.monthly_token_ceiling, note=body.note,
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"project_id": project_id,
+            "monthly_token_ceiling": budget.monthly_token_ceiling, "note": budget.note}
+
+
 # --- research objects ---
 
 

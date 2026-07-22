@@ -47,7 +47,17 @@ def index_project(session: Session, project_id: str) -> dict:
         )
     )
     if targets:
+        from ..config import get_settings
+        from . import usage as usage_service
+
+        if get_settings().provider_mode == "live":
+            usage_service.check_budget(session, project_id)
         vectors = provider.embed([t[2] for t in targets])
+        usage_service.record_usage(
+            session, project_id, provider="embeddings", model=provider.model,
+            kind="embedding_index", usage={},  # embed API returns no usage; count of calls only
+            simulated=get_settings().provider_mode != "live",
+        )
         for (ttype, tid, text), vec in zip(targets, vectors, strict=True):
             session.add(
                 Embedding(

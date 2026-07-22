@@ -23,7 +23,6 @@ from ..models import (
     Turn,
     stable_hash,
 )
-from ..providers.registry import chat_model_name, get_chat_provider
 from ..vocab import ActionStatus, ObjectKind, Relation, RiskClass
 from . import research
 
@@ -143,12 +142,11 @@ def post_user_turn(session: Session, thread_id: str, content: str) -> tuple[Turn
         {"role": t.role, "content": t.content} for t in history if t.role in ("user", "assistant")
     ]
 
-    provider = get_chat_provider()
-    result = provider.chat(
-        system=system,
-        messages=messages,
-        model=chat_model_name(),
-        max_output_tokens=4096,
+    from . import usage as usage_service
+
+    result = usage_service.charged_chat(
+        session, thread.project_id, "dialogue",
+        system=system, messages=messages, max_output_tokens=4096,
     )
 
     context_ids = thread.pinned_object_ids + thread.pinned_source_ids

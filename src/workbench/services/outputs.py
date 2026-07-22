@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Claim, ResearchObject, stable_hash
-from ..providers.registry import chat_model_name, get_chat_provider
 from ..vocab import ObjectKind, Relation
 from . import authoring, research
 
@@ -82,14 +81,15 @@ def generate_output(session: Session, manuscript_id: str, output_type: str) -> R
     lines.append("</manuscript>")
     manuscript_block = "\n".join(lines)
 
-    provider = get_chat_provider()
-    result = provider.chat(
+    from . import usage as usage_service
+
+    result = usage_service.charged_chat(
+        session, manuscript.project_id, "alternative_output",
         system=_SYSTEM,
         messages=[
             {"role": "user", "content":
                 f"Produce a {label} (~{target_words} words). {guidance}\n\n{manuscript_block}"}
         ],
-        model=chat_model_name(),
         max_output_tokens=2048,
     )
 
