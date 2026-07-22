@@ -11,7 +11,7 @@ research organization and grounded dialogue are the core; manuscript authoring a
 are optional downstream steps that preserve provenance and evidence states throughout.
 
 - Working tree clean; committed in coherent slices.
-- **~40 source modules** in `src/workbench/`, **79 tests** across the suite, all passing
+- **~40 source modules** in `src/workbench/`, **83 tests** across the suite, all passing
   offline (live provider paths verified separately with the user's keys).
 - **4 Alembic migrations**; startup runs `alembic upgrade head`.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
@@ -74,10 +74,10 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 - **Auth** is a single-machine trust model (local API keys / dev tokens, HS256 JWTs). Real
   multi-tenant deployment needs a production IdP and tenant hardening — schema is the
   migration path.
-- **Figures/tables**: object kinds + stale-reference auditing exist; no plotting/caption
-  generation engine is wired.
-- **Multi-candidate paper generation, branchable threads, CRediT assist, retraction-watch
-  feed, reporting-guideline checklists, cost-budget ceilings**: planned, not built.
+- **Branchable threads, CRediT assist, retraction-watch feed, reporting-guideline
+  checklists, cost-budget ceilings**: planned, not built. (Figures/tables rendering and
+  multi-candidate paper design, previously listed here, landed in later slices — see
+  `docs/CAPABILITY-MATRIX.md`.)
 - **LLM-quality evals** are a regression signal on known failure modes, not a correctness
   certificate. LLM output always enters a human-review gate.
 
@@ -89,10 +89,12 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 ## Recommended next actions
 
 1. If typeset PDF matters: install GTK on the workstation, then `pip install '.[pdf]'`.
-2. Wire a plotting engine (matplotlib) for the figures/tables module (capability §9).
-3. Add multi-candidate paper generation (LLM produces N distinct designs to compare).
+2. ~~Wire a plotting engine for figures/tables~~ — done (commit cf1d7b7).
+3. ~~Multi-candidate paper generation~~ — done (commit d3ca78c).
 4. If collaboration goes multi-user: integrate a real OIDC provider and harden tenancy.
 5. Point `validate_jats` at the official JATS 1.3 DTD for full-spec validation.
+6. Remaining planned items: branchable threads, retraction watch, guideline checklists,
+   cost budgets, CRediT assist (see capability matrix).
 
 ## How to run
 

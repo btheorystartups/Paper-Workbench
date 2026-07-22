@@ -275,6 +275,42 @@ def create_project(body: ProjectIn, session: Session = Depends(_session)):
     return {"id": project.id, "name": project.name}
 
 
+@app.post("/projects/{project_id}/export")
+def export_project_bundle(
+    project_id: str, session: Session = Depends(_session), user=Depends(_principal),
+):
+    """Export the whole project (rows + referenced artifacts) as a checksummed ZIP."""
+    from .services import transfer
+
+    _require(session, project_id, user, "reviewer")
+    try:
+        result = transfer.export_project(session, project_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return result
+
+
+class ImportIn(BaseModel):
+    path: str
+    workspace_id: str | None = None
+
+
+@app.post("/projects/import")
+def import_project_bundle(body: ImportIn, session: Session = Depends(_session)):
+    """Restore a project bundle from a local ZIP path (refuses to overwrite)."""
+    from .services import transfer
+
+    try:
+        result = transfer.import_project(
+            session, body.path, workspace_id=body.workspace_id
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return result
+
+
 # --- research objects ---
 
 

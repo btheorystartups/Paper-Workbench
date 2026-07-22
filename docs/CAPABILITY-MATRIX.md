@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-07-21. Tests: 79 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-07-22. Tests: 83 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -19,6 +19,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 4 migrations, reversibility checked |
 | Audit-in-transaction | Implemented | `audit.py`; every consequential mutation writes an AuditEvent |
 | Provider abstraction + offline fakes (default) | Implemented | `providers/`, `WB_PROVIDER_MODE=fake` → zero network |
+| Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; artifact files bundled, paths portable, tamper-detected |
 
 ## 1. Natural-language research dialogue & direction engine
 

@@ -8,9 +8,9 @@ defensible manuscripts. Not a paper generator: paper creation is optional and do
 Standalone by design. Selected components were copied from (and are now owned independently
 of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
-## Status (P1–P6 core — 2026-07-20)
+## Status (P1–P6 + expansion + hardening — 2026-07-22)
 
-Implemented and tested (33 offline tests; live providers verified with user keys):
+Implemented and tested (83 offline tests; live providers verified with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -66,7 +66,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 19 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 83 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
@@ -76,10 +76,17 @@ Copy `.env.example` to `.env`. Everything defaults to offline fake mode. Live pr
 require both `WB_PROVIDER_MODE=live` and the relevant key; keys live only in the
 environment, never in the database, never in logs.
 
-## Known limitations (P1)
+## Backup / portability
 
-- Schema bootstraps via `create_all`; Alembic migrations arrive with the first post-P1
-  schema change.
-- No web UI yet (API + /docs only); ingestion of files (PDF/LaTeX/CSV/Markdown) lands in P2.
-- Live extraction provider (web page fetch) is intentionally still fake.
-- Single-user local deployment; `workspace_id` scoping is in the schema for later multi-user.
+`POST /projects/{id}/export` writes a checksummed ZIP bundle (every project row + the
+content-addressed artifact files it references) under `data/exports/projects/`.
+`POST /projects/import` restores a bundle on any machine (refuses to overwrite an existing
+project; verifies every checksum first; rewrites artifact paths to the local data dir).
+
+## Known limitations
+
+- Typeset PDF needs GTK (WeasyPrint); without it the deterministic fallback renderer runs
+  and the manifest records which. LaTeX is the publication-quality path.
+- JATS validates against a bundled subset DTD, not full JATS 1.3 (`dtd_path=` accepts it).
+- Auth is a single-machine trust model; hardened multi-tenant deployment is out of scope.
+- See `docs/CAPABILITY-MATRIX.md` for the full honest status per capability.
