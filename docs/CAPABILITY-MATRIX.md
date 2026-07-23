@@ -110,7 +110,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Venue profiles with rules provenance + human-verify gate | Implemented | `services/venues.py`; compliance findings advisory until verified |
 | Venue compliance audit (word/section/abstract/AI-disclosure) | Implemented | `audit_venue_compliance` |
-| Reporting-guideline profiles (PRISMA etc.) | Planned | venue rules are extensible; named checklists not shipped |
+| Reporting-guideline checklists (PRISMA 2020, CONSORT 2010, STROBE) | Implemented | `services/guidelines.py`; self-reported item tracking (n/a requires a reason), always-advisory audit findings, Manuscripts-tab UI |
 
 ## 11. Validation & adversarial review
 

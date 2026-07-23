@@ -1115,6 +1115,15 @@ async function tabManuscripts(el, pid, sub) {
       '<button type="button" data-action="ms-output" data-mid="' + esc(selectedMid) +
       '">Generate</button></div>' +
       '<div id="ms-outputs" style="margin-top:0.6rem"></div>' +
+      '<hr class="soft"><h3>Reporting checklists</h3>' +
+      '<p class="empty">Self-reported reporting completeness (advisory; never a ' +
+      "methodology certificate).</p>" +
+      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+      '<label class="visually-hidden" for="cl-pack">Guideline pack</label>' +
+      '<select id="cl-pack"></select>' +
+      '<button type="button" data-action="cl-attach" data-mid="' + esc(selectedMid) +
+      '">Attach checklist</button></div>' +
+      '<div id="ms-checklists" style="margin-top:0.6rem"></div>' +
       "</section>";
   }
 
@@ -1206,6 +1215,44 @@ async function tabManuscripts(el, pid, sub) {
     multiOptions(candidates, (c) => c.title) + "</select></div>" +
     '<div><button type="submit" class="primary">Create manuscript</button></div>' +
     "</form></section></div>";
+  if (selectedMid) loadChecklists(selectedMid);
+}
+
+async function loadChecklists(mid) {
+  const packSel = document.getElementById("cl-pack");
+  const area = document.getElementById("ms-checklists");
+  if (!packSel || !area) return;
+  try {
+    const [packs, attached] = await Promise.all([
+      api("/guidelines"),
+      api("/manuscripts/" + encodeURIComponent(mid) + "/checklists"),
+    ]);
+    const used = new Set(attached.map((c) => c.pack_id));
+    packSel.innerHTML = packs
+      .filter((p) => !used.has(p.pack_id))
+      .map((p) => '<option value="' + esc(p.pack_id) + '">' + esc(p.name) + "</option>")
+      .join("");
+    area.innerHTML = attached.map((c) => {
+      const open = c.items.filter((i) => i.status === "unaddressed").length;
+      return '<details class="finding"><summary><strong>' + esc(c.pack_name) +
+        "</strong> — " + (open
+          ? badge(open + " open", "b-amber")
+          : badge("all addressed", "b-green")) +
+        '</summary><p class="dim small-text">' + esc(c.pack_source) + "</p>" +
+        '<ul class="plain">' + c.items.map((i) =>
+          '<li class="section-item"><span class="mono">' + esc(i.id) + "</span> " +
+          esc(i.text) +
+          ' <select data-change="cl-item" data-clid="' + esc(c.id) +
+          '" data-iid="' + esc(i.id) + '">' +
+          ["unaddressed", "addressed", "not_applicable"].map((s) =>
+            '<option value="' + s + '"' + (i.status === s ? " selected" : "") + ">" +
+            s.replace("_", " ") + "</option>").join("") +
+          "</select>" +
+          (i.location ? ' <span class="dim small-text">@ ' + esc(i.location) + "</span>" : "") +
+          (i.note ? ' <span class="dim small-text">(' + esc(i.note) + ")</span>" : "") +
+          "</li>").join("") + "</ul></details>";
+    }).join("") || "";
+  } catch (_e) { /* manuscript may have no checklists yet */ }
 }
 
 function renderCandidateCard(c) {
@@ -1701,6 +1748,17 @@ const clickActions = {
       toast(ceiling ? "Ceiling set to " + ceiling.toLocaleString() + " tokens/month."
                     : "Budget set to unlimited.");
       loadUsageLine(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "cl-attach": (t) => withBusy(t, async () => {
+    const packSel = document.getElementById("cl-pack");
+    if (!packSel || !packSel.value) { toast("All packs already attached.", "err"); return; }
+    try {
+      await api("/manuscripts/" + encodeURIComponent(t.dataset.mid) + "/checklists",
+        "POST", { pack_id: packSel.value });
+      toast("Checklist attached.");
+      loadChecklists(t.dataset.mid);
     } catch (e) { toast(e.message, "err"); }
   }),
 
@@ -2264,6 +2322,22 @@ const formActions = {
 /* ===================== event delegation: changes ===================== */
 
 const changeActions = {
+  "cl-item": async (t) => {
+    const status = t.value;
+    let location = "", note = "";
+    if (status === "addressed") {
+      location = window.prompt("Where is this addressed (section/page)?", "") || "";
+    } else if (status === "not_applicable") {
+      note = window.prompt("Why is this item not applicable? (required)", "") || "";
+      if (!note.trim()) { toast("A reason is required for not applicable.", "err"); route(); return; }
+    }
+    try {
+      await api("/checklists/" + encodeURIComponent(t.dataset.clid) + "/items/" +
+        encodeURIComponent(t.dataset.iid), "POST", { status, location, note });
+      toast("Item " + t.dataset.iid + " marked " + status.replace("_", " ") + ".");
+    } catch (e) { toast(e.message, "err"); route(); }
+  },
+
   "ws-select": (t) => {
     state.workspaceId = t.value || null;
     if (t.value) renderProjects(t.value);

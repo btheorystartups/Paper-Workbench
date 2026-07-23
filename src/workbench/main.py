@@ -331,6 +331,69 @@ def integrity_check(
     return result
 
 
+# --- reporting-guideline checklists ---
+
+
+@app.get("/guidelines")
+def list_guideline_packs():
+    from .services import guidelines
+
+    return guidelines.list_packs()
+
+
+class ChecklistIn(BaseModel):
+    pack_id: str
+
+
+@app.post("/manuscripts/{manuscript_id}/checklists")
+def attach_checklist(
+    manuscript_id: str, body: ChecklistIn, session: Session = Depends(_session),
+):
+    from .services import guidelines
+
+    try:
+        obj = guidelines.attach_checklist(session, manuscript_id, body.pack_id)
+    except (guidelines.GuidelineError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": obj.id, "title": obj.title, "items": obj.body["items"]}
+
+
+@app.get("/manuscripts/{manuscript_id}/checklists")
+def get_checklists(manuscript_id: str, session: Session = Depends(_session)):
+    from .services import guidelines
+
+    return [
+        {"id": o.id, "pack_id": o.body["pack_id"], "pack_name": o.body["pack_name"],
+         "pack_source": o.body["pack_source"], "items": o.body["items"]}
+        for o in guidelines.checklists_for(session, manuscript_id)
+    ]
+
+
+class ChecklistItemIn(BaseModel):
+    status: str
+    location: str = ""
+    note: str = ""
+
+
+@app.post("/checklists/{checklist_id}/items/{item_id}")
+def update_checklist_item(
+    checklist_id: str, item_id: str, body: ChecklistItemIn,
+    session: Session = Depends(_session),
+):
+    from .services import guidelines
+
+    try:
+        obj = guidelines.update_item(
+            session, checklist_id, item_id,
+            status=body.status, location=body.location, note=body.note,
+        )
+    except guidelines.GuidelineError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": obj.id, "items": obj.body["items"]}
+
+
 # --- usage & cost budgets ---
 
 
