@@ -180,6 +180,7 @@ def list_sources(project_id: str, session: Session = Depends(_session)):
             "id": s.id, "title": s.title, "authors": s.authors, "year": s.year,
             "venue": s.venue, "doi": s.doi, "url": s.url, "access": str(s.access),
             "license": s.license, "human_verified": s.human_verified,
+            "integrity_note": s.integrity_note,
         }
         for s in rows
     ]
@@ -305,6 +306,25 @@ def import_project_bundle(body: ImportIn, session: Session = Depends(_session)):
         result = transfer.import_project(
             session, body.path, workspace_id=body.workspace_id
         )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return result
+
+
+# --- integrity watch ---
+
+
+@app.post("/projects/{project_id}/integrity/check")
+def integrity_check(
+    project_id: str, session: Session = Depends(_session), user=Depends(_principal),
+):
+    """Run the retraction/correction watch over the project's DOI-bearing sources."""
+    from .services import integrity
+
+    _require(session, project_id, user, "editor")
+    try:
+        result = integrity.check_project_sources(session, project_id)
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()

@@ -534,10 +534,21 @@ async function tabSources(el, pid, sub) {
         (s.human_verified
           ? '<span class="verified" title="Human verified">✓ verified</span>'
           : '<span class="unverified">unverified</span>') +
-        '</td><td class="mono">' + esc(s.doi || "") + "</td></tr>"
+        (s.integrity_note
+          ? " " + badge("INTEGRITY", "b-red") : "") +
+        '</td><td class="mono">' + esc(s.doi || "") +
+        (s.integrity_note
+          ? '<br><span class="small-text dim" title="' + esc(s.integrity_note) + '">' +
+            esc(trunc(s.integrity_note, 70)) + "</span>" : "") +
+        "</td></tr>"
       ).join("") +
       "</tbody></table></div>";
   }
+
+  rows =
+    '<div class="row-actions"><button type="button" class="small" ' +
+    'data-action="integrity-check" data-pid="' + esc(pid) + '">' +
+    "Check retractions/corrections</button></div>" + rows;
 
   let excerptPanel = "";
   if (selectedSid) {
@@ -1690,6 +1701,18 @@ const clickActions = {
       toast(ceiling ? "Ceiling set to " + ceiling.toLocaleString() + " tokens/month."
                     : "Budget set to unlimited.");
       loadUsageLine(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "integrity-check": (t) => withBusy(t, async () => {
+    try {
+      const r = await api("/projects/" + encodeURIComponent(t.dataset.pid) +
+        "/integrity/check", "POST", {});
+      let msg = "Checked " + r.checked + " DOI source(s): " + r.flagged + " flagged";
+      if (r.failed) msg += ", " + r.failed + " lookup(s) failed (not proof of integrity)";
+      if (r.skipped_no_doi) msg += ", " + r.skipped_no_doi + " skipped (no DOI)";
+      toast(msg + ".", r.flagged ? "err" : undefined);
+      route();
     } catch (e) { toast(e.message, "err"); }
   }),
 

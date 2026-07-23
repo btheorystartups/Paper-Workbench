@@ -82,7 +82,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Every claim: support state, evidence links, locators, access level | Implemented | `services/research.py`; cross-project evidence rejected |
 | Block/flag missing excerpts, unresolved sources, retractions, unaccepted-AI | Implemented | `services/audits.py`; eval P/R 1.00 on 7 codes |
-| Retraction/correction ingestion feed | Partial | `integrity_note` field + audit flag; no automated retraction-watch feed |
+| Retraction/correction watch | Implemented | `services/integrity.py`; Crossref `updated-by` live / fake offline; failed lookups never read as clean; human notes never overwritten; flags never auto-cleared; UI button on Sources tab |
 
 ## 8. Argument planner & manuscript studio
 

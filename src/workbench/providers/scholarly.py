@@ -161,6 +161,28 @@ class CrossrefAdapter(_HttpBase):
             return None
         return self._to_work(data.get("message", {}))
 
+    def fetch_updates(self, doi: str) -> list[dict] | None:
+        """Retraction/correction/erratum notices for a DOI, from Crossref's `updated-by`
+        field. Returns [] when the record is clean, None when the lookup failed (a failed
+        check is NOT evidence of integrity — callers must keep the distinction)."""
+        doi = canonical_doi(doi) or ""
+        if not doi:
+            return None
+        data = self._get(f"{self.BASE}/{doi}", {"mailto": MAILTO})
+        if not data:
+            return None
+        out = []
+        for upd in data.get("message", {}).get("updated-by", []) or []:
+            date_parts = ((upd.get("updated") or {}).get("date-parts") or [[]])[0]
+            out.append({
+                "type": upd.get("type", "update"),
+                "label": upd.get("label", ""),
+                "notice_doi": canonical_doi(upd.get("DOI")),
+                "date": "-".join(str(p) for p in date_parts),
+                "via": "crossref",
+            })
+        return out
+
     @staticmethod
     def _to_work(item: dict) -> ScholarlyWork:
         year = None
@@ -249,6 +271,23 @@ class UnpaywallAdapter(_HttpBase):
             "version": best.get("version"),
             "checked_via": "unpaywall",
         }
+
+
+class FakeIntegrityChecker:
+    """Deterministic offline integrity checks: DOIs containing 'retract' are retracted,
+    'correct' are corrected, 'fail' simulates an unreachable provider, all else clean."""
+
+    def fetch_updates(self, doi: str) -> list[dict] | None:
+        doi = canonical_doi(doi) or ""
+        if "fail" in doi:
+            return None
+        if "retract" in doi:
+            return [{"type": "retraction", "label": "Retraction",
+                     "notice_doi": f"{doi}.notice", "date": "2026-01-15", "via": "fake"}]
+        if "correct" in doi:
+            return [{"type": "correction", "label": "Correction",
+                     "notice_doi": f"{doi}.notice", "date": "2026-02-01", "via": "fake"}]
+        return []
 
 
 class FakeScholarlyProvider:

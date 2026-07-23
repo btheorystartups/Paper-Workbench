@@ -51,6 +51,15 @@ def get_chat_provider() -> ChatProvider:
     return FakeChatProvider()
 
 
+def get_integrity_provider():
+    """Retraction/correction lookups. Crossref live (keyless, polite pool), fake offline."""
+    from .scholarly import CrossrefAdapter, FakeIntegrityChecker
+
+    if provider_mode() == "live":
+        return CrossrefAdapter()
+    return FakeIntegrityChecker()
+
+
 def chat_model_name() -> str:
     settings = get_settings()
     if provider_mode() != "live":
