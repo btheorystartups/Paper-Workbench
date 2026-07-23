@@ -74,9 +74,9 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 - **Auth** is a single-machine trust model (local API keys / dev tokens, HS256 JWTs). Real
   multi-tenant deployment needs a production IdP and tenant hardening — schema is the
   migration path.
-- **Branchable threads, CRediT assist, retraction-watch feed, reporting-guideline
-  checklists, cost-budget ceilings**: planned, not built. (Figures/tables rendering and
-  multi-candidate paper design, previously listed here, landed in later slices — see
+- **CRediT authorship assist**: planned, not built. (Branchable threads, retraction
+  watch, guideline checklists, cost budgets, figures/tables and multi-candidate paper
+  design, previously listed here, all landed in later slices — see
   `docs/CAPABILITY-MATRIX.md`.)
 - **LLM-quality evals** are a regression signal on known failure modes, not a correctness
   certificate. LLM output always enters a human-review gate.

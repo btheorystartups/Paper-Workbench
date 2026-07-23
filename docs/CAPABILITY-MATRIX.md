@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-07-22. Tests: 83 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-07-23. Tests: 101 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -16,7 +16,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Controlled state vocabularies (claim support, result strength, novelty, source access) | Implemented | `vocab.py`; enforced in services, never collapsed in UI/export |
 | Workspace/project isolation + soft delete + timestamps | Implemented | `workspace_id`/`project_id` scoping on every row |
 | Provenance that survives export | Implemented | export manifest: checksums, access levels, audit findings, AI provenance |
-| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 5 migrations, reversibility checked |
+| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 6 migrations, reversibility checked |
 | Audit-in-transaction | Implemented | `audit.py`; every consequential mutation writes an AuditEvent |
 | Provider abstraction + offline fakes (default) | Implemented | `providers/`, `WB_PROVIDER_MODE=fake` → zero network |
 | Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; artifact files bundled, paths portable, tamper-detected |
@@ -29,8 +29,8 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Grounded replies citing context; distinguishes evidence vs inference | Implemented | live gpt-4o 6/6 on the LLM eval; `[ctx:id]` citation contract |
 | Prompt-injection resistance (fenced untrusted content) | Implemented | eval `injection_resistance` = 1.00 live; tested |
 | Propose → human-approve → execute → audit (plan-hash bound) | Implemented | speculation never auto-promoted; `test_dialogue.py`, `test_api.py` |
-| Explicit modes (explore/explain/challenge/compare/plan/act) | Partial | modes not a separate switch; skeptical-review is a distinct mode (audits.py) |
-| Branchable threads | Planned | threads persist; branching not yet modeled |
+| Explicit modes (explore/explain/challenge/compare/plan/act) | Implemented | `dialogue.MODES`; stance instruction in system prompt; evidence rules identical in every mode; UI selector |
+| Branchable threads | Implemented | `dialogue.branch_thread`: fork at any turn, history copied with provenance markers, actions never copied; UI "Branch here" per turn |
 
 ## 2. Project intake & research-object registry
 

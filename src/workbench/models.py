@@ -154,6 +154,14 @@ class Thread(_Stamped, Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     pinned_object_ids: Mapped[list] = mapped_column(JSON, default=list)
     pinned_source_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # dialogue mode (vocab in services.dialogue.MODES) + branch lineage
+    mode: Mapped[str] = mapped_column(String(20), default="explore")
+    parent_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("threads.id"), default=None
+    )
+    branched_from_turn_id: Mapped[str | None] = mapped_column(
+        ForeignKey("turns.id", use_alter=True), default=None
+    )
 
 
 class Turn(_Stamped, Base):

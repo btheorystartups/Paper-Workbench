@@ -218,7 +218,9 @@ def list_threads(project_id: str, session: Session = Depends(_session)):
         select(Thread).where(Thread.project_id == project_id, Thread.deleted_at.is_(None))
     )
     return [
-        {"id": t.id, "title": t.title, "goal": t.goal,
+        {"id": t.id, "title": t.title, "goal": t.goal, "mode": t.mode,
+         "parent_thread_id": t.parent_thread_id,
+         "branched_from_turn_id": t.branched_from_turn_id,
          "pinned_object_ids": t.pinned_object_ids, "pinned_source_ids": t.pinned_source_ids}
         for t in rows
     ]
@@ -595,16 +597,55 @@ class ThreadIn(BaseModel):
     goal: str = ""
     pinned_object_ids: list[str] = Field(default_factory=list)
     pinned_source_ids: list[str] = Field(default_factory=list)
+    mode: str = "explore"
 
 
 @app.post("/projects/{project_id}/threads")
 def create_thread(project_id: str, body: ThreadIn, session: Session = Depends(_session)):
     try:
         thread = dialogue.create_thread(session, project_id, **body.model_dump())
-    except research.IntegrityError as exc:
+    except (research.IntegrityError, dialogue.DialogueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
-    return {"id": thread.id, "title": thread.title}
+    return {"id": thread.id, "title": thread.title, "mode": thread.mode}
+
+
+class BranchIn(BaseModel):
+    turn_id: str
+    title: str | None = None
+
+
+@app.post("/threads/{thread_id}/branch")
+def branch_thread(thread_id: str, body: BranchIn, session: Session = Depends(_session)):
+    try:
+        branch = dialogue.branch_thread(
+            session, thread_id, body.turn_id, title=body.title
+        )
+    except dialogue.DialogueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": branch.id, "title": branch.title, "mode": branch.mode,
+            "parent_thread_id": branch.parent_thread_id,
+            "branched_from_turn_id": branch.branched_from_turn_id}
+
+
+class ModeIn(BaseModel):
+    mode: str
+
+
+@app.post("/threads/{thread_id}/mode")
+def set_thread_mode(thread_id: str, body: ModeIn, session: Session = Depends(_session)):
+    try:
+        thread = dialogue.set_mode(session, thread_id, body.mode)
+    except dialogue.DialogueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {"id": thread.id, "mode": thread.mode}
+
+
+@app.get("/dialogue/modes")
+def list_dialogue_modes():
+    return [{"mode": m, "description": d} for m, d in dialogue.MODES.items()]
 
 
 class TurnIn(BaseModel):

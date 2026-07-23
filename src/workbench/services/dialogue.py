@@ -59,6 +59,26 @@ ACTION_REGISTRY: dict[str, RiskClass] = {
 }
 
 
+# Explicit dialogue modes: each injects a stance instruction into the system prompt.
+# The evidence rules above them are identical in every mode — a mode changes emphasis,
+# never the citation contract or the action-approval gate.
+MODES: dict[str, str] = {
+    "explore": "MODE explore: survey the pinned material, surface open questions and "
+               "promising directions; breadth over depth.",
+    "explain": "MODE explain: explain the pinned material precisely and pedagogically; "
+               "flag anything you cannot ground in context as inference.",
+    "challenge": "MODE challenge: act as a skeptical colleague; probe weaknesses, "
+                 "hidden assumptions, and alternative explanations for the pinned "
+                 "evidence.",
+    "compare": "MODE compare: compare the pinned items against each other (methods, "
+               "results, assumptions); make disagreements explicit.",
+    "plan": "MODE plan: turn the discussion into concrete next steps; prefer proposing "
+            "task actions over long prose.",
+    "act": "MODE act: the researcher wants execution; when intent is clear, propose the "
+           "specific workbench actions that implement it (they still require approval).",
+}
+
+
 class DialogueError(ValueError):
     pass
 
@@ -66,11 +86,15 @@ class DialogueError(ValueError):
 def create_thread(
     session: Session, project_id: str, *, title: str, goal: str = "",
     pinned_object_ids: list[str] | None = None, pinned_source_ids: list[str] | None = None,
+    mode: str = "explore",
 ) -> Thread:
     project = research._project(session, project_id)
+    if mode not in MODES:
+        raise DialogueError(f"unknown mode '{mode}' (available: {sorted(MODES)})")
     thread = Thread(
         project_id=project_id, title=title, goal=goal,
         pinned_object_ids=pinned_object_ids or [], pinned_source_ids=pinned_source_ids or [],
+        mode=mode,
     )
     session.add(thread)
     session.flush()
@@ -89,6 +113,7 @@ def _fence(text: str) -> str:
 def assemble_system_prompt(session: Session, thread: Thread) -> str:
     """Build the grounded system prompt: preamble + goal/summary + fenced context items."""
     lines = [SYSTEM_PREAMBLE]
+    lines.append(MODES.get(thread.mode, MODES["explore"]))
     if thread.goal:
         lines.append(f"Thread goal: {_fence(thread.goal)}")
     if thread.summary:
@@ -187,6 +212,67 @@ def post_user_turn(session: Session, thread_id: str, content: str) -> tuple[Turn
         detail={"proposed_actions": len(result.proposed_actions), "model": result.model},
     )
     return user_turn, assistant_turn
+
+
+def set_mode(session: Session, thread_id: str, mode: str) -> Thread:
+    thread = session.get(Thread, thread_id)
+    if thread is None or thread.deleted_at is not None:
+        raise DialogueError("thread not found")
+    if mode not in MODES:
+        raise DialogueError(f"unknown mode '{mode}' (available: {sorted(MODES)})")
+    thread.mode = mode
+    return thread
+
+
+def branch_thread(
+    session: Session, thread_id: str, turn_id: str, *, title: str | None = None
+) -> Thread:
+    """Fork a thread at a given turn: the new thread copies goal/summary/pins/mode and
+    the transcript up to AND including that turn, then evolves independently. Copied
+    turns keep their original provenance plus a copied_from_turn_id marker; proposed
+    actions are NOT copied (an approval belongs to exactly one thread)."""
+    parent = session.get(Thread, thread_id)
+    if parent is None or parent.deleted_at is not None:
+        raise DialogueError("thread not found")
+    fork_turn = session.get(Turn, turn_id)
+    if fork_turn is None or fork_turn.thread_id != thread_id:
+        raise DialogueError("turn not found in this thread")
+    project = research._project(session, parent.project_id)
+
+    branch = Thread(
+        project_id=parent.project_id,
+        title=title or f"{parent.title} (branch)",
+        goal=parent.goal, summary=parent.summary,
+        pinned_object_ids=list(parent.pinned_object_ids),
+        pinned_source_ids=list(parent.pinned_source_ids),
+        mode=parent.mode,
+        parent_thread_id=parent.id, branched_from_turn_id=turn_id,
+    )
+    session.add(branch)
+    session.flush()
+
+    history = list(
+        session.scalars(
+            select(Turn).where(Turn.thread_id == thread_id)
+            .order_by(Turn.created_at, Turn.id)
+        )
+    )
+    cutoff = next(i for i, t in enumerate(history) if t.id == turn_id)
+    for t in history[: cutoff + 1]:
+        session.add(
+            Turn(
+                thread_id=branch.id, role=t.role, content=t.content,
+                provenance={**(t.provenance or {}), "copied_from_turn_id": t.id},
+            )
+        )
+    session.flush()
+    record_audit(
+        session, workspace_id=project.workspace_id, actor="user", action="branch",
+        object_type="thread", object_id=branch.id,
+        detail={"parent_thread_id": parent.id, "branched_from_turn_id": turn_id,
+                "turns_copied": cutoff + 1},
+    )
+    return branch
 
 
 def approve_action(session: Session, action_id: str, *, plan_hash: str) -> ProposedAction:

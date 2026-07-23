@@ -904,7 +904,9 @@ async function tabDialogue(el, pid, sub) {
     list = '<div class="card-list">' + threads.map((t) =>
       '<button type="button" class="card' + (t.id === selectedTid ? " row-selected" : "") +
       '" data-action="open-thread" data-pid="' + esc(pid) + '" data-tid="' + esc(t.id) + '">' +
-      '<span class="card-title">' + esc(t.title) + "</span>" +
+      '<span class="card-title">' + esc(t.title) + "</span> " +
+      badge(t.mode || "explore", "b-blue") +
+      (t.parent_thread_id ? " " + badge("branch", "b-purple") : "") +
       (t.goal ? '<br><span class="dim small-text">' + esc(trunc(t.goal, 100)) + "</span>" : "") +
       '<br><span class="dim small-text">' +
       esc((t.pinned_object_ids || []).length) + " pinned objects · " +
@@ -916,9 +918,21 @@ async function tabDialogue(el, pid, sub) {
   let threadView = "";
   if (selectedTid) {
     const th = threads.find((t) => t.id === selectedTid);
+    const DIALOGUE_MODES = ["explore", "explain", "challenge", "compare", "plan", "act"];
     threadView =
       '<section class="panel" aria-labelledby="th-h"><h2 id="th-h">' +
       esc(th ? th.title : "Thread") + "</h2>" +
+      '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">' +
+      '<label for="th-mode" class="small-text">Mode</label>' +
+      '<select id="th-mode" data-change="th-mode" data-tid="' + esc(selectedTid) + '">' +
+      DIALOGUE_MODES.map((m) =>
+        '<option value="' + m + '"' + ((th && th.mode) === m ? " selected" : "") + ">" +
+        m + "</option>").join("") + "</select>" +
+      (th && th.parent_thread_id
+        ? '<a class="small-text" href="#/project/' + esc(pid) + "/dialogue/" +
+          esc(th.parent_thread_id) + '">↰ parent thread</a>'
+        : "") +
+      "</div>" +
       '<div id="chat-log" class="chat-log">' + loadingHTML() + "</div>" +
       '<form class="stack" data-form="send-turn" data-pid="' + esc(pid) +
       '" data-tid="' + esc(selectedTid) + '">' +
@@ -942,6 +956,10 @@ async function tabDialogue(el, pid, sub) {
     '<input id="th-title" name="title" type="text" required></div>' +
     '<div class="field"><label for="th-goal">Goal</label>' +
     '<textarea id="th-goal" name="goal"></textarea></div>' +
+    '<div class="field"><label for="th-new-mode">Mode</label>' +
+    '<select id="th-new-mode" name="mode">' +
+    ["explore", "explain", "challenge", "compare", "plan", "act"].map((m) =>
+      '<option value="' + m + '">' + m + "</option>").join("") + "</select></div>" +
     '<div class="field"><label for="th-pin-obj">Pin research objects</label>' +
     '<select id="th-pin-obj" multiple>' +
     multiOptions(objects, (o) => "[" + o.kind + "] " + o.title) + "</select></div>" +
@@ -979,7 +997,11 @@ async function loadTurns(tid) {
       if (!isUser && p.simulated) meta += badge("SIMULATED", "b-amber");
       meta += "</span>";
       return '<div class="msg ' + (isUser ? "user" : "assistant") + '">' + meta +
-        esc(t.content) + "</div>";
+        esc(t.content) +
+        '<div><button type="button" class="small" data-action="branch-turn" ' +
+        'data-tid="' + esc(tid) + '" data-turnid="' + esc(t.id) +
+        '" title="Fork the thread from this point">Branch here</button></div>' +
+        "</div>";
     }).join("");
     box.scrollTop = box.scrollHeight;
   } catch (e) {
@@ -1751,6 +1773,20 @@ const clickActions = {
     } catch (e) { toast(e.message, "err"); }
   }),
 
+  "branch-turn": (t) => withBusy(t, async () => {
+    const title = window.prompt("Title for the new branch (blank = auto):", "");
+    if (title === null) return;
+    try {
+      const payload = { turn_id: t.dataset.turnid };
+      if (title.trim()) payload.title = title.trim();
+      const b = await api("/threads/" + encodeURIComponent(t.dataset.tid) + "/branch",
+        "POST", payload);
+      toast("Branched into '" + b.title + "'.");
+      const pid = location.hash.split("/")[2];
+      location.hash = "#/project/" + pid + "/dialogue/" + b.id;
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
   "cl-attach": (t) => withBusy(t, async () => {
     const packSel = document.getElementById("cl-pack");
     if (!packSel || !packSel.value) { toast("All packs already attached.", "err"); return; }
@@ -2111,6 +2147,7 @@ const formActions = {
     const body = fd(form);
     const payload = { title: body.title };
     if (body.goal) payload.goal = body.goal;
+    if (body.mode) payload.mode = body.mode;
     const objs = selectedValues(form.querySelector("#th-pin-obj"));
     const srcs = selectedValues(form.querySelector("#th-pin-src"));
     if (objs.length) payload.pinned_object_ids = objs;
@@ -2335,6 +2372,14 @@ const changeActions = {
       await api("/checklists/" + encodeURIComponent(t.dataset.clid) + "/items/" +
         encodeURIComponent(t.dataset.iid), "POST", { status, location, note });
       toast("Item " + t.dataset.iid + " marked " + status.replace("_", " ") + ".");
+    } catch (e) { toast(e.message, "err"); route(); }
+  },
+
+  "th-mode": async (t) => {
+    try {
+      await api("/threads/" + encodeURIComponent(t.dataset.tid) + "/mode", "POST",
+        { mode: t.value });
+      toast("Mode set to " + t.value + ".");
     } catch (e) { toast(e.message, "err"); route(); }
   },
 

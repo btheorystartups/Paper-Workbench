@@ -10,7 +10,7 @@ of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
 ## Status (P1–P6 + expansion + hardening — 2026-07-22)
 
-Implemented and tested (83 offline tests; live providers verified with user keys):
+Implemented and tested (101 offline tests; live providers verified with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -66,7 +66,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 83 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 101 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
