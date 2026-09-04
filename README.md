@@ -8,6 +8,8 @@ defensible manuscripts. Not a paper generator: paper creation is optional and do
 Standalone by design. Selected components were copied from (and are now owned independently
 of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
+Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
+
 ## Status (P1–P6 + expansion + hardening — 2026-07-22)
 
 Implemented and tested (101 offline tests; live providers verified with user keys):
