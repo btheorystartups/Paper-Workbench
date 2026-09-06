@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-09-06. Tests: 114 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-06. Tests: 123 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -68,7 +68,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Saved searches, exploratory-by-default (never auto-"systematic") | Implemented | `services/literature.py` |
 | Screening states + literature matrix | Implemented | `LiteratureEntry`, `literature_matrix()` |
 | Semantic / embedding retrieval (similarity ≠ evidence) | Simulated→Implemented | `services/semantic.py`; fake hash vectors offline, OpenAI embeddings live |
-| Citation-graph / backward-forward exploration | Partial | cited-by counts captured; no graph-walk UI |
+| Citation-graph / backward-forward exploration | Implemented | `services/citation_graph.py`; DOI/provider-keyed edges, controlled resolution and review states, append-only observations, bounded graph UI; provider links are always discovery-only |
 | Systematic-review protocol (flow counts, screening rules) | Out of scope | only exploratory/narrative discovery, honestly labeled |
 
 ## 6. Novelty / contribution / gap assessment

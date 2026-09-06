@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from ..audit import record_audit
 from ..config import get_settings
 from ..models import (
+    CitationEdge,
     Claim,
     ClaimEvidence,
     CostBudget,
@@ -57,6 +58,7 @@ _TABLES = [
     ("research_objects", ResearchObject, "project"),
     ("edges", Edge, "project"),
     ("sources", Source, "project"),
+    ("citation_edges", CitationEdge, "project"),
     ("excerpts", Excerpt, "source"),
     ("claims", Claim, "project"),
     ("claim_evidence", ClaimEvidence, "claim"),

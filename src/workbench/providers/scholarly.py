@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 _logger = logging.getLogger("wb.scholarly")
 
@@ -52,6 +53,16 @@ def work_key(work: ScholarlyWork) -> str:
     if doi:
         return f"doi:{doi}"
     return f"title:{_norm_title(work.title)}|{work.year or ''}"
+
+
+def citation_key(work: ScholarlyWork) -> str:
+    """Stable discovery identity without implying that title similarity is evidence."""
+    doi = canonical_doi(work.doi)
+    if doi:
+        return f"doi:{doi}"
+    if work.provider and work.provider_id:
+        return f"provider:{work.provider}:{work.provider_id}"
+    return work_key(work)
 
 
 def dedupe(works: list[ScholarlyWork]) -> list[ScholarlyWork]:
@@ -214,6 +225,7 @@ class SemanticScholarAdapter(_HttpBase):
     """Semantic Scholar Graph API (keyless, shared rate pool — be gentle)."""
 
     BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
+    PAPER_BASE = "https://api.semanticscholar.org/graph/v1/paper"
     FIELDS = "title,authors,year,venue,externalIds,url,abstract,citationCount,openAccessPdf"
 
     def __init__(self, **kwargs) -> None:
@@ -224,28 +236,55 @@ class SemanticScholarAdapter(_HttpBase):
         data = self._get(self.BASE, {"query": query, "limit": count, "fields": self.FIELDS})
         if not data:
             return []
-        works = []
-        for item in data.get("data", []):
-            ext = item.get("externalIds") or {}
-            oa = item.get("openAccessPdf") or {}
-            works.append(
-                ScholarlyWork(
-                    title=item.get("title") or "",
-                    authors=[a.get("name", "") for a in item.get("authors", [])],
-                    year=item.get("year"),
-                    venue=item.get("venue") or "",
-                    doi=canonical_doi(ext.get("DOI")),
-                    url=item.get("url"),
-                    abstract=item.get("abstract"),
-                    cited_by_count=item.get("citationCount"),
-                    open_access_url=oa.get("url"),
-                    license=oa.get("license"),
-                    provider="semanticscholar",
-                    provider_id=item.get("paperId", ""),
-                    raw=item,
-                )
-            )
-        return works
+        return [self._to_work(item) for item in data.get("data", [])]
+
+    def citations(
+        self, doi: str, *, direction: str, count: int = 20
+    ) -> list[ScholarlyWork]:
+        """Return backward references or forward citations for a DOI.
+
+        This is discovery metadata from the Semantic Scholar Graph API. Callers retain
+        provider provenance and must not promote a relation into claim evidence.
+        """
+        doi = canonical_doi(doi) or ""
+        if not doi:
+            return []
+        if direction not in {"backward", "forward"}:
+            raise ValueError("direction must be backward or forward")
+        relation = "references" if direction == "backward" else "citations"
+        side = "citedPaper" if direction == "backward" else "citingPaper"
+        paper_id = quote(f"DOI:{doi}", safe=":")
+        data = self._get(
+            f"{self.PAPER_BASE}/{paper_id}/{relation}",
+            {"limit": min(count, 100), "fields": self.FIELDS},
+        )
+        if not data:
+            return []
+        return [
+            self._to_work(row.get(side) or {})
+            for row in data.get("data", [])
+            if (row.get(side) or {}).get("paperId")
+        ][:count]
+
+    @staticmethod
+    def _to_work(item: dict) -> ScholarlyWork:
+        ext = item.get("externalIds") or {}
+        oa = item.get("openAccessPdf") or {}
+        return ScholarlyWork(
+            title=item.get("title") or "",
+            authors=[a.get("name", "") for a in item.get("authors", [])],
+            year=item.get("year"),
+            venue=item.get("venue") or "",
+            doi=canonical_doi(ext.get("DOI")),
+            url=item.get("url"),
+            abstract=item.get("abstract"),
+            cited_by_count=item.get("citationCount"),
+            open_access_url=oa.get("url"),
+            license=oa.get("license"),
+            provider="semanticscholar",
+            provider_id=item.get("paperId", ""),
+            raw=item,
+        )
 
 
 class UnpaywallAdapter(_HttpBase):
@@ -325,3 +364,42 @@ class FakeScholarlyProvider:
             provider_id="fake:3",
         )
         return [base, dup, other][:count]
+
+    def citations(
+        self, doi: str, *, direction: str, count: int = 20
+    ) -> list[ScholarlyWork]:
+        doi = canonical_doi(doi) or "unknown"
+        if direction not in {"backward", "forward"}:
+            raise ValueError("direction must be backward or forward")
+        relation = "reference" if direction == "backward" else "citing"
+        works = [
+            ScholarlyWork(
+                title=f"[FAKE] {relation.title()} work for {doi}",
+                authors=["A. Researcher"],
+                year=2021 if direction == "backward" else 2025,
+                venue="Fake Citation Journal",
+                doi=f"10.5555/{relation}.1",
+                url=f"https://example.org/{relation}/1",
+                abstract=None,
+                cited_by_count=4,
+                open_access_url=None,
+                license=None,
+                provider="fake-citations",
+                provider_id=f"fake:{relation}:1",
+            ),
+            ScholarlyWork(
+                title=f"[FAKE] Unresolved {relation.title()} work",
+                authors=["B. Researcher"],
+                year=2022,
+                venue="Fake Citation Journal",
+                doi=None,
+                url=f"https://example.org/{relation}/2",
+                abstract=None,
+                cited_by_count=1,
+                open_access_url=None,
+                license=None,
+                provider="fake-citations",
+                provider_id=f"fake:{relation}:2",
+            ),
+        ]
+        return works[:count]

@@ -17,6 +17,7 @@ from .models import Claim, ProposedAction, ResearchObject, Source, Thread, Turn
 from .services import (
     audits,
     authoring,
+    citation_graph,
     dialogue,
     export_service,
     figures,
@@ -813,6 +814,102 @@ def literature_screen(project_id: str, body: ScreenIn, session: Session = Depend
 @app.get("/projects/{project_id}/literature/matrix")
 def get_literature_matrix(project_id: str, session: Session = Depends(_session)):
     return literature.literature_matrix(session, project_id)
+
+
+class CitationDiscoverIn(BaseModel):
+    provider: Literal["semanticscholar"] = "semanticscholar"
+    direction: Literal["backward", "forward"] = "backward"
+    count: int = Field(default=20, ge=1, le=100)
+
+
+@app.post("/projects/{project_id}/sources/{source_id}/citations/discover")
+def discover_source_citations(
+    project_id: str,
+    source_id: str,
+    body: CitationDiscoverIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "editor")
+    try:
+        result = citation_graph.discover_citations(
+            session, project_id, source_id, **body.model_dump()
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return result
+
+
+@app.get("/projects/{project_id}/sources/{source_id}/citation-graph")
+def get_source_citation_graph(
+    project_id: str,
+    source_id: str,
+    depth: int = 2,
+    max_nodes: int = 100,
+    include_rejected: bool = False,
+    session: Session = Depends(_session),
+):
+    try:
+        return citation_graph.citation_graph(
+            session,
+            project_id,
+            source_id,
+            depth=depth,
+            max_nodes=max_nodes,
+            include_rejected=include_rejected,
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class CitationResolveIn(BaseModel):
+    endpoint: Literal["citing", "cited"]
+    source_id: str
+    review_note: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/projects/{project_id}/citations/{edge_id}/resolve")
+def resolve_citation_endpoint(
+    project_id: str,
+    edge_id: str,
+    body: CitationResolveIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "editor")
+    try:
+        edge = citation_graph.resolve_edge(
+            session, project_id, edge_id, **body.model_dump()
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return citation_graph.edge_out(session, edge)
+
+
+class CitationReviewIn(BaseModel):
+    state: Literal["human_verified", "rejected"]
+    review_note: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/projects/{project_id}/citations/{edge_id}/review")
+def review_citation_edge(
+    project_id: str,
+    edge_id: str,
+    body: CitationReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "editor")
+    try:
+        edge = citation_graph.review_edge(
+            session, project_id, edge_id, **body.model_dump()
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return citation_graph.edge_out(session, edge)
 
 
 class ContributionIn(BaseModel):

@@ -127,6 +127,8 @@ const state = {
   projectNames: {},        // pid -> name
   pickedExcerpts: new Map(), // excerpt id -> label (claim form, survives re-render)
   pickedProject: null,       // pid the picked excerpts belong to
+  citationSources: [],       // current project's source choices for graph resolution
+  citationRoot: null,
 };
 
 /* ===================== helpers ===================== */
@@ -865,6 +867,25 @@ async function tabLiterature(el, pid) {
     "</section>" +
     '<section class="panel" aria-labelledby="mat-h"><h2 id="mat-h">Screening matrix</h2>' +
     '<div id="lit-matrix">' + loadingHTML() + "</div></section>" +
+    '<section class="panel" aria-labelledby="cite-h"><h2 id="cite-h">Citation graph</h2>' +
+    '<div class="notice"><strong>Discovery only</strong><p class="small-text">' +
+    'Provider-reported citation links never become evidence or change claim support.</p></div>' +
+    '<form class="stack" data-form="citation-discover" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="cite-source">Root source</label>' +
+    '<select id="cite-source" name="source_id" required></select></div>' +
+    '<div class="field-row"><div class="field"><label for="cite-direction">Direction</label>' +
+    '<select id="cite-direction" name="direction">' +
+    '<option value="backward">Backward: works this source cites</option>' +
+    '<option value="forward">Forward: works citing this source</option></select></div>' +
+    '<div class="field"><label for="cite-count">Maximum results</label>' +
+    '<input id="cite-count" name="count" type="number" value="20" min="1" max="100"></div>' +
+    '<div class="field"><label for="cite-depth">View depth</label>' +
+    '<input id="cite-depth" name="depth" type="number" value="2" min="1" max="4"></div></div>' +
+    '<div class="row-actions"><button type="submit" class="primary">Discover links</button>' +
+    '<button type="button" data-action="citation-view" data-pid="' + esc(pid) +
+    '">View saved graph</button></div></form>' +
+    '<div id="citation-graph-results">' +
+    emptyHTML("Select a DOI source, then discover or view saved links.") + "</div></section>" +
     '<section class="panel" aria-labelledby="con-h"><h2 id="con-h">Contribution statement</h2>' +
     '<form class="stack" data-form="contribution" data-pid="' + esc(pid) + '">' +
     '<div class="field"><label for="con-title">Title</label>' +
@@ -880,7 +901,93 @@ async function tabLiterature(el, pid) {
     '<select id="con-prior" multiple></select></div>' +
     '<div><button type="submit" class="primary">Record contribution</button></div>' +
     "</form></section>";
-  await loadMatrix(pid);
+  await Promise.all([loadMatrix(pid), loadCitationSources(pid)]);
+}
+
+async function loadCitationSources(pid) {
+  const select = document.getElementById("cite-source");
+  if (!select) return;
+  try {
+    state.citationSources = await api("/projects/" + encodeURIComponent(pid) + "/sources");
+    select.innerHTML = state.citationSources.map((source) =>
+      '<option value="' + esc(source.id) + '">' + esc(trunc(source.title, 80)) +
+      (source.doi ? " · " + esc(source.doi) : " · no DOI") + "</option>"
+    ).join("");
+    if (state.citationRoot && state.citationSources.some((s) => s.id === state.citationRoot)) {
+      select.value = state.citationRoot;
+    }
+  } catch (e) {
+    select.innerHTML = "";
+    const box = document.getElementById("citation-graph-results");
+    if (box) box.innerHTML = errorHTML(e.message);
+  }
+}
+
+async function loadCitationGraph(pid, sourceId, depth) {
+  const box = document.getElementById("citation-graph-results");
+  if (!box) return;
+  if (!sourceId) {
+    box.innerHTML = emptyHTML("No root source selected.");
+    return;
+  }
+  state.citationRoot = sourceId;
+  box.innerHTML = loadingHTML("Loading citation graph…");
+  try {
+    const graph = await api(
+      "/projects/" + encodeURIComponent(pid) + "/sources/" +
+      encodeURIComponent(sourceId) + "/citation-graph?depth=" + encodeURIComponent(depth || 2)
+    );
+    renderCitationGraph(graph, pid, sourceId, depth || 2);
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+function renderCitationGraph(graph, pid, sourceId, depth) {
+  const box = document.getElementById("citation-graph-results");
+  if (!box) return;
+  if (!(graph.edges || []).length) {
+    box.innerHTML = emptyHTML("No saved citation links for this source.");
+    return;
+  }
+  const sourceOptions = state.citationSources.map((source) =>
+    '<option value="' + esc(source.id) + '">' + esc(trunc(source.title, 65)) + "</option>"
+  ).join("");
+  box.innerHTML =
+    '<p class="small-text">' + badge((graph.nodes || []).length + " nodes", "b-blue") + " " +
+    badge(graph.edges.length + " edges", "b-purple") +
+    (graph.truncated ? " " + badge("truncated", "b-amber") : "") + "</p>" +
+    '<ul class="plain">' + graph.edges.map((edge) => {
+      const providers = [...new Set((edge.observations || []).map((o) => o.provider))];
+      let resolution = "";
+      for (const endpoint of ["citing", "cited"]) {
+        if (!edge[endpoint].resolved) {
+          const selectId = "cite-resolve-" + edge.id + "-" + endpoint;
+          resolution += '<div class="field-row"><div class="field"><label for="' +
+            esc(selectId) + '">Resolve ' + endpoint + ' endpoint</label><select id="' +
+            esc(selectId) + '">' + sourceOptions + '</select></div><div class="field">' +
+            '<button type="button" class="small" data-action="citation-resolve" data-pid="' +
+            esc(pid) + '" data-edge="' + esc(edge.id) + '" data-endpoint="' + endpoint +
+            '" data-select="' + esc(selectId) + '" data-root="' + esc(sourceId) +
+            '" data-depth="' + esc(depth) + '">Resolve after review</button></div></div>';
+        }
+      }
+      const reviewActions = edge.review_state === "provider_reported"
+        ? '<div class="row-actions"><button type="button" class="small" data-action="citation-review" ' +
+          'data-state="human_verified" data-pid="' + esc(pid) + '" data-edge="' + esc(edge.id) +
+          '" data-root="' + esc(sourceId) + '" data-depth="' + esc(depth) + '">Verify relation</button>' +
+          '<button type="button" class="small danger" data-action="citation-review" ' +
+          'data-state="rejected" data-pid="' + esc(pid) + '" data-edge="' + esc(edge.id) +
+          '" data-root="' + esc(sourceId) + '" data-depth="' + esc(depth) + '">Reject relation</button></div>'
+        : "";
+      return '<li class="finding"><strong>' + esc(edge.citing.title) + "</strong> cites <strong>" +
+        esc(edge.cited.title) + "</strong><br>" +
+        badge(pretty(edge.resolution_state), edge.resolution_state === "resolved" ? "b-teal" : "b-amber") +
+        " " + badge(pretty(edge.review_state), edge.review_state === "human_verified" ? "b-green" : "b-gray") +
+        ' <span class="small-text dim">via ' + esc(providers.join(", ") || "unknown") + "</span>" +
+        (edge.review_note ? '<p class="small-text">Review: ' + esc(edge.review_note) + "</p>" : "") +
+        resolution + reviewActions + "</li>";
+    }).join("") + "</ul>";
 }
 
 async function loadMatrix(pid) {
@@ -1973,7 +2080,7 @@ const clickActions = {
         ? "Imported (" + pretty(r.access) + ")."
         : "Already in project (" + pretty(r.access) + ").");
       t.textContent = "Imported";
-      await loadMatrix(t.dataset.pid);
+      await Promise.all([loadMatrix(t.dataset.pid), loadCitationSources(t.dataset.pid)]);
     } catch (e) { toast(e.message, "err"); }
   }),
 
@@ -1992,6 +2099,50 @@ const clickActions = {
       await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/literature/screen", "POST", body);
       toast("Screening saved.");
       await loadMatrix(t.dataset.pid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "citation-view": (t) => withBusy(t, async () => {
+    const source = document.getElementById("cite-source");
+    const depth = document.getElementById("cite-depth");
+    await loadCitationGraph(t.dataset.pid, source ? source.value : "", depth ? depth.value : 2);
+  }),
+
+  "citation-review": (t) => withBusy(t, async () => {
+    const note = window.prompt(
+      "Human review note for this citation relation (required):", ""
+    );
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api(
+        "/projects/" + encodeURIComponent(t.dataset.pid) + "/citations/" +
+        encodeURIComponent(t.dataset.edge) + "/review",
+        "POST",
+        { state: t.dataset.state, review_note: note.trim() }
+      );
+      toast("Citation relation marked " + pretty(t.dataset.state) + ".");
+      await loadCitationGraph(t.dataset.pid, t.dataset.root, t.dataset.depth);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "citation-resolve": (t) => withBusy(t, async () => {
+    const source = document.getElementById(t.dataset.select);
+    if (!source || !source.value) { toast("Select a source to resolve this endpoint.", "err"); return; }
+    const note = window.prompt(
+      "Human review note explaining this identity resolution (required):", ""
+    );
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api(
+        "/projects/" + encodeURIComponent(t.dataset.pid) + "/citations/" +
+        encodeURIComponent(t.dataset.edge) + "/resolve",
+        "POST",
+        { endpoint: t.dataset.endpoint, source_id: source.value, review_note: note.trim() }
+      );
+      toast("Citation endpoint resolved; relation remains discovery-only.");
+      await loadCitationGraph(t.dataset.pid, t.dataset.root, t.dataset.depth);
     } catch (e) { toast(e.message, "err"); }
   }),
 
@@ -2227,6 +2378,35 @@ const formActions = {
       data._query = body.query;
       renderLitResults(form.dataset.pid, data);
       toast((data.works || []).length + " result(s).");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      throw e;
+    }
+  },
+
+  "citation-discover": async (form) => {
+    const body = fd(form);
+    const box = document.getElementById("citation-graph-results");
+    if (!body.source_id) throw new Error("Select a root source.");
+    if (box) box.innerHTML = loadingHTML("Discovering citation links…");
+    try {
+      const result = await api(
+        "/projects/" + encodeURIComponent(form.dataset.pid) + "/sources/" +
+        encodeURIComponent(body.source_id) + "/citations/discover",
+        "POST",
+        {
+          provider: "semanticscholar",
+          direction: body.direction,
+          count: parseInt(body.count, 10) || 20,
+        }
+      );
+      toast(
+        result.works_observed + " citation link(s) observed" +
+        (result.simulated ? " (simulated)." : ".")
+      );
+      await loadCitationGraph(
+        form.dataset.pid, body.source_id, parseInt(body.depth, 10) || 2
+      );
     } catch (e) {
       if (box) box.innerHTML = errorHTML(e.message);
       throw e;

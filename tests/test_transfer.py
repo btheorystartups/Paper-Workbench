@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from workbench.ingest.files import ingest_file
-from workbench.services import dialogue, research, transfer
+from workbench.providers.scholarly import ScholarlyWork
+from workbench.services import citation_graph, dialogue, research, transfer
 from workbench.vocab import ClaimSupport, ObjectKind, Relation
 
 
@@ -49,11 +50,37 @@ def _populate(session, project, tmp_path):
 
 def test_export_import_round_trip(session, project, tmp_path, data_dir):
     obj, source, claim, thread = _populate(session, project, tmp_path)
+    source.doi = "10.1000/portable"
+    citation_edges, _created = citation_graph.record_citations(
+        session,
+        project.id,
+        source.id,
+        direction="backward",
+        provider="fixture",
+        works=[
+            ScholarlyWork(
+                title="Unresolved reference",
+                authors=[],
+                year=2020,
+                venue="",
+                doi="10.1000/reference",
+                url=None,
+                abstract=None,
+                cited_by_count=None,
+                open_access_url=None,
+                license=None,
+                provider="fixture",
+                provider_id="ref-1",
+            )
+        ],
+        simulated=True,
+    )
     result = transfer.export_project(session, project.id)
     session.commit()
     bundle = Path(result["path"])
     assert bundle.is_file()
     assert result["row_counts"]["research_objects"] >= 2
+    assert result["row_counts"]["citation_edges"] == 1
     assert result["artifact_file_count"] >= 2  # original + extracted.txt
 
     # simulate a fresh machine: wipe artifacts and DB rows, re-import
@@ -86,10 +113,11 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
         assert fresh.get(type(claim), claim.id).text == "Caching helps."
         from sqlalchemy import select
 
-        from workbench.models import Turn
+        from workbench.models import CitationEdge, Turn
 
         turns = list(fresh.scalars(select(Turn).where(Turn.thread_id == thread.id)))
         assert len(turns) >= 2
+        assert fresh.get(CitationEdge, citation_edges[0].id).review_state == "provider_reported"
     finally:
         fresh.close()
 

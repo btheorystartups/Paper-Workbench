@@ -17,7 +17,14 @@ def test_upgrade_to_head_builds_full_schema(tmp_path, monkeypatch):
     insp = inspect(db.get_engine())
     tables = set(insp.get_table_names())
     # every mapped table plus alembic bookkeeping
-    assert {"users", "submissions", "venue_profiles", "embeddings", "alembic_version"} <= tables
+    assert {
+        "users",
+        "submissions",
+        "venue_profiles",
+        "embeddings",
+        "citation_edges",
+        "alembic_version",
+    } <= tables
     # the credential columns that the legacy create_all DB was missing
     user_cols = {c["name"] for c in insp.get_columns("users")}
     assert {"email", "password_hash", "oidc_subject", "email_verified"} <= user_cols

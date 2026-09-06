@@ -12,7 +12,7 @@ Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
 
 ## Status (P1–P6 + expansion + hardening — 2026-09-06)
 
-Implemented and tested (114 offline tests; live providers verified separately with user keys):
+Implemented and tested (123 offline tests; live providers verified separately with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -26,6 +26,10 @@ Implemented and tested (114 offline tests; live providers verified separately wi
 - **Literature core** (P3): OpenAlex + Crossref adapters (normalized, DOI-canonicalized,
   deduped), saved searches (exploratory by default — never auto-"systematic"), explicit
   imports, screening states + literature matrix, novelty map with mandatory coverage notes.
+- **Citation graph**: project-scoped backward/forward discovery with canonical DOI/provider
+  identities, controlled resolution/review states, append-only provider observations,
+  bounded traversal, import-time resolution, and human review. Citation links remain
+  discovery-only and never create sources, claims, or evidence automatically.
 - **Source integrity**: project-scoped duplicate candidates from controlled DOI/title/year
   signals; conflicts block merging; every merge requires a human note and current plan hash,
   preserves evidence/literature provenance, records an audit event, and invalidates embeddings.
@@ -75,7 +79,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 114 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 123 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 

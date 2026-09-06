@@ -122,3 +122,24 @@ Ledger status (2026-09-06, PDF intake hardening slice):
   `mixed_unreviewed`; extracted text still never becomes claim evidence automatically.
 - **Verification** — 114 offline tests and Ruff green; OCR behavior is exercised with a
   deterministic local fake because no OCR runtime is installed on this box.
+
+Ledger status (2026-09-06, citation-graph slice):
+- **Explicit citation graph** — provider-reported relations are stored as canonical
+  citing→cited edges keyed by DOI, provider identity, or an unresolved bibliographic key.
+  Resolution (`resolved`, `citing_unresolved`, `cited_unresolved`, `both_unresolved`) and
+  review (`provider_reported`, `human_verified`, `rejected`) remain separate controlled
+  states rather than being collapsed into narrative confidence.
+- **Provenance and review** — every discovery appends a timestamped provider observation;
+  manual identity resolution and relation review require human notes and create audit
+  events. Importing a matching DOI/provider record resolves identity but does not verify
+  the citation relation.
+- **Discovery boundary** — graph traversal is project-scoped and bounded by depth/node
+  limits. Rejected links are hidden by default. No graph operation creates Sources,
+  excerpts, claims, evidence links, or accepted objects automatically.
+- **Provider boundary** — deterministic fake discovery is the offline default. The live
+  Semantic Scholar adapter is available only in explicit live provider mode; no live call
+  was made in this slice.
+- **Lifecycle coverage** — citation edges survive project export/import and are repointed
+  by reviewed duplicate-source merges; unresolved/unreviewed relations surface as
+  informational audit findings.
+- **Verification** — 123 offline tests, Ruff, JavaScript syntax, and migration checks green.
