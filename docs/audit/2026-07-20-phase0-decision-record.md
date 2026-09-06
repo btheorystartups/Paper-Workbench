@@ -190,3 +190,26 @@ Ledger status (2026-09-06, publication-packaging slice):
   slice.
 - **Verification** — 140 offline tests, Ruff, JavaScript syntax, package checksum validation,
   project-transfer round trips, and migration checks green.
+
+Ledger status (2026-09-06, reproducible-compute slice):
+- **Immutable execution plans** — a run binds an ingested `.py` artifact, ingested input
+  artifacts, arguments, timeout, seed, Python executable hash, platform, and installed-package
+  fingerprint into one stable plan hash. Changed provenance or environment blocks approval or
+  execution; replay requires a new plan rather than mutation in place.
+- **Two explicit execution gates** — a human approval note must acknowledge that local network,
+  filesystem, and descendant-process isolation are unenforced; starting the process then needs
+  a separate confirmation carrying the same plan hash. The runner uses `shell=False`, a minimal
+  environment, no stdin, no package installation, a timeout, and bounded logs/output capture.
+- **Evidence boundary** — successful runs and every captured output begin as
+  `compute_unreviewed`. Verification or rejection requires a human note. Only a verified run
+  can be promoted, once, into a human-accepted `result` with a controlled strength (at most
+  `computationally_verified_within_scope`); no claim or claim-evidence link is auto-created.
+- **Portable provenance** — script, inputs, environment, command shape, logs, outputs, checksums,
+  exit state, and an execution-manifest hash are retained. Compute rows and content-addressed
+  artifacts survive project export/import; audit events cover plan, approval, execution,
+  review, and promotion.
+- **Provider/system boundary** — this slice uses the existing Python runtime and standard
+  library only. No API call, dependency install, container runtime, or real research script was
+  executed during development verification.
+- **Verification** — 144 offline tests, Ruff, JavaScript syntax, migration checks, timeout/
+  failure paths, secret-env exclusion, artifact download checks, and transfer round trips green.

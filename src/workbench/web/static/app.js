@@ -318,7 +318,7 @@ function closeAuthModal() {
 
 /* ===================== router ===================== */
 
-const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions", "figures"];
+const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions", "compute", "figures"];
 
 function route() {
   const view = document.getElementById("view");
@@ -441,7 +441,7 @@ function renderProject(view, pid, tab, sub) {
   const fns = {
     objects: tabObjects, sources: tabSources, claims: tabClaims,
     literature: tabLiterature, dialogue: tabDialogue, manuscripts: tabManuscripts,
-    submissions: tabSubmissions, figures: tabFigures,
+    submissions: tabSubmissions, compute: tabCompute, figures: tabFigures,
   };
   guarded(el, (c) => fns[tab](c, pid, sub || []));
   loadUsageLine(pid);
@@ -1944,6 +1944,107 @@ function renderPublicationPackages(submission, packages) {
     '<div><button type="submit">Create new package version</button></div></form>';
 }
 
+/* ===================== compute tab ===================== */
+
+async function tabCompute(el, pid) {
+  const [sources, runs] = await Promise.all([
+    api("/projects/" + encodeURIComponent(pid) + "/sources"),
+    api("/projects/" + encodeURIComponent(pid) + "/compute-runs"),
+  ]);
+  const ingested = sources.filter((source) => source.ingest && source.ingest.artifact_path);
+  const scripts = ingested.filter((source) =>
+    String(source.ingest.artifact_path).toLowerCase().endsWith(".py"));
+  const scriptOptions = '<option value="">— choose an ingested Python file —</option>' +
+    scripts.map((source) => '<option value="' + esc(source.id) + '">' +
+      esc(source.title) + "</option>").join("");
+  const inputChoices = ingested.length ? ingested.map((source) =>
+    '<label class="chip"><input type="checkbox" name="input_source_id" value="' +
+    esc(source.id) + '"> ' + esc(source.title) + "</label>").join("") :
+    '<span class="dim small-text">No ingested input artifacts available.</span>';
+  const cards = runs.length ? runs.map((run) => renderComputeRun(run, pid)).join("") :
+    emptyHTML("No compute plans yet. Ingest a .py file under Sources, then create a plan.");
+
+  el.innerHTML =
+    '<section class="panel" aria-labelledby="compute-h"><h2 id="compute-h">Reproducible compute</h2>' +
+    '<p class="boundary-warning"><strong>Local execution boundary:</strong> this runner does not ' +
+    'enforce network, filesystem, or descendant-process isolation on this host. It never ' +
+    'installs packages and never uses a shell. Inspect the script before approval.</p>' +
+    '<p class="dim small-text">A plan is bound to script, input, interpreter, package, ' +
+    'argument, timeout, and seed hashes. A successful run remains ' +
+    '<strong>compute_unreviewed</strong> until a human verifies it; promotion creates a ' +
+    'controlled research result but never a claim.</p>' + cards + "</section>" +
+    '<section class="panel" aria-labelledby="compute-new-h"><h2 id="compute-new-h">New compute plan</h2>' +
+    '<form class="stack" data-form="create-compute-run" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label for="compute-script">Ingested Python script</label>' +
+    '<select id="compute-script" name="script_source_id" required>' + scriptOptions +
+    "</select></div>" +
+    '<fieldset><legend>Input artifacts (optional)</legend><div class="chips">' +
+    inputChoices + "</div></fieldset>" +
+    '<div class="field"><label for="compute-args">Arguments (one per line)</label>' +
+    '<textarea id="compute-args" name="arguments" placeholder="--mode&#10;analysis"></textarea></div>' +
+    '<div class="field-row"><div class="field"><label for="compute-timeout">Timeout seconds</label>' +
+    '<input id="compute-timeout" name="timeout_seconds" type="number" min="1" value="60" required></div>' +
+    '<div class="field"><label for="compute-seed">Seed</label>' +
+    '<input id="compute-seed" name="seed" type="number" value="0" required></div></div>' +
+    '<div><button type="submit" class="primary"' + (scripts.length ? "" : " disabled") +
+    ">Create immutable plan</button></div></form></section>";
+}
+
+function renderComputeRun(run, pid) {
+  const plan = run.plan || {};
+  const script = plan.script || {};
+  const status = run.plan_status || {};
+  const execution = run.execution || {};
+  const stateColor = run.state === "succeeded" ? "b-green" :
+    (["failed", "timed_out"].includes(run.state) ? "b-red" : "b-amber");
+  let actions = "";
+  if (run.state === "planned") {
+    actions = '<button type="button" class="approve" data-action="compute-approve" data-run="' +
+      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '">Approve exact plan</button>';
+  } else if (run.state === "approved") {
+    actions = '<button type="button" class="primary" data-action="compute-execute" data-run="' +
+      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '">Execute locally</button>';
+  } else if (run.state === "succeeded" && run.review_state === "unreviewed") {
+    actions = '<button type="button" class="approve" data-action="compute-review" data-run="' +
+      esc(run.id) + '" data-decision="verified">Verify outputs</button> ' +
+      '<button type="button" data-action="compute-review" data-run="' + esc(run.id) +
+      '" data-decision="rejected">Reject outputs</button>';
+  }
+  const logs = execution.manifest_hash ? '<div class="small-text">Logs: ' +
+    '<a target="_blank" rel="noopener" href="/compute-runs/' + esc(run.id) +
+    '/logs/stdout">stdout</a> · <a target="_blank" rel="noopener" href="/compute-runs/' +
+    esc(run.id) + '/logs/stderr">stderr</a></div>' : "";
+  const outputs = (run.outputs || []).length ? '<ul class="plain">' +
+    run.outputs.map((output, index) => '<li class="small-text"><a target="_blank" rel="noopener" href="' +
+      '/compute-runs/' + esc(run.id) + "/outputs/" + index + '">' +
+      esc(output.relative_path) + '</a> ' + badge(output.evidence_state, "b-amber") +
+      ' <span class="dim mono">sha256 ' + esc(output.sha256) + "</span></li>").join("") +
+    "</ul>" : "";
+  const failure = execution.failure_reason ? '<p class="error-box small-text">' +
+    esc(execution.failure_reason) + "</p>" : "";
+  const promotion = run.review_state === "verified" && !(run.promoted_object_ids || []).length ?
+    '<form class="stack" data-form="promote-compute-run" data-run="' + esc(run.id) +
+    '" data-pid="' + esc(pid) + '"><h4>Promote reviewed computation</h4>' +
+    '<div class="field"><label>Result title</label><input name="title" required></div>' +
+    '<div class="field"><label>Human summary</label><textarea name="summary" required></textarea></div>' +
+    '<div class="field"><label>Controlled strength</label><select name="strength">' +
+    options(["computationally_verified_within_scope", "heuristically_supported", "conjectured"],
+      "computationally_verified_within_scope") + '</select></div>' +
+    '<div><button type="submit" class="primary">Create reviewed result</button></div></form>' : "";
+  const promoted = (run.promoted_object_ids || []).length ? '<p class="small-text">Promoted result: ' +
+    '<span class="mono">' + esc(run.promoted_object_ids[0]) + "</span></p>" : "";
+  return '<article class="finding"><h3>' + esc(script.title || "Compute run") + " " +
+    badge(run.state, stateColor) + " " + badge(run.review_state, run.review_state === "verified" ?
+      "b-green" : (run.review_state === "rejected" ? "b-red" : "b-amber")) +
+    (status.stale ? " " + badge("stale plan", "b-red") : "") + "</h3>" +
+    '<div class="small-text dim">Plan <span class="mono">' + esc(run.plan_hash) +
+    "</span><br>seed " + esc(plan.seed) + " · timeout " + esc(plan.timeout_seconds) +
+    "s · inputs " + esc((plan.inputs || []).length) + " · " +
+    esc(run.network_policy) + "</div>" + (status.reason ? '<p class="error-box small-text">' +
+    esc(status.reason) + "</p>" : "") + failure + logs + outputs + actions + promotion + promoted +
+    "</article>";
+}
+
 /* ===================== figures tab ===================== */
 
 async function tabFigures(el, pid) {
@@ -2246,6 +2347,54 @@ const clickActions = {
       toast(e.message, "err");
     }
     route();
+  }),
+
+  "compute-approve": (t) => withBusy(t, async () => {
+    const note = window.prompt("Human review note for this exact script/input/environment plan:", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    const acknowledged = window.confirm(
+      "Acknowledge that this local Python run does NOT enforce network, filesystem, or " +
+      "descendant-process isolation? Only continue after inspecting the script.");
+    if (!acknowledged) return;
+    try {
+      await api("/compute-runs/" + encodeURIComponent(t.dataset.run) + "/approve", "POST", {
+        plan_hash: t.dataset.plan,
+        review_note: note.trim(),
+        acknowledge_unenforced_isolation: true,
+      });
+      toast("Exact compute plan approved. Execution still requires a separate confirmation.");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "compute-execute": (t) => withBusy(t, async () => {
+    const confirmed = window.confirm(
+      "Execute this approved Python artifact locally now? This starts a local process; " +
+      "network and full process isolation are not enforced.");
+    if (!confirmed) return;
+    try {
+      await api("/compute-runs/" + encodeURIComponent(t.dataset.run) + "/execute", "POST", {
+        plan_hash: t.dataset.plan,
+        confirm_local_execution: true,
+      });
+      toast("Compute run finished. Outputs remain unreviewed.");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "compute-review": (t) => withBusy(t, async () => {
+    const note = window.prompt(
+      "Human review note for marking these outputs " + t.dataset.decision + ":", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api("/compute-runs/" + encodeURIComponent(t.dataset.run) + "/review", "POST", {
+        decision: t.dataset.decision, review_note: note.trim(),
+      });
+      toast("Compute outputs marked " + t.dataset.decision + ".");
+      route();
+    } catch (e) { toast(e.message, "err"); }
   }),
 
   "package-prepare": (t) => withBusy(t, async () => {
@@ -2904,6 +3053,36 @@ const formActions = {
         review_note: body.review_note || "",
       });
     toast("Declaration saved.");
+    route();
+  },
+
+  "create-compute-run": async (form) => {
+    const body = fd(form);
+    const inputIds = Array.from(
+      form.querySelectorAll('input[name="input_source_id"]:checked'))
+      .map((input) => input.value);
+    if (inputIds.includes(body.script_source_id)) {
+      throw new Error("The script cannot also be selected as an input artifact.");
+    }
+    const args = (body.arguments || "").split("\n").map((value) => value.trim())
+      .filter(Boolean);
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/compute-runs", "POST", {
+      script_source_id: body.script_source_id,
+      input_source_ids: inputIds,
+      arguments: args,
+      timeout_seconds: parseInt(body.timeout_seconds, 10),
+      seed: parseInt(body.seed, 10),
+    });
+    toast("Immutable compute plan created; inspect and approve it before execution.");
+    route();
+  },
+
+  "promote-compute-run": async (form) => {
+    const body = fd(form);
+    await api("/compute-runs/" + encodeURIComponent(form.dataset.run) + "/promote", "POST", {
+      title: body.title, summary: body.summary, strength: body.strength,
+    });
+    toast("Reviewed computation promoted to a controlled research result.");
     route();
   },
 

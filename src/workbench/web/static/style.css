@@ -371,6 +371,13 @@ td .row-title-btn:hover { text-decoration: underline; }
   border: 1px solid var(--c-red-fg);
 }
 
+.boundary-warning {
+  padding: 0.75rem;
+  border-left: 4px solid var(--c-amber-fg);
+  background: var(--c-amber-bg);
+  color: var(--c-amber-fg);
+}
+
 /* ---------- toast ---------- */
 
 #toast-region {

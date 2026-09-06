@@ -19,6 +19,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from .vocab import (
     ActionStatus,
     ClaimSupport,
+    ComputeNetworkPolicy,
+    ComputeReviewState,
+    ComputeState,
     ObjectKind,
     Relation,
     ResultStrength,
@@ -389,6 +392,38 @@ class Submission(_Stamped, Base):
     history: Mapped[list] = mapped_column(JSON, default=list)
     revisions: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class ComputeRun(_Stamped, Base):
+    """Immutable, approval-bound plan plus captured local execution provenance.
+
+    A successful run is still unreviewed computation. It becomes usable research evidence
+    only through the explicit review and promotion service.
+    """
+
+    __tablename__ = "compute_runs"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    script_source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
+    state: Mapped[ComputeState] = mapped_column(String(20), default=ComputeState.PLANNED)
+    review_state: Mapped[ComputeReviewState] = mapped_column(
+        String(20), default=ComputeReviewState.UNREVIEWED
+    )
+    network_policy: Mapped[ComputeNetworkPolicy] = mapped_column(
+        String(50), default=ComputeNetworkPolicy.REQUESTED_OFFLINE_UNENFORCED
+    )
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    plan: Mapped[dict] = mapped_column(JSON)
+    approval_note: Mapped[str] = mapped_column(Text, default="")
+    execution: Mapped[dict] = mapped_column(JSON, default=dict)
+    outputs: Mapped[list] = mapped_column(JSON, default=list)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    promoted_object_ids: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index("ix_compute_run_project_state", "project_id", "state"),
+        Index("ix_compute_run_project_review", "project_id", "review_state"),
+    )
 
 
 class PublicationPackage(_Stamped, Base):

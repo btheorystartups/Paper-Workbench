@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-09-06. Tests: 123 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-06. Tests: 144 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -16,7 +16,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Controlled state vocabularies (claim support, result strength, novelty, source access) | Implemented | `vocab.py`; enforced in services, never collapsed in UI/export |
 | Workspace/project isolation + soft delete + timestamps | Implemented | `workspace_id`/`project_id` scoping on every row |
 | Provenance that survives export | Implemented | export manifest: checksums, access levels, audit findings, AI provenance |
-| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 6 migrations, reversibility checked |
+| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 10 migrations, reversibility checked |
 | Audit-in-transaction | Implemented | `audit.py`; every consequential mutation writes an AuditEvent |
 | Provider abstraction + offline fakes (default) | Implemented | `providers/`, `WB_PROVIDER_MODE=fake` → zero network |
 | Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; artifact files bundled, paths portable, tamper-detected |
@@ -49,7 +49,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Method-neutral core (any research type) | Implemented | typed object kinds + JSON bodies; no method hard-coded |
 | Correspondence-Matrix as demo corpus | Implemented | `demo.py`, `golden_path.py` ingest the real CM materials |
-| Reproducible compute environment (isolated runs, pinned env, seeds) | Out of scope | not built; CM computation lives in the separate CM repos |
+| Reproducible compute environment (manifests, env fingerprint, seeds, review gate) | Implemented / Partial containment | `services/compute.py`; immutable hash-bound plans, ingested scripts/inputs, package fingerprint, bounded local subprocess, captured outputs, explicit review/promotion. No shell/install; network/filesystem/descendant isolation is honestly unenforced pending a container executor |
 | Result-status labeling (proved/empirical/computational/heuristic/conjectured/AI) | Implemented | `ResultStrength` vocab |
 
 ## 4. Paper-design & decomposition wizard
@@ -146,7 +146,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Auth: bcrypt passwords, JWTs, OIDC login | Implemented | `auth.py`; off by default, enforced when `WB_AUTH_REQUIRED=true` |
 | Role enforcement (reviewer<editor<coauthor<owner) | Implemented | wired into object/section/member routes; gated on auth |
 | SSRF-safe fetching, secret-as-env, no secret logging | Implemented | `ingest/safe_fetch.py`, `config.py` |
-| Web UI (8 tabs + login + submissions) | Implemented | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Manuscripts, Submissions, Figures |
+| Web UI (9 tabs + login + submissions) | Implemented | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Manuscripts, Submissions, Compute, Figures |
 | Public-mirror CI + guarded publisher | Implemented | `.github/workflows/ci.yml` runs Ruff + offline pytest on Python 3.13; parent Tools `scripts/publish-paper-workbench.ps1` validates the subtree and defaults to dry-run |
 | Hardened multi-tenant production deployment / real IdP integration | Out of scope | single-machine trust model; documented migration path |
 | Cost budgets / token metering | Implemented | `services/usage.py`; every LLM call metered per project/kind; monthly ceiling fail-closed before live calls (fakes never blocked); UI readout + budget setter |
