@@ -11,7 +11,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
+from ..models import CitationEdge, Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
 from ..vocab import ClaimSupport, ObjectKind, SourceAccess
 from . import authoring, research, source_dedup
 
@@ -101,6 +101,34 @@ def audit_sources(session: Session, project_id: str) -> list[dict]:
                 "object_id": source_b["id"],
             }
         )
+    for edge in session.scalars(
+        select(CitationEdge).where(
+            CitationEdge.project_id == project_id,
+            CitationEdge.deleted_at.is_(None),
+            CitationEdge.review_state != "rejected",
+        )
+    ):
+        if edge.resolution_state != "resolved":
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "citation-endpoint-unresolved",
+                    "message": (
+                        f"citation relation '{edge.citing_title[:35]}' → "
+                        f"'{edge.cited_title[:35]}' is {edge.resolution_state}; discovery only"
+                    ),
+                    "object_id": edge.id,
+                }
+            )
+        if edge.review_state == "provider_reported":
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "citation-relation-unreviewed",
+                    "message": "provider-reported citation relation awaits human review; discovery only",
+                    "object_id": edge.id,
+                }
+            )
     return findings
 
 

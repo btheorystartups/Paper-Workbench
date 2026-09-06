@@ -99,6 +99,9 @@ def import_work(session: Session, project_id: str, work: ScholarlyWork) -> tuple
             select(Source).where(Source.project_id == project_id, Source.doi == doi)
         ).first()
         if existing:
+            from . import citation_graph
+
+            citation_graph.resolve_edges_for_source(session, existing)
             return existing, False
     access = SourceAccess.ABSTRACT_ONLY if work.abstract else SourceAccess.METADATA_ONLY
     source = research.register_source(
@@ -124,6 +127,9 @@ def import_work(session: Session, project_id: str, work: ScholarlyWork) -> tuple
             }
         },
     )
+    from . import citation_graph
+
+    citation_graph.resolve_edges_for_source(session, source)
     return source, True
 
 

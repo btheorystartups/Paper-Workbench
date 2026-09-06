@@ -272,6 +272,14 @@ def merge_duplicate_sources(
     literature_count, literature_snapshot = _merge_literature_entries(
         session, retained, duplicate
     )
+    from . import citation_graph
+
+    citation_updates = citation_graph.repoint_source(
+        session,
+        project_id,
+        retained_source_id=retained.id,
+        duplicate_source_id=duplicate.id,
+    )
 
     updated_threads = 0
     for thread in session.scalars(select(Thread).where(Thread.project_id == project_id)):
@@ -343,6 +351,7 @@ def merge_duplicate_sources(
         "updated_threads": updated_threads,
         "embeddings_invalidated": True,
         "plan_hash": plan_hash,
+        **citation_updates,
     }
     record_audit(
         session,

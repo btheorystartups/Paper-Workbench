@@ -220,6 +220,37 @@ class LiteratureEntry(_Stamped, Base):
     __table_args__ = (UniqueConstraint("project_id", "source_id"),)
 
 
+class CitationEdge(_Stamped, Base):
+    """A provider-reported citation relation, always discovery metadata.
+
+    Keys preserve the provider/DOI identity even while one endpoint is unresolved.
+    Resolving or human-verifying an edge never creates claim evidence.
+    """
+
+    __tablename__ = "citation_edges"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    citing_source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sources.id"), default=None, index=True
+    )
+    cited_source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sources.id"), default=None, index=True
+    )
+    citing_key: Mapped[str] = mapped_column(String(700))
+    cited_key: Mapped[str] = mapped_column(String(700))
+    citing_title: Mapped[str] = mapped_column(String(600), default="")
+    cited_title: Mapped[str] = mapped_column(String(600), default="")
+    resolution_state: Mapped[str] = mapped_column(String(40))
+    review_state: Mapped[str] = mapped_column(String(40), default="provider_reported")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    observations: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "citing_key", "cited_key"),
+        Index("ix_citation_project_resolution", "project_id", "resolution_state"),
+    )
+
+
 class Embedding(_Stamped, Base):
     """Versioned embedding for one research object or source. Project-scoped retrieval
     only; similarity is a discovery signal, never evidence (ADR-5)."""
