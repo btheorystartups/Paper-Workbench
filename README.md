@@ -12,7 +12,7 @@ Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
 
 ## Status (P1–P6 + expansion + hardening — 2026-09-06)
 
-Implemented and tested (132 offline tests; live providers verified separately with user keys):
+Implemented and tested (140 offline tests; live providers verified separately with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -58,6 +58,10 @@ Implemented and tested (132 offline tests; live providers verified separately wi
   `WB_AUTH_REQUIRED=true`. Endpoints under `/auth/*`.
 - **Submission tracking**: audited state machine (drafting → submitted → under review →
   revision requested → resubmitted → accepted/rejected/withdrawn) with response-to-reviewers.
+- **Publication packaging**: versioned local package plans with controlled cover-letter and
+  declaration review states, snapshot-bound human approval, staleness checks, venue findings,
+  response-to-reviewers, manuscript outputs, and a checksummed ZIP manifest. Building a
+  package never transmits it or marks it submitted.
 - **Figures & tables**: rendered from content-hashed datasets (matplotlib, colour-blind-safe
   palette); records the source data hash so figures go **stale** if the data changes;
   grounded, review-gated captions; export bundles them into `supplements/` with provenance.
@@ -83,7 +87,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 132 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 140 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
@@ -104,7 +108,9 @@ project; verifies every checksum first; rewrites artifact paths to the local dat
 
 - Typeset PDF needs GTK (WeasyPrint); without it the deterministic fallback renderer runs
   and the manifest records which. LaTeX is the publication-quality path.
-- JATS validates against a bundled subset DTD, not full JATS 1.3 (`dtd_path=` accepts it).
+- JATS validates against a bundled subset DTD by default. Set `WB_JATS_DTD_PATH` to the
+  local entry-point file from an official JATS 1.3 DTD distribution for full validation;
+  the app never downloads a DTD at runtime.
 - Auth is a single-machine trust model; hardened multi-tenant deployment is out of scope.
 - Local OCR is optional: install `.[ocr]` plus Tesseract language data. Without it, automatic
   PDF ingestion retains layout text and explicitly labels low-text pages unresolved; forced

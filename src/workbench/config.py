@@ -57,6 +57,8 @@ class Settings(BaseSettings):
 
     # Export
     pdf_renderer: str = "auto"  # "auto" | "weasyprint" | "minimal"
+    # Optional entry-point DTD for full JATS validation. Empty = bundled structural subset.
+    jats_dtd_path: str = ""
 
 
 def brave_api_key() -> str:

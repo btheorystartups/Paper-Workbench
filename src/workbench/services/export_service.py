@@ -485,7 +485,9 @@ def export_manuscript(
         jats_text = _jats_xml(manuscript, sections, claims, sources, session, credit)
         written["jats"] = out_dir / "manuscript.jats.xml"
         written["jats"].write_text(jats_text, encoding="utf-8")
-        extra_manifest["jats_validation"] = validate_jats(jats_text).as_dict()
+        extra_manifest["jats_validation"] = validate_jats(
+            jats_text, dtd_path=get_settings().jats_dtd_path or None
+        ).as_dict()
 
     # --- Supplements: figures & tables with data provenance ---
     supplements = _export_supplements(session, manuscript.project_id, out_dir)

@@ -41,6 +41,7 @@ from ..models import (
     LiteratureEntry,
     Project,
     ProposedAction,
+    PublicationPackage,
     ResearchObject,
     SavedSearch,
     Source,
@@ -75,6 +76,7 @@ _TABLES = [
     ("literature_entries", LiteratureEntry, "project"),
     ("embeddings", Embedding, "project"),
     ("submissions", Submission, "project"),
+    ("publication_packages", PublicationPackage, "project"),
     ("usage_events", UsageEvent, "project"),
     ("cost_budgets", CostBudget, "project"),
 ]

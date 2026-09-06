@@ -5,6 +5,7 @@ validate_jats(dtd_path=...) for that). Without lxml, falls back to a well-formed
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # DTD covering exactly the elements export_service._jats_xml emits. Kept in sync with it.
 JATS_SUBSET_DTD = """
@@ -72,8 +73,24 @@ def validate_jats(xml_text: str, *, dtd_path: str | None = None) -> ValidationRe
                                 errors=[f"not well-formed: {exc}"])
 
     if dtd_path:
-        dtd = etree.DTD(dtd_path)
         method = "dtd-file"
+        path = Path(dtd_path)
+        if not path.is_file():
+            return ValidationResult(
+                well_formed=True,
+                valid=False,
+                method=method,
+                errors=[f"DTD file not found: {path}"],
+            )
+        try:
+            dtd = etree.DTD(str(path))
+        except (OSError, etree.DTDParseError) as exc:
+            return ValidationResult(
+                well_formed=True,
+                valid=False,
+                method=method,
+                errors=[f"DTD could not be loaded: {exc}"],
+            )
     else:
         from io import StringIO
 

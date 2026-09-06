@@ -9,7 +9,16 @@ import pytest
 
 from workbench.ingest.files import ingest_file
 from workbench.providers.scholarly import ScholarlyWork
-from workbench.services import authoring, authorship, citation_graph, dialogue, research, transfer
+from workbench.services import (
+    authoring,
+    authorship,
+    citation_graph,
+    dialogue,
+    publication_packages,
+    research,
+    submissions,
+    transfer,
+)
 from workbench.vocab import ClaimSupport, ObjectKind, Relation
 
 
@@ -68,6 +77,15 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
     authorship.review_order_proposal(
         session, proposal.id, decision="approved", note="team approved"
     )
+    submission = submissions.create_submission(
+        session, project.id, manuscript_id=manuscript.id, venue_name="Portable venue"
+    )
+    package = publication_packages.create_package(
+        session, submission.id, included_formats=["md"]
+    )
+    publication_packages.set_cover_letter(
+        session, package.id, text="Portable cover letter", state="draft"
+    )
     source.doi = "10.1000/portable"
     citation_edges, _created = citation_graph.record_citations(
         session,
@@ -102,6 +120,7 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
     assert result["row_counts"]["contributors"] == 1
     assert result["row_counts"]["credit_assignments"] == 1
     assert result["row_counts"]["authorship_proposals"] == 1
+    assert result["row_counts"]["publication_packages"] == 1
     assert result["artifact_file_count"] >= 2  # original + extracted.txt
 
     # simulate a fresh machine: wipe artifacts and DB rows, re-import
@@ -134,13 +153,20 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
         assert fresh.get(type(claim), claim.id).text == "Caching helps."
         from sqlalchemy import select
 
-        from workbench.models import AuthorshipProposal, CitationEdge, Contributor, Turn
+        from workbench.models import (
+            AuthorshipProposal,
+            CitationEdge,
+            Contributor,
+            PublicationPackage,
+            Turn,
+        )
 
         turns = list(fresh.scalars(select(Turn).where(Turn.thread_id == thread.id)))
         assert len(turns) >= 2
         assert fresh.get(CitationEdge, citation_edges[0].id).review_state == "provider_reported"
         assert fresh.get(Contributor, contributor.id).display_name == "Ada Lovelace"
         assert fresh.get(AuthorshipProposal, proposal.id).status == "approved"
+        assert fresh.get(PublicationPackage, package.id).cover_letter == "Portable cover letter"
     finally:
         fresh.close()
 

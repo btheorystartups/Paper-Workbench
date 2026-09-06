@@ -127,9 +127,9 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Markdown, LaTeX, HTML, DOCX, BibTeX | Implemented | `services/export_service.py` |
 | PDF | Implemented (fallback) / Partial (typeset) | deterministic PDF always; WeasyPrint typeset when GTK present (absent on this box → auto-fallback, recorded in manifest) |
-| JATS XML, DTD-validated | Implemented | validated against bundled JATS-subset DTD via lxml; `dtd_path=` for full JATS 1.3 |
+| JATS XML, DTD-validated | Implemented / Partial (full DTD asset) | bundled JATS-subset via lxml; `WB_JATS_DTD_PATH` enables fail-closed validation against a local official JATS 1.3 distribution; no runtime download |
 | Provenance manifest (checksums, access levels, audit findings, renderer, JATS validation) | Implemented | `manifest.json` |
-| Cover letter / response-to-reviewers / declarations bundle | Partial | response-to-reviewers via submissions; other declaration docs not templated |
+| Cover letter / response-to-reviewers / declarations bundle | Implemented | `services/publication_packages.py`; controlled component states, deterministic cover template, snapshot-bound approval, local checksummed ZIP; never submits externally |
 | Alternative outputs (conf abstract, poster, plain-language, teaching, graphical-abstract) | Implemented | `services/outputs.py`; live gpt-4o verified |
 
 ## 13. Research memory & portfolio

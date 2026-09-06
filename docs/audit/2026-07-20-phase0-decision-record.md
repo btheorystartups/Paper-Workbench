@@ -166,3 +166,27 @@ Ledger status (2026-09-06, CRediT authorship slice):
   model call, external write, or system package.
 - **Verification** — 132 offline tests, Ruff, JavaScript syntax, JATS subset validation, and
   migration checks green.
+
+Ledger status (2026-09-06, publication-packaging slice):
+- **Versioned package plans** — each submission can have multiple package versions with
+  controlled lifecycle (`draft`, `review_ready`, `approved`, `rejected`, `superseded`).
+  Cover letters and seven declaration types keep explicit missing/draft/confirmed/not-
+  applicable states; confirmation and not-applicable decisions require human review notes.
+- **No silent authorship or compliance claims** — review readiness requires a current
+  human-approved authorship order, confirmed declaration coverage, a confirmed cover letter,
+  and no error-level manuscript audit findings. Venue findings remain advisory when a venue
+  profile is absent or unverified.
+- **Snapshot-bound approval** — preparing freezes manuscript sections, claims, sources,
+  figures/tables, authorship, declarations, venue rules, audit findings, and submission
+  revisions into a stable hash. Changed inputs make an approved package stale and block
+  assembly; a new version must be reviewed.
+- **Local-only assembly** — an approved current package produces a checksummed ZIP containing
+  manuscript formats, export provenance, cover letter, declarations + approved CRediT roles,
+  venue findings, and response-to-reviewers material. The package manifest explicitly records
+  `external_submission_performed: false`; no venue API or portal is contacted.
+- **Optional publication runtimes** — bundled-subset JATS validation remains the default.
+  `WB_JATS_DTD_PATH` can point to a local official JATS 1.3 distribution and fails closed if
+  missing or invalid. No DTD, GTK library, or package was downloaded or installed in this
+  slice.
+- **Verification** — 140 offline tests, Ruff, JavaScript syntax, package checksum validation,
+  project-transfer round trips, and migration checks green.

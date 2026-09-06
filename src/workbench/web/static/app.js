@@ -1750,9 +1750,10 @@ function renderExport(data) {
 /* ===================== submissions tab ===================== */
 
 async function tabSubmissions(el, pid) {
-  const [submissions, objects] = await Promise.all([
+  const [submissions, objects, packages] = await Promise.all([
     api("/projects/" + encodeURIComponent(pid) + "/submissions"),
     api("/projects/" + encodeURIComponent(pid) + "/objects"),
+    api("/projects/" + encodeURIComponent(pid) + "/publication-packages"),
   ]);
   const manuscripts = objects.filter((o) => o.kind === "manuscript");
   const titleById = {};
@@ -1763,7 +1764,9 @@ async function tabSubmissions(el, pid) {
     list = emptyHTML("No submissions yet. Create one below.");
   } else {
     list = '<ul class="plain">' +
-      submissions.map((s) => renderSubmission(s, titleById)).join("") + "</ul>";
+      submissions.map((s) => renderSubmission(
+        s, titleById, packages.filter((p) => p.submission_id === s.id)
+      )).join("") + "</ul>";
   }
 
   let newForm;
@@ -1798,7 +1801,7 @@ function statusBadge(status) {
   return badge(status, SUBMISSION_STATUS_COLOR[status] || "b-gray");
 }
 
-function renderSubmission(s, titleById) {
+function renderSubmission(s, titleById, packages) {
   const title = titleById[s.manuscript_id] || s.manuscript_id;
   const nexts = SUBMISSION_TRANSITIONS[s.status] || [];
   const history = s.history || [];
@@ -1859,11 +1862,86 @@ function renderSubmission(s, titleById) {
     '<div><button type="submit" class="primary small">Add revision</button></div>' +
     "</form>";
 
+  const packageHtml = renderPublicationPackages(s, packages || []);
+
   return '<li class="submission-item">' + head + transitions +
     '<details class="sub-details"><summary>History (' + history.length + ")</summary>" +
     historyHtml + "</details>" +
     '<details class="sub-details"><summary>Revisions / responses to reviewers (' +
-    revisions.length + ")</summary>" + revHtml + '<hr class="soft">' + revForm + "</details></li>";
+    revisions.length + ")</summary>" + revHtml + '<hr class="soft">' + revForm + "</details>" +
+    '<details class="sub-details"><summary>Publication packages (' + packages.length +
+    ")</summary>" + packageHtml + "</details></li>";
+}
+
+function renderPublicationPackages(submission, packages) {
+  const cards = packages.length ? packages.map((p) => {
+    const ready = p.readiness || { blockers: [], warnings: [] };
+    const blockerHtml = ready.blockers.length
+      ? '<ul class="plain">' + ready.blockers.map((b) =>
+          '<li class="finding">' + badge("blocker", "b-red") + " " + esc(b.message) + "</li>"
+        ).join("") + "</ul>" : "";
+    const warningHtml = ready.warnings.length
+      ? '<ul class="plain">' + ready.warnings.map((w) =>
+          '<li class="finding">' + badge("advisory", "b-amber") + " " + esc(w.message) + "</li>"
+        ).join("") + "</ul>" : "";
+    let actions = "";
+    if (p.state === "draft") {
+      const declarationOptions = (p.declarations || []).map((d) =>
+        '<option value="' + esc(d.kind) + '">' + esc(d.label) + " — " + esc(d.state) +
+        "</option>").join("");
+      actions =
+        '<details><summary>Edit cover letter</summary>' +
+        '<form class="stack" data-form="package-cover-letter" data-package="' + esc(p.id) + '">' +
+        '<div class="field"><label>Cover letter</label><textarea name="text" required>' +
+        esc(p.cover_letter || "") + '</textarea></div><div class="field-row">' +
+        '<div class="field"><label>Review state</label><select name="state">' +
+        '<option value="draft">draft</option><option value="confirmed">confirmed</option>' +
+        '</select></div><div class="field"><label>Human review note</label>' +
+        '<input name="review_note"></div></div><div><button type="submit">Save cover letter</button>' +
+        "</div></form></details>" +
+        '<details><summary>Generate deterministic cover-letter template</summary>' +
+        '<form class="stack" data-form="package-cover-template" data-package="' + esc(p.id) + '">' +
+        '<div class="field"><label>Editor name</label><input name="editor_name" value="Editor"></div>' +
+        '<div class="field"><label>Significance statement</label><textarea name="significance" ' +
+        'required></textarea></div><div class="field"><label>Venue-fit statement</label>' +
+        '<textarea name="venue_fit" required></textarea></div><div><button type="submit">' +
+        "Generate local template</button></div></form></details>" +
+        '<details><summary>Review declarations</summary>' +
+        '<form class="stack" data-form="package-declaration" data-package="' + esc(p.id) + '">' +
+        '<div class="field-row"><div class="field"><label>Declaration</label><select name="kind">' +
+        declarationOptions + '</select></div><div class="field"><label>State</label>' +
+        '<select name="state"><option>draft</option><option>confirmed</option>' +
+        '<option value="not_applicable">not applicable</option></select></div></div>' +
+        '<div class="field"><label>Statement text</label><textarea name="text"></textarea></div>' +
+        '<div class="field"><label>Human review note</label><input name="review_note"></div>' +
+        '<div><button type="submit">Save declaration</button></div></form></details>' +
+        '<button type="button" data-action="package-prepare" data-package="' + esc(p.id) +
+        '">Freeze snapshot for review</button>';
+    } else if (p.state === "review_ready") {
+      actions = '<button type="button" class="approve" data-action="package-review" data-package="' +
+        esc(p.id) + '" data-decision="approved">Approve</button> ' +
+        '<button type="button" data-action="package-review" data-package="' + esc(p.id) +
+        '" data-decision="rejected">Reject</button>';
+    } else if (p.state === "approved") {
+      actions = '<button type="button" class="primary" data-action="package-build" data-package="' +
+        esc(p.id) + '">Build local ZIP</button>';
+    }
+    const builds = (p.builds || []).length
+      ? '<div class="dim small-text">Last build: ' + esc(p.builds[p.builds.length - 1].filename) +
+        " · sha256 " + esc(p.builds[p.builds.length - 1].sha256) + "</div>" : "";
+    return '<div class="finding"><strong>Package v' + esc(p.version) + "</strong> " +
+      badge(p.state, p.state === "approved" ? "b-green" : "b-amber") +
+      (ready.stale ? " " + badge("stale", "b-red") : "") +
+      '<div class="dim small-text">Formats: ' + esc((p.included_formats || []).join(", ")) +
+      "</div>" + blockerHtml + warningHtml + actions + builds +
+      '<div id="package-result-' + esc(p.id) + '"></div></div>';
+  }).join("") : emptyHTML("No publication package versions yet.");
+  return cards + '<hr class="soft"><form class="stack" data-form="create-publication-package" ' +
+    'data-sid="' + esc(submission.id) + '"><fieldset><legend>New package formats</legend>' +
+    '<div class="chips">' + EXPORT_FORMATS.map((format) =>
+      '<label class="chip"><input type="checkbox" name="fmt" value="' + esc(format) +
+      '" checked> ' + esc(format) + "</label>").join("") + "</div></fieldset>" +
+    '<div><button type="submit">Create new package version</button></div></form>';
 }
 
 /* ===================== figures tab ===================== */
@@ -2168,6 +2246,43 @@ const clickActions = {
       toast(e.message, "err");
     }
     route();
+  }),
+
+  "package-prepare": (t) => withBusy(t, async () => {
+    try {
+      await api("/publication-packages/" + encodeURIComponent(t.dataset.package) +
+        "/prepare", "POST", {});
+      toast("Publication package snapshot frozen for review.");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "package-review": (t) => withBusy(t, async () => {
+    const note = window.prompt("Human review note for " + t.dataset.decision + " decision:", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api("/publication-packages/" + encodeURIComponent(t.dataset.package) +
+        "/review", "POST", { decision: t.dataset.decision, note: note.trim() });
+      toast("Publication package " + t.dataset.decision + ".");
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "package-build": (t) => withBusy(t, async () => {
+    const box = document.getElementById("package-result-" + t.dataset.package);
+    if (box) box.innerHTML = loadingHTML("Building checksummed local ZIP…");
+    try {
+      const result = await api("/publication-packages/" + encodeURIComponent(t.dataset.package) +
+        "/build", "POST", {});
+      if (box) box.innerHTML = '<p class="finding">Local bundle: <span class="mono">' +
+        esc(result.path) + '</span><br><span class="dim mono small-text">sha256 ' +
+        esc(result.sha256) + "</span></p>";
+      toast("Local publication ZIP built; nothing was submitted externally.");
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+      toast(e.message, "err");
+    }
   }),
 
   "sign-in": () => openAuthModal("login"),
@@ -2744,6 +2859,51 @@ const formActions = {
     if (body.deadline) payload.deadline = body.deadline;
     await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/submissions", "POST", payload);
     toast("Submission created.");
+    route();
+  },
+
+  "create-publication-package": async (form) => {
+    const formats = Array.from(form.querySelectorAll('input[name="fmt"]:checked'))
+      .map((input) => input.value);
+    if (!formats.length) { toast("Select at least one manuscript format.", "err"); return; }
+    await api("/submissions/" + encodeURIComponent(form.dataset.sid) +
+      "/publication-packages", "POST", { included_formats: formats });
+    toast("Draft publication package created.");
+    route();
+  },
+
+  "package-cover-letter": async (form) => {
+    const body = fd(form);
+    await api("/publication-packages/" + encodeURIComponent(form.dataset.package) +
+      "/cover-letter", "POST", {
+        text: body.text, state: body.state, review_note: body.review_note || "",
+      });
+    toast("Cover letter saved.");
+    route();
+  },
+
+  "package-cover-template": async (form) => {
+    const body = fd(form);
+    await api("/publication-packages/" + encodeURIComponent(form.dataset.package) +
+      "/cover-letter/template", "POST", {
+        significance: body.significance,
+        venue_fit: body.venue_fit,
+        editor_name: body.editor_name || "Editor",
+      });
+    toast("Deterministic cover-letter draft created; review and confirm it.");
+    route();
+  },
+
+  "package-declaration": async (form) => {
+    const body = fd(form);
+    await api("/publication-packages/" + encodeURIComponent(form.dataset.package) +
+      "/declarations", "POST", {
+        kind: body.kind,
+        state: body.state,
+        text: body.text || "",
+        review_note: body.review_note || "",
+      });
+    toast("Declaration saved.");
     route();
   },
 
