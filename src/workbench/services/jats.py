@@ -12,9 +12,18 @@ JATS_SUBSET_DTD = """
 <!ATTLIST article article-type CDATA #IMPLIED
                   xmlns:xlink CDATA #IMPLIED>
 <!ELEMENT front (article-meta)>
-<!ELEMENT article-meta (title-group)>
+<!ELEMENT article-meta (title-group, contrib-group?)>
 <!ELEMENT title-group (article-title)>
 <!ELEMENT article-title (#PCDATA)>
+<!ELEMENT contrib-group (contrib*)>
+<!ELEMENT contrib (name, role*)>
+<!ATTLIST contrib contrib-type CDATA #IMPLIED>
+<!ELEMENT name (surname, given-names?)>
+<!ELEMENT surname (#PCDATA)>
+<!ELEMENT given-names (#PCDATA)>
+<!ELEMENT role (#PCDATA)>
+<!ATTLIST role vocab CDATA #IMPLIED
+               vocab-identifier CDATA #IMPLIED>
 <!ELEMENT body (sec*)>
 <!ELEMENT sec (title, p*)>
 <!ATTLIST sec id CDATA #IMPLIED>

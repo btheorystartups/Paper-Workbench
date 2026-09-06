@@ -143,3 +143,26 @@ Ledger status (2026-09-06, citation-graph slice):
   by reviewed duplicate-source merges; unresolved/unreviewed relations surface as
   informational audit findings.
 - **Verification** — 123 offline tests, Ruff, JavaScript syntax, and migration checks green.
+
+Ledger status (2026-09-06, CRediT authorship slice):
+- **Controlled contribution records** — contributors are project-scoped scholarly identities,
+  separate from access-control users. Assignments use the 14 CRediT roles, controlled
+  contribution degree (`lead`, `equal`, `supporting`), and explicit review state
+  (`proposed`, `confirmed`, `disputed`, `declined`). Every transition keeps append-only
+  review history and an audit event.
+- **Authorship is not inferred** — CRediT describes contributions but does not determine
+  authorship eligibility or order. The offline helper creates only a deterministic discussion
+  draft from confirmed roles, records its ranking basis, and labels the result advisory.
+  Disputed roles block automatic drafting.
+- **Human gate and staleness** — approval requires a human note, at least one confirmed role
+  for every proposed author, no included disputed assignment, and an unchanged contribution
+  snapshot. Any later contribution change makes the approved order stale; stale or unapproved
+  authorship is omitted from manuscript output.
+- **Lifecycle coverage** — current approved names and CRediT statements flow to Markdown,
+  LaTeX, HTML, DOCX, PDF, JATS, and the provenance manifest. Contributor, assignment, and
+  order-proposal rows survive checksummed project export/import. The Manuscripts UI exposes
+  creation, review, discussion-draft generation, and approval/rejection.
+- **Provider boundary** — the complete slice is deterministic and offline. It needs no API key,
+  model call, external write, or system package.
+- **Verification** — 132 offline tests, Ruff, JavaScript syntax, JATS subset validation, and
+  migration checks green.

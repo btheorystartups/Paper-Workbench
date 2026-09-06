@@ -13,10 +13,20 @@ from sqlalchemy.orm import Session
 
 from . import auth, db
 from .config import get_settings
-from .models import Claim, ProposedAction, ResearchObject, Source, Thread, Turn
+from .models import (
+    AuthorshipProposal,
+    Claim,
+    CreditAssignment,
+    ProposedAction,
+    ResearchObject,
+    Source,
+    Thread,
+    Turn,
+)
 from .services import (
     audits,
     authoring,
+    authorship,
     citation_graph,
     dialogue,
     export_service,
@@ -1012,6 +1022,165 @@ def create_manuscript(project_id: str, body: ManuscriptIn, session: Session = De
         raise HTTPException(422, str(exc)) from exc
     session.commit()
     return _object_out(obj)
+
+
+class ContributorIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=300)
+    given_names: str = Field(default="", max_length=200)
+    family_name: str = Field(default="", max_length=200)
+    orcid: str | None = Field(default=None, max_length=40)
+    affiliation: str = ""
+    corresponding: bool = False
+
+
+@app.get("/projects/{project_id}/contributors")
+def list_contributors(project_id: str, session: Session = Depends(_session)):
+    try:
+        return [authorship.contributor_out(c) for c in authorship.list_contributors(session, project_id)]
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/contributors")
+def create_contributor(
+    project_id: str,
+    body: ContributorIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "coauthor")
+    try:
+        contributor = authorship.create_contributor(session, project_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.contributor_out(contributor)
+
+
+class CreditAssignmentIn(BaseModel):
+    contributor_id: str
+    role: str
+    degree: str = "equal"
+    rationale: str = Field(min_length=1)
+
+
+@app.get("/manuscripts/{manuscript_id}/credit")
+def manuscript_credit(manuscript_id: str, session: Session = Depends(_session)):
+    try:
+        return authorship.manuscript_credit(session, manuscript_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/manuscripts/{manuscript_id}/credit-assignments")
+def propose_credit_assignment(
+    manuscript_id: str,
+    body: CreditAssignmentIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    manuscript = session.get(ResearchObject, manuscript_id)
+    if manuscript is None:
+        raise HTTPException(404, "manuscript not found")
+    _require(session, manuscript.project_id, user, "coauthor")
+    try:
+        assignment = authorship.propose_assignment(
+            session, manuscript_id, **body.model_dump(), origin="human"
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.assignment_out(assignment)
+
+
+class CreditReviewIn(BaseModel):
+    state: Literal["confirmed", "disputed", "declined"]
+    note: str = Field(min_length=1)
+
+
+@app.post("/credit-assignments/{assignment_id}/review")
+def review_credit_assignment(
+    assignment_id: str,
+    body: CreditReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    assignment = session.get(CreditAssignment, assignment_id)
+    if assignment is None:
+        raise HTTPException(404, "CRediT assignment not found")
+    _require(session, assignment.project_id, user, "coauthor")
+    try:
+        assignment = authorship.review_assignment(session, assignment_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.assignment_out(assignment)
+
+
+class AuthorshipProposalIn(BaseModel):
+    ordered_contributor_ids: list[str] = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+@app.post("/manuscripts/{manuscript_id}/authorship-proposals")
+def propose_authorship_order(
+    manuscript_id: str,
+    body: AuthorshipProposalIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    manuscript = session.get(ResearchObject, manuscript_id)
+    if manuscript is None:
+        raise HTTPException(404, "manuscript not found")
+    _require(session, manuscript.project_id, user, "coauthor")
+    try:
+        proposal = authorship.create_order_proposal(session, manuscript_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.proposal_out(proposal)
+
+
+@app.post("/manuscripts/{manuscript_id}/authorship-proposals/suggest")
+def suggest_authorship_order(
+    manuscript_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    manuscript = session.get(ResearchObject, manuscript_id)
+    if manuscript is None:
+        raise HTTPException(404, "manuscript not found")
+    _require(session, manuscript.project_id, user, "coauthor")
+    try:
+        proposal = authorship.suggest_order(session, manuscript_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.proposal_out(proposal)
+
+
+class AuthorshipReviewIn(BaseModel):
+    decision: Literal["approved", "rejected"]
+    note: str = Field(min_length=1)
+
+
+@app.post("/authorship-proposals/{proposal_id}/review")
+def review_authorship_order(
+    proposal_id: str,
+    body: AuthorshipReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    proposal = session.get(AuthorshipProposal, proposal_id)
+    if proposal is None:
+        raise HTTPException(404, "authorship proposal not found")
+    _require(session, proposal.project_id, user, "coauthor")
+    try:
+        proposal = authorship.review_order_proposal(session, proposal_id, **body.model_dump())
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return authorship.proposal_out(proposal)
 
 
 class SectionIn(BaseModel):

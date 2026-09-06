@@ -9,7 +9,7 @@ import pytest
 
 from workbench.ingest.files import ingest_file
 from workbench.providers.scholarly import ScholarlyWork
-from workbench.services import citation_graph, dialogue, research, transfer
+from workbench.services import authoring, authorship, citation_graph, dialogue, research, transfer
 from workbench.vocab import ClaimSupport, ObjectKind, Relation
 
 
@@ -50,6 +50,24 @@ def _populate(session, project, tmp_path):
 
 def test_export_import_round_trip(session, project, tmp_path, data_dir):
     obj, source, claim, thread = _populate(session, project, tmp_path)
+    manuscript = authoring.create_manuscript(session, project.id, title="Portable manuscript")
+    contributor = authorship.create_contributor(
+        session, project.id, display_name="Ada Lovelace"
+    )
+    assignment = authorship.propose_assignment(
+        session,
+        manuscript.id,
+        contributor_id=contributor.id,
+        role="software",
+        rationale="implemented the analysis",
+    )
+    authorship.review_assignment(
+        session, assignment.id, state="confirmed", note="team confirmed"
+    )
+    proposal = authorship.suggest_order(session, manuscript.id)
+    authorship.review_order_proposal(
+        session, proposal.id, decision="approved", note="team approved"
+    )
     source.doi = "10.1000/portable"
     citation_edges, _created = citation_graph.record_citations(
         session,
@@ -81,6 +99,9 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
     assert bundle.is_file()
     assert result["row_counts"]["research_objects"] >= 2
     assert result["row_counts"]["citation_edges"] == 1
+    assert result["row_counts"]["contributors"] == 1
+    assert result["row_counts"]["credit_assignments"] == 1
+    assert result["row_counts"]["authorship_proposals"] == 1
     assert result["artifact_file_count"] >= 2  # original + extracted.txt
 
     # simulate a fresh machine: wipe artifacts and DB rows, re-import
@@ -113,11 +134,13 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
         assert fresh.get(type(claim), claim.id).text == "Caching helps."
         from sqlalchemy import select
 
-        from workbench.models import CitationEdge, Turn
+        from workbench.models import AuthorshipProposal, CitationEdge, Contributor, Turn
 
         turns = list(fresh.scalars(select(Turn).where(Turn.thread_id == thread.id)))
         assert len(turns) >= 2
         assert fresh.get(CitationEdge, citation_edges[0].id).review_state == "provider_reported"
+        assert fresh.get(Contributor, contributor.id).display_name == "Ada Lovelace"
+        assert fresh.get(AuthorshipProposal, proposal.id).status == "approved"
     finally:
         fresh.close()
 

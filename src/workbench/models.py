@@ -251,6 +251,76 @@ class CitationEdge(_Stamped, Base):
     )
 
 
+class Contributor(_Stamped, Base):
+    """A project-scoped person who may contribute to one or more manuscripts.
+
+    Contributor identity is deliberately separate from application users: authorship is a
+    scholarly record, not an access-control side effect.
+    """
+
+    __tablename__ = "contributors"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    display_name: Mapped[str] = mapped_column(String(300))
+    given_names: Mapped[str] = mapped_column(String(200), default="")
+    family_name: Mapped[str] = mapped_column(String(200), default="")
+    orcid: Mapped[str | None] = mapped_column(String(19), default=None)
+    affiliation: Mapped[str] = mapped_column(Text, default="")
+    corresponding: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (Index("ix_contributor_project_name", "project_id", "display_name"),)
+
+
+class CreditAssignment(_Stamped, Base):
+    """One controlled CRediT role assignment with an explicit human-review state."""
+
+    __tablename__ = "credit_assignments"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    manuscript_id: Mapped[str] = mapped_column(
+        ForeignKey("research_objects.id"), index=True
+    )
+    contributor_id: Mapped[str] = mapped_column(ForeignKey("contributors.id"), index=True)
+    role: Mapped[str] = mapped_column(String(40))
+    degree: Mapped[str] = mapped_column(String(20), default="equal")
+    state: Mapped[str] = mapped_column(String(20), default="proposed")
+    origin: Mapped[str] = mapped_column(String(20), default="human")
+    rationale: Mapped[str] = mapped_column(Text)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("manuscript_id", "contributor_id", "role"),
+        Index("ix_credit_manuscript_state", "manuscript_id", "state"),
+    )
+
+
+class AuthorshipProposal(_Stamped, Base):
+    """Review-gated, snapshot-bound authorship order proposal.
+
+    CRediT roles do not establish authorship eligibility or order. A proposal is therefore
+    advisory until a human approves it, and approval fails if its contribution snapshot is
+    stale.
+    """
+
+    __tablename__ = "authorship_proposals"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    manuscript_id: Mapped[str] = mapped_column(
+        ForeignKey("research_objects.id"), index=True
+    )
+    ordered_contributor_ids: Mapped[list] = mapped_column(JSON)
+    rationale: Mapped[str] = mapped_column(Text)
+    method: Mapped[str] = mapped_column(String(50), default="manual")
+    basis_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="proposed")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (Index("ix_authorship_manuscript_status", "manuscript_id", "status"),)
+
+
 class Embedding(_Stamped, Base):
     """Versioned embedding for one research object or source. Project-scoped retrieval
     only; similarity is a discovery signal, never evidence (ADR-5)."""

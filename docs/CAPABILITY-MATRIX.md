@@ -92,7 +92,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Sections with purpose, claim references, word budgets | Implemented | `authoring.add_section`; claim refs validated |
 | Controlled AI modes; structured outputs referencing object IDs | Implemented | dialogue actions + skeptical review; outputs grounded in claims |
 | Coauthor/reviewer/editor roles, invitation, permissions | Partial | `services/security.py` + auth; local trust model (not hardened multi-tenant) |
-| CRediT / authorship-order assist | Planned | not built |
+| CRediT / authorship-order assist | Implemented | `services/authorship.py`; 14 controlled roles; proposed/confirmed/disputed/declined assignments; deterministic advisory order drafts; current snapshot + human approval required before export |
 
 ## 9. Figures, tables & supplements
 
