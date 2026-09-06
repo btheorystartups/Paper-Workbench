@@ -85,4 +85,26 @@ Ledger status (2026-07-20, end of second session):
   - **LLM-output-quality evals**: provider-agnostic harness (evals_llm.py) scoring grounding, hallucinated-citation, injection-resistance, action-safety, abstention. Deterministic on the fake (CI); **live gpt-4o run: 6/6 checks 1.00** after the eval surfaced two prompt-compliance gaps and drove a system-prompt fix (docs/llm-eval-report.md). Honestly labeled as a regression signal, not a correctness certificate.
   - **Submission tracking**: audited state machine (drafting→submitted→under_review→revision_requested→resubmitted→accepted/rejected/withdrawn) with append-only history and response-to-reviewers revisions; migration 847bd078d7c4. UI Submissions tab + login added.
   - 59 offline tests + both eval harnesses green.
-- **Still deferred (smaller/lower-value)**: full JATS 1.3 DTD validation, DOCX/PDF via a typeset engine on this box (needs GTK install), conference/poster/teaching outputs, hardened multi-tenant deployment (current auth is single-machine trust). None block use.
+- **Still deferred (smaller/lower-value)**: full JATS 1.3 DTD validation, PDF via a
+  typeset engine on this box (needs GTK install), hardened multi-tenant deployment
+  (current auth is single-machine trust), OCR/layout-aware extraction, citation-graph
+  traversal, CRediT assistance, and a reproducible compute runner. None block local use.
+
+Ledger status (2026-09-06, source-integrity and maintenance slice):
+- **Repository ownership clarified** — `Paper-Workbench/` in the private Tools monorepo is
+  authoritative; the public `btheorystartups/Paper-Workbench` repository is its one-way
+  standalone mirror.
+- **Public CI added** — Python 3.13, fake-provider mode, Ruff on `src/`, and the complete
+  offline pytest suite. The workflow is inert inside the nested Tools path and becomes a
+  root workflow when the subtree is published.
+- **Guarded mirror publisher added** — the Tools-level PowerShell script defaults to a
+  dry run, refuses uncommitted Paper-Workbench changes, audits tracked paths for common
+  secret/local-data patterns, verifies exact tree equality, checks for a public-main race,
+  and only writes remotely with explicit `-Push`.
+- **Duplicate-source review added** — deterministic candidates use controlled exact DOI,
+  normalized-title, and title/year signals. Conflicting identifiers or years are explicit
+  blockers. Merging is never automatic: an editor supplies a human review note against a
+  current plan hash. Excerpts, claim-evidence links, compatible literature records, thread
+  pins, access metadata, and a full pre-merge snapshot are preserved; embeddings are
+  invalidated and the operation is audited.
+- **Verification** — 108 offline tests and Ruff green; no provider calls made.

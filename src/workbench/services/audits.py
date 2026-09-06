@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
 from ..vocab import ClaimSupport, ObjectKind, SourceAccess
-from . import authoring, research
+from . import authoring, research, source_dedup
 
 _NUM_RE = re.compile(r"\d+(\.\d+)?\s*(%|x|×)|\b\d+\.\d+\b")
 
@@ -71,7 +71,9 @@ def audit_claims(session: Session, project_id: str) -> list[dict]:
 
 def audit_sources(session: Session, project_id: str) -> list[dict]:
     findings: list[dict] = []
-    for src in session.scalars(select(Source).where(Source.project_id == project_id)):
+    for src in session.scalars(
+        select(Source).where(Source.project_id == project_id, Source.deleted_at.is_(None))
+    ):
         if src.integrity_note:
             findings.append(
                 {"severity": "error", "code": "source-integrity-flag",
@@ -84,6 +86,21 @@ def audit_sources(session: Session, project_id: str) -> list[dict]:
                  "message": f"source '{src.title[:50]}' has no DOI/identifier; resolve before citing",
                  "object_id": src.id}
             )
+    for candidate in source_dedup.find_duplicate_candidates(session, project_id):
+        source_a = candidate["source_a"]
+        source_b = candidate["source_b"]
+        findings.append(
+            {
+                "severity": "warning" if candidate["merge_allowed"] else "info",
+                "code": "source-duplicate-candidate",
+                "message": (
+                    f"possible duplicate sources '{source_a['title'][:40]}' and "
+                    f"'{source_b['title'][:40]}' ({', '.join(candidate['signals'])}); "
+                    "human review required"
+                ),
+                "object_id": source_b["id"],
+            }
+        )
     return findings
 
 

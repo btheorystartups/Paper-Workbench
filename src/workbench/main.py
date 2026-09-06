@@ -26,6 +26,7 @@ from .services import (
     research,
     security,
     semantic,
+    source_dedup,
     submissions,
     venues,
 )
@@ -184,6 +185,40 @@ def list_sources(project_id: str, session: Session = Depends(_session)):
         }
         for s in rows
     ]
+
+
+@app.get("/projects/{project_id}/sources/duplicates")
+def source_duplicate_candidates(project_id: str, session: Session = Depends(_session)):
+    try:
+        return source_dedup.find_duplicate_candidates(session, project_id)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class SourceMergeIn(BaseModel):
+    retained_source_id: str
+    duplicate_source_id: str
+    plan_hash: str = Field(min_length=64, max_length=64)
+    review_note: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/projects/{project_id}/sources/merge")
+def merge_duplicate_sources(
+    project_id: str,
+    body: SourceMergeIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "editor")
+    try:
+        result = source_dedup.merge_duplicate_sources(
+            session, project_id, **body.model_dump()
+        )
+    except research.IntegrityError as exc:
+        status = 409 if "plan changed" in str(exc) else 422
+        raise HTTPException(status, str(exc)) from exc
+    session.commit()
+    return result
 
 
 @app.get("/sources/{source_id}/excerpts")

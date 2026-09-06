@@ -548,7 +548,10 @@ async function tabSources(el, pid, sub) {
   rows =
     '<div class="row-actions"><button type="button" class="small" ' +
     'data-action="integrity-check" data-pid="' + esc(pid) + '">' +
-    "Check retractions/corrections</button></div>" + rows;
+    "Check retractions/corrections</button>" +
+    '<button type="button" class="small" data-action="find-source-duplicates" data-pid="' +
+    esc(pid) + '">Find possible duplicates</button></div>' +
+    '<div id="source-duplicate-list"></div>' + rows;
 
   let excerptPanel = "";
   if (selectedSid) {
@@ -635,6 +638,44 @@ async function loadExcerpts(sid) {
   } catch (e) {
     box.innerHTML = errorHTML(e.message);
   }
+}
+
+function renderSourceDuplicates(candidates, pid) {
+  const box = document.getElementById("source-duplicate-list");
+  if (!box) return;
+  if (!candidates.length) {
+    box.innerHTML = '<p class="verified small-text">No deterministic duplicate signals found.</p>';
+    return;
+  }
+  box.innerHTML =
+    '<div class="notice"><strong>Possible duplicates — review required</strong>' +
+    '<p class="small-text">Matching identifiers and titles are discovery signals. ' +
+    'Nothing is merged automatically.</p>' +
+    '<ul class="plain">' + candidates.map((candidate) => {
+      const a = candidate.source_a;
+      const b = candidate.source_b;
+      const signals = candidate.signals.map((signal) => badge(pretty(signal), "b-blue")).join(" ");
+      const blockers = candidate.blockers.map((blocker) => badge(pretty(blocker), "b-red")).join(" ");
+      let actions = '<p class="small-text dim">Resolve conflicting identity fields before merging.</p>';
+      if (candidate.merge_allowed) {
+        actions =
+          '<div class="row-actions">' +
+          '<button type="button" class="small" data-action="merge-source" data-pid="' + esc(pid) +
+          '" data-keep="' + esc(a.id) + '" data-drop="' + esc(b.id) + '" data-plan="' +
+          esc(candidate.plan_hash) + '" data-keep-title="' + esc(a.title) + '" data-drop-title="' +
+          esc(b.title) + '">Keep first; merge second</button>' +
+          '<button type="button" class="small" data-action="merge-source" data-pid="' + esc(pid) +
+          '" data-keep="' + esc(b.id) + '" data-drop="' + esc(a.id) + '" data-plan="' +
+          esc(candidate.plan_hash) + '" data-keep-title="' + esc(b.title) + '" data-drop-title="' +
+          esc(a.title) + '">Keep second; merge first</button></div>';
+      }
+      return '<li class="finding"><strong>First:</strong> ' + esc(a.title) +
+        ' <span class="dim">(' + esc(a.year || "year unknown") + ', ' + esc(a.doi || "no DOI") +
+        ')</span><br><strong>Second:</strong> ' + esc(b.title) + ' <span class="dim">(' +
+        esc(b.year || "year unknown") + ', ' + esc(b.doi || "no DOI") + ')</span>' +
+        '<div class="small-text">Signals: ' + signals + (blockers ? '<br>Blockers: ' + blockers : "") +
+        "</div>" + actions + "</li>";
+    }).join("") + "</ul></div>";
 }
 
 /* ===================== claims tab ===================== */
@@ -1806,6 +1847,38 @@ const clickActions = {
       if (r.failed) msg += ", " + r.failed + " lookup(s) failed (not proof of integrity)";
       if (r.skipped_no_doi) msg += ", " + r.skipped_no_doi + " skipped (no DOI)";
       toast(msg + ".", r.flagged ? "err" : undefined);
+      route();
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "find-source-duplicates": (t) => withBusy(t, async () => {
+    const box = document.getElementById("source-duplicate-list");
+    if (box) box.innerHTML = loadingHTML();
+    try {
+      const candidates = await api(
+        "/projects/" + encodeURIComponent(t.dataset.pid) + "/sources/duplicates"
+      );
+      renderSourceDuplicates(candidates, t.dataset.pid);
+    } catch (e) {
+      if (box) box.innerHTML = errorHTML(e.message);
+    }
+  }),
+
+  "merge-source": (t) => withBusy(t, async () => {
+    const message = "Merge '" + t.dataset.dropTitle + "' into '" + t.dataset.keepTitle +
+      "'? Excerpts and references will move; the duplicate record will be soft-deleted.";
+    if (!window.confirm(message)) return;
+    const note = window.prompt("Human review note explaining why these are the same source:", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A review note is required.", "err"); return; }
+    try {
+      await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/sources/merge", "POST", {
+        retained_source_id: t.dataset.keep,
+        duplicate_source_id: t.dataset.drop,
+        plan_hash: t.dataset.plan,
+        review_note: note.trim(),
+      });
+      toast("Sources merged. Semantic source embeddings were invalidated for reindexing.");
       route();
     } catch (e) { toast(e.message, "err"); }
   }),
