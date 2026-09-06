@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-09-06. Tests: 108 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-06. Tests: 114 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -40,7 +40,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Result cards (plain + formal, strength, provenance) | Implemented | research objects with typed `body` |
 | Duplicate-source detection + reviewed merge | Implemented | `services/source_dedup.py`; controlled DOI/title/year signals and explicit conflict blockers; UI merge requires a human note and current plan hash; provenance is retained and audited |
 | Contradiction / weak-support detection | Partial | audits flag verification debt, unverified sources, and unaccepted-AI citation; no general semantic contradiction detector |
-| OCR / layout-aware PDF extraction | Partial | pypdf text extraction (labeled "lossy"); no OCR/layout model |
+| OCR / layout-aware PDF extraction | Implemented / Partial runtime | `ingest/files.py`; pypdf layout mode always available; controlled per-page states and transparent low-text threshold; optional local PyMuPDF/Tesseract OCR is review-labeled and not installed on this box |
 | Bulk tagging / version comparison | Planned | single-object versioning via edges; no bulk UI |
 
 ## 3. General research & Correspondence-Matrix method profiles

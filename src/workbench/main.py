@@ -4,6 +4,7 @@ Run: uvicorn workbench.main:app --reload
 """
 
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -182,6 +183,7 @@ def list_sources(project_id: str, session: Session = Depends(_session)):
             "venue": s.venue, "doi": s.doi, "url": s.url, "access": str(s.access),
             "license": s.license, "human_verified": s.human_verified,
             "integrity_note": s.integrity_note,
+            "ingest": (s.provider_metadata or {}).get("ingest"),
         }
         for s in rows
     ]
@@ -554,6 +556,7 @@ class IngestIn(BaseModel):
     path: str
     title: str | None = None
     license: str = "author-owned"
+    pdf_mode: Literal["auto", "text", "ocr"] = "auto"
 
 
 @app.post("/projects/{project_id}/ingest")
@@ -563,7 +566,12 @@ def ingest_local_file(project_id: str, body: IngestIn, session: Session = Depend
 
     try:
         source = ingest_file(
-            session, project_id, body.path, title=body.title, license=body.license
+            session,
+            project_id,
+            body.path,
+            title=body.title,
+            license=body.license,
+            pdf_mode=body.pdf_mode,
         )
     except (IngestError, research.IntegrityError) as exc:
         raise HTTPException(422, str(exc)) from exc

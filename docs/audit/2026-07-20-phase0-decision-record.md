@@ -108,3 +108,17 @@ Ledger status (2026-09-06, source-integrity and maintenance slice):
   pins, access metadata, and a full pre-merge snapshot are preserved; embeddings are
   invalidated and the operation is audited.
 - **Verification** — 108 offline tests and Ruff green; no provider calls made.
+
+Ledger status (2026-09-06, PDF intake hardening slice):
+- **Layout-aware extraction** — PDF pages now use pypdf's layout mode rather than a plain
+  text pass. The original artifact remains immutable and every extracted page is labeled
+  with a controlled state (`layout_text`, `ocr_unreviewed`, `low_text_unresolved`, or
+  `extraction_failed`).
+- **Optional local OCR** — automatic mode uses a transparent alphanumeric-density rule and
+  only sends low-text pages to the optional PyMuPDF/Tesseract adapter. Missing or failed OCR
+  is explicit page-level provenance, never silently treated as complete text. Forced OCR
+  fails closed. Nothing is installed or called remotely by default.
+- **Human-review boundary preserved** — OCR confidence is controlled as `ocr_unreviewed` or
+  `mixed_unreviewed`; extracted text still never becomes claim evidence automatically.
+- **Verification** — 114 offline tests and Ruff green; OCR behavior is exercised with a
+  deterministic local fake because no OCR runtime is installed on this box.
