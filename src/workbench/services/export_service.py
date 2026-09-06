@@ -193,19 +193,49 @@ def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
     return bytes(out)
 
 
-def _jats_xml(manuscript, sections, claims, sources, session: Session) -> str:
+def _credit_lines(credit: dict) -> list[str]:
+    lines = []
+    for author in credit["authors"]:
+        roles = ", ".join(
+            f"{role['label']} ({role['degree']})" for role in author["credit_roles"]
+        )
+        lines.append(f"{author['display_name']}: {roles or 'no confirmed roles'}")
+    return lines
+
+
+def _jats_xml(
+    manuscript, sections, claims, sources, session: Session, credit: dict | None = None
+) -> str:
     """Minimal JATS 1.3-shaped article XML (front/body/back). Structural export for
     interchange; not validated against the full JATS DTD."""
     from xml.sax.saxutils import escape
 
+    credit = credit or {"authors": []}
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">',
         "<front><article-meta>",
         f"<title-group><article-title>{escape(manuscript.title)}</article-title></title-group>",
-        "</article-meta></front>",
-        "<body>",
     ]
+    if credit["authors"]:
+        parts.append("<contrib-group>")
+        for author in credit["authors"]:
+            parts.append('<contrib contrib-type="author"><name>')
+            if author["family_name"]:
+                parts.append(f"<surname>{escape(author['family_name'])}</surname>")
+            else:
+                parts.append(f"<surname>{escape(author['display_name'])}</surname>")
+            if author["given_names"]:
+                parts.append(f"<given-names>{escape(author['given_names'])}</given-names>")
+            parts.append("</name>")
+            for role in author["credit_roles"]:
+                parts.append(
+                    '<role vocab="CRediT" vocab-identifier="https://credit.niso.org/">'
+                    f"{escape(role['label'])}</role>"
+                )
+            parts.append("</contrib>")
+        parts.append("</contrib-group>")
+    parts.extend(["</article-meta></front>", "<body>"])
     for s in sections:
         parts.append(f'<sec id="{s.id}"><title>{escape(s.title)}</title>')
         if s.body.get("text"):
@@ -275,6 +305,10 @@ def export_manuscript(
 ) -> dict:
     formats = formats or ["md", "tex", "html", "docx", "bib", "pdf", "jats"]
     manuscript, sections, claims, sources = _collect(session, manuscript_id)
+    from .authorship import export_credit
+
+    credit = export_credit(session, manuscript_id)
+    credit_lines = _credit_lines(credit)
     out_dir = Path(get_settings().data_dir) / "exports" / manuscript_id
     out_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
@@ -282,6 +316,8 @@ def export_manuscript(
     # --- Markdown (canonical draft rendering) ---
     if "md" in formats:
         md = [f"# {manuscript.title}", ""]
+        if credit["authors"]:
+            md += ["; ".join(a["display_name"] for a in credit["authors"]), ""]
         for s in sections:
             md += [f"## {s.title}", ""]
             if s.body.get("text"):
@@ -289,6 +325,9 @@ def export_manuscript(
             block = _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
             if block:
                 md += ["**Claims:**", ""] + [f"- {line}" for line in block] + [""]
+        if credit_lines:
+            md += ["## Author contributions (CRediT)", ""]
+            md += [f"- {line}" for line in credit_lines] + [""]
         if sources:
             md += ["## References", ""]
             md += [
@@ -304,8 +343,14 @@ def export_manuscript(
         tex = [
             r"\documentclass{article}", r"\usepackage[utf8]{inputenc}", "",
             f"\\title{{{_latex_escape(manuscript.title)}}}",
-            r"\begin{document}", r"\maketitle", "",
         ]
+        if credit["authors"]:
+            tex.append(
+                "\\author{" + " \\and ".join(
+                    _latex_escape(a["display_name"]) for a in credit["authors"]
+                ) + "}"
+            )
+        tex += [r"\begin{document}", r"\maketitle", ""]
         for s in sections:
             tex.append(f"\\section{{{_latex_escape(s.title)}}}")
             if s.body.get("text"):
@@ -314,6 +359,9 @@ def export_manuscript(
             tex.append("")
         if sources:
             tex += [r"\bibliographystyle{plain}", r"\bibliography{references}"]
+        if credit_lines:
+            tex += [r"\section*{Author contributions (CRediT)}"]
+            tex += [f"{_latex_escape(line)}\\\\" for line in credit_lines]
         tex.append(r"\end{document}")
         written["tex"] = out_dir / "manuscript.tex"
         written["tex"].write_text("\n".join(tex), encoding="utf-8")
@@ -323,6 +371,12 @@ def export_manuscript(
         import html as _html
 
         parts = [f"<h1>{_html.escape(manuscript.title)}</h1>"]
+        if credit["authors"]:
+            parts.append(
+                "<p class='authors'>"
+                + "; ".join(_html.escape(a["display_name"]) for a in credit["authors"])
+                + "</p>"
+            )
         for s in sections:
             parts.append(f"<h2>{_html.escape(s.title)}</h2>")
             if s.body.get("text"):
@@ -330,6 +384,10 @@ def export_manuscript(
             block = _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
             if block:
                 parts.append("<ul>" + "".join(f"<li>{_html.escape(b)}</li>" for b in block) + "</ul>")
+        if credit_lines:
+            parts.append("<h2>Author contributions (CRediT)</h2><ul>")
+            parts.extend(f"<li>{_html.escape(line)}</li>" for line in credit_lines)
+            parts.append("</ul>")
         written["html"] = out_dir / "manuscript.html"
         written["html"].write_text(
             "<!doctype html><meta charset='utf-8'><title>"
@@ -346,6 +404,8 @@ def export_manuscript(
         if docx is not None:
             document = docx.Document()
             document.add_heading(manuscript.title, level=0)
+            if credit["authors"]:
+                document.add_paragraph("; ".join(a["display_name"] for a in credit["authors"]))
             for s in sections:
                 document.add_heading(s.title, level=1)
                 if s.body.get("text"):
@@ -353,6 +413,10 @@ def export_manuscript(
                 for line in _claims_block(
                     s.body.get("claim_ids", []), claims, sources, session, "md"
                 ):
+                    document.add_paragraph(line, style="List Bullet")
+            if credit_lines:
+                document.add_heading("Author contributions (CRediT)", level=1)
+                for line in credit_lines:
                     document.add_paragraph(line, style="List Bullet")
             written["docx"] = out_dir / "manuscript.docx"
             document.save(str(written["docx"]))
@@ -378,6 +442,10 @@ def export_manuscript(
     if "pdf" in formats:
         paragraphs = []
         html_parts = [f"<h1>{__import__('html').escape(manuscript.title)}</h1>"]
+        if credit["authors"]:
+            author_line = "; ".join(a["display_name"] for a in credit["authors"])
+            paragraphs.append(author_line)
+            html_parts.append(f"<p>{__import__('html').escape(author_line)}</p>")
         for s in sections:
             paragraphs.append(s.title.upper())
             html_parts.append(f"<h2>{__import__('html').escape(s.title)}</h2>")
@@ -391,6 +459,14 @@ def export_manuscript(
                     "<ul>" + "".join(f"<li>{__import__('html').escape(b)}</li>" for b in block)
                     + "</ul>"
                 )
+        if credit_lines:
+            paragraphs.append("AUTHOR CONTRIBUTIONS (CRediT)")
+            paragraphs.extend(credit_lines)
+            html_parts.append("<h2>Author contributions (CRediT)</h2><ul>")
+            html_parts.extend(
+                f"<li>{__import__('html').escape(line)}</li>" for line in credit_lines
+            )
+            html_parts.append("</ul>")
         pdf_html = (
             "<!doctype html><meta charset='utf-8'><title>"
             + __import__("html").escape(manuscript.title) + "</title>" + "\n".join(html_parts)
@@ -406,7 +482,7 @@ def export_manuscript(
     if "jats" in formats:
         from .jats import validate_jats
 
-        jats_text = _jats_xml(manuscript, sections, claims, sources, session)
+        jats_text = _jats_xml(manuscript, sections, claims, sources, session, credit)
         written["jats"] = out_dir / "manuscript.jats.xml"
         written["jats"].write_text(jats_text, encoding="utf-8")
         extra_manifest["jats_validation"] = validate_jats(jats_text).as_dict()
@@ -424,6 +500,7 @@ def export_manuscript(
         "exported_at": datetime.now(UTC).isoformat(),
         "exported_by": "paper-workbench 0.1.0 (export != submission/publication)",
         "sections": [s.id for s in sections],
+        "authorship": credit,
         "claims": {
             cid: {"support": str(c.support), "text": c.text} for cid, c in claims.items()
         },

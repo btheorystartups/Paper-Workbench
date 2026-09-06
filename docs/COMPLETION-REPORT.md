@@ -12,9 +12,9 @@ are optional downstream steps that preserve provenance and evidence states throu
 
 - The authoritative copy lives under the private Tools monorepo; the standalone public
   repository is a one-way mirror of that subtree.
-- **123 tests** across the suite, all passing offline (live provider paths were verified
+- **132 tests** across the suite, all passing offline (live provider paths were verified
   separately with the user's keys; no live calls are part of routine verification).
-- **7 Alembic migrations**; startup runs `alembic upgrade head`.
+- **8 Alembic migrations**; startup runs `alembic upgrade head`.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
   multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
@@ -35,16 +35,18 @@ are optional downstream steps that preserve provenance and evidence states throu
 | Continued capability slices | later commits | branchable dialogue, integrity watch, reporting guidelines, project cost ceilings, project portability |
 | Source integrity + maintenance | 372e02a | controlled duplicate-source review/merge, public CI, guarded mirror publisher |
 | PDF intake hardening | 68b4b25 | layout-aware extraction, controlled page states, optional local OCR with page-level provenance |
-| Citation graph | pending commit | backward/forward discovery, controlled resolution/review, bounded traversal, portable provider provenance |
+| Citation graph | 37adab3 | backward/forward discovery, controlled resolution/review, bounded traversal, portable provider provenance |
+| CRediT authorship | pending commit | controlled role assignments, review history, snapshot-bound advisory order proposals, approved export statements |
 
 See `docs/CAPABILITY-MATRIX.md` for capability-by-capability status.
 
 ## Verification evidence
 
-- **Unit/integration/security/API**: `pytest` → 123 passed. Covers evidence integrity,
+- **Unit/integration/security/API**: `pytest` → 132 passed. Covers evidence integrity,
   cross-project isolation, dialogue propose→approve→execute + plan-hash binding, prompt-
   injection fencing, auth (password/JWT/OIDC/roles), export (incl. PDF fallback + JATS DTD
-  validation), submissions state machine, portfolio, semantic scope, startup migration.
+  validation), submissions state machine, portfolio, semantic scope, startup migration,
+  and CRediT assignment/order review gates.
 - **Audit eval harness** (`scripts/run_evals.py`): 8 labeled scenarios, precision/recall
   **1.00** on all 7 finding codes (`docs/eval-report.md`).
 - **LLM-quality eval harness** (`scripts/run_llm_evals.py`): against **live gpt-4o**,
@@ -82,7 +84,6 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 - **OCR runtime** is optional and absent on this Windows box. Layout-aware PDF extraction
   is built in; local OCR requires `.[ocr]` plus Tesseract language data. Automatic mode
   records unavailable/failed OCR per page and continues; forced OCR fails closed.
-- **CRediT authorship assist** is planned, not built.
 - **Reproducible compute runner** (isolated environment, pinned dependencies and seeds) is
   not built; computation remains external to this workbench.
 - **LLM-quality evals** are a regression signal on known failure modes, not a correctness
@@ -95,11 +96,12 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 
 ## Recommended next actions
 
-1. Add review-gated CRediT contribution capture and authorship-order assistance.
-2. Complete publication packaging (cover letters, declarations, full JATS 1.3 validation;
+1. Complete publication packaging (cover letters, declarations, full JATS 1.3 validation;
    optionally install GTK for WeasyPrint typesetting).
-3. Add a reproducible compute runner with pinned environments, seeds, immutable run
+2. Add a reproducible compute runner with pinned environments, seeds, immutable run
    manifests, and explicit promotion of outputs into reviewed evidence.
+3. Harden multi-tenant authorization and production OIDC only if the workbench moves beyond
+   its current single-machine trust boundary.
 
 ## How to run
 
@@ -107,7 +109,7 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\alembic.exe upgrade head          # or let the server do it on boot
-.\.venv\Scripts\python.exe -m pytest               # 123 tests, offline
+.\.venv\Scripts\python.exe -m pytest               # 132 tests, offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app     # http://127.0.0.1:8000/ (UI)
 ```
 Copy `.env.example` to `.env`; everything defaults to offline fake mode.

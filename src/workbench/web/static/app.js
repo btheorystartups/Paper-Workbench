@@ -1322,6 +1322,10 @@ async function tabManuscripts(el, pid, sub) {
       '<button type="button" data-action="cl-attach" data-mid="' + esc(selectedMid) +
       '">Attach checklist</button></div>' +
       '<div id="ms-checklists" style="margin-top:0.6rem"></div>' +
+      '<hr class="soft"><h3>Authorship &amp; CRediT</h3>' +
+      '<p class="empty">Controlled contribution roles and review-gated authorship order. ' +
+      'CRediT does not determine authorship eligibility or order.</p>' +
+      '<div id="ms-credit">' + loadingHTML("Loading contribution record…") + "</div>" +
       "</section>";
   }
 
@@ -1413,7 +1417,130 @@ async function tabManuscripts(el, pid, sub) {
     multiOptions(candidates, (c) => c.title) + "</select></div>" +
     '<div><button type="submit" class="primary">Create manuscript</button></div>' +
     "</form></section></div>";
-  if (selectedMid) loadChecklists(selectedMid);
+  if (selectedMid) {
+    loadChecklists(selectedMid);
+    loadCredit(pid, selectedMid);
+  }
+}
+
+async function loadCredit(pid, mid) {
+  const box = document.getElementById("ms-credit");
+  if (!box) return;
+  box.innerHTML = loadingHTML("Loading contribution record…");
+  try {
+    const data = await api("/manuscripts/" + encodeURIComponent(mid) + "/credit");
+    renderCredit(box, data, pid, mid);
+  } catch (e) {
+    box.innerHTML = errorHTML(e.message);
+  }
+}
+
+function renderCredit(box, data, pid, mid) {
+  const contributors = data.contributors || [];
+  const assignments = data.assignments || [];
+  const proposals = data.proposals || [];
+  const byId = {};
+  for (const c of contributors) byId[c.id] = c;
+  const names = (ids) => ids.map((id) => byId[id] ? byId[id].display_name : id).join(" → ");
+
+  const approved = data.approved_order && data.approved_order.length
+    ? '<p>' + badge("human-approved", "b-green") + " " + esc(names(data.approved_order)) + "</p>"
+    : '<p>' + badge(data.approved_order_stale ? "approved order stale" : "not approved", "b-amber") +
+      " No current order is exported as authorship.</p>";
+
+  const people = contributors.length
+    ? '<ul class="plain">' + contributors.map((c) =>
+        '<li class="finding"><strong>' + esc(c.display_name) + "</strong>" +
+        (c.corresponding ? " " + badge("corresponding", "b-blue") : "") +
+        (c.orcid ? ' <span class="mono small-text">' + esc(c.orcid) + "</span>" : "") +
+        (c.affiliation ? '<div class="dim small-text">' + esc(c.affiliation) + "</div>" : "") +
+        "</li>").join("") + "</ul>"
+    : emptyHTML("No contributors registered yet.");
+
+  const roles = assignments.length
+    ? '<ul class="plain">' + assignments.map((a) => {
+        const who = byId[a.contributor_id] ? byId[a.contributor_id].display_name : a.contributor_id;
+        const controls = ["confirmed", "disputed", "declined"].filter((s) => s !== a.state).map((s) =>
+          '<button type="button" class="small" data-action="credit-review" data-aid="' + esc(a.id) +
+          '" data-state="' + esc(s) + '" data-pid="' + esc(pid) + '" data-mid="' + esc(mid) +
+          '">' + esc(s) + "</button>").join(" ");
+        return '<li class="finding"><strong>' + esc(who) + "</strong> — " + esc(a.role_label) +
+          " " + badge(a.degree, "b-gray") + " " + badge(a.state,
+            a.state === "confirmed" ? "b-green" : (a.state === "disputed" ? "b-red" : "b-amber")) +
+          '<div class="dim small-text">' + esc(a.rationale) + "</div><div>" + controls + "</div></li>";
+      }).join("") + "</ul>"
+    : emptyHTML("No CRediT roles proposed yet.");
+
+  const proposalList = proposals.length
+    ? '<ul class="plain">' + proposals.map((p) => {
+        let controls = "";
+        if (p.status === "proposed") {
+          controls = '<button type="button" class="small approve" data-action="authorship-review" ' +
+            'data-proposal="' + esc(p.id) + '" data-decision="approved" data-pid="' + esc(pid) +
+            '" data-mid="' + esc(mid) + '">Approve</button> ' +
+            '<button type="button" class="small" data-action="authorship-review" data-proposal="' +
+            esc(p.id) + '" data-decision="rejected" data-pid="' + esc(pid) + '" data-mid="' +
+            esc(mid) + '">Reject</button>';
+        }
+        return '<li class="finding">' + badge(p.status, p.status === "approved" ? "b-green" : "b-amber") +
+          (p.stale ? " " + badge("stale", "b-red") : "") + " " + esc(names(p.ordered_contributor_ids)) +
+          '<div class="dim small-text">' + esc(p.method) + ": " + esc(p.rationale) +
+          "</div><div>" + controls + "</div></li>";
+      }).join("") + "</ul>"
+    : emptyHTML("No authorship-order proposals yet.");
+
+  const contributorOptions = contributors.map((c) =>
+    '<option value="' + esc(c.id) + '">' + esc(c.display_name) + "</option>").join("");
+  const roleOptions = (data.taxonomy || []).map((r) =>
+    '<option value="' + esc(r.id) + '">' + esc(r.label) + "</option>").join("");
+
+  box.innerHTML = approved + '<p class="dim small-text">' + esc(data.disclaimer) + "</p>" +
+    "<h4>Contributors</h4>" + people +
+    '<form class="stack" data-form="create-credit-contributor" data-pid="' + esc(pid) +
+    '" data-mid="' + esc(mid) + '"><div class="field-row">' +
+    '<div class="field"><label for="credit-name">Display name</label>' +
+    '<input id="credit-name" name="display_name" required></div>' +
+    '<div class="field"><label for="credit-orcid">ORCID (optional)</label>' +
+    '<input id="credit-orcid" name="orcid" placeholder="0000-0000-0000-000X"></div></div>' +
+    '<div class="field-row"><div class="field"><label for="credit-given">Given names</label>' +
+    '<input id="credit-given" name="given_names"></div>' +
+    '<div class="field"><label for="credit-family">Family name</label>' +
+    '<input id="credit-family" name="family_name"></div></div>' +
+    '<div class="field"><label for="credit-affiliation">Affiliation</label>' +
+    '<input id="credit-affiliation" name="affiliation"></div>' +
+    '<label class="chip"><input type="checkbox" name="corresponding"> Corresponding author</label>' +
+    '<div><button type="submit">Add contributor</button></div></form>' +
+    "<h4>CRediT role assignments</h4>" + roles +
+    (contributors.length ?
+      '<form class="stack" data-form="propose-credit-role" data-mid="' + esc(mid) +
+      '" data-pid="' + esc(pid) + '"><div class="field-row">' +
+      '<div class="field"><label for="credit-person">Contributor</label><select id="credit-person" ' +
+      'name="contributor_id">' + contributorOptions + "</select></div>" +
+      '<div class="field"><label for="credit-role">CRediT role</label><select id="credit-role" ' +
+      'name="role">' + roleOptions + "</select></div>" +
+      '<div class="field"><label for="credit-degree">Degree</label><select id="credit-degree" ' +
+      'name="degree"><option>lead</option><option selected>equal</option><option>supporting</option>' +
+      "</select></div></div>" +
+      '<div class="field"><label for="credit-rationale">Contribution rationale</label>' +
+      '<textarea id="credit-rationale" name="rationale" required></textarea></div>' +
+      '<div><button type="submit">Propose role</button></div></form>' : "") +
+    "<h4>Authorship-order proposals</h4>" + proposalList +
+    (contributors.length ?
+      '<form class="stack" data-form="propose-authorship-order" data-mid="' + esc(mid) +
+      '" data-pid="' + esc(pid) + '"><fieldset><legend>Manual discussion order</legend>' +
+      '<p class="dim small-text">Select proposed authors and move them into order. Approval is a ' +
+      "separate human-review step.</p><ol class=\"plain\" id=\"credit-order-list\">" +
+      contributors.map((c) => '<li class="finding" data-credit-order-id="' + esc(c.id) + '">' +
+        '<label><input type="checkbox" data-credit-order-include checked> ' +
+        esc(c.display_name) + '</label> <button type="button" class="small" ' +
+        'data-action="credit-order-up" aria-label="Move ' + esc(c.display_name) +
+        ' up">↑</button> <button type="button" class="small" data-action="credit-order-down" ' +
+        'aria-label="Move ' + esc(c.display_name) + ' down">↓</button></li>').join("") +
+      '</ol></fieldset><div class="field"><label for="authorship-rationale">Order rationale</label>' +
+      '<textarea id="authorship-rationale" name="rationale" required></textarea></div>' +
+      '<div><button type="submit">Propose manual order</button></div></form>' : "") +
+    '<div><button type="button" data-action="authorship-suggest" data-mid="' + esc(mid) +
+    '" data-pid="' + esc(pid) + '">Generate discussion draft from confirmed roles</button></div>';
 }
 
 async function loadChecklists(mid) {
@@ -2216,6 +2343,50 @@ const clickActions = {
     }
   }),
 
+  "credit-order-up": (t) => {
+    const item = t.closest("[data-credit-order-id]");
+    if (item && item.previousElementSibling) item.parentNode.insertBefore(item, item.previousElementSibling);
+  },
+
+  "credit-order-down": (t) => {
+    const item = t.closest("[data-credit-order-id]");
+    if (item && item.nextElementSibling) item.parentNode.insertBefore(item.nextElementSibling, item);
+  },
+
+  "credit-review": (t) => withBusy(t, async () => {
+    const note = window.prompt("Human review note for marking this role " + t.dataset.state + ":", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api("/credit-assignments/" + encodeURIComponent(t.dataset.aid) + "/review", "POST", {
+        state: t.dataset.state, note: note.trim(),
+      });
+      toast("CRediT assignment marked " + t.dataset.state + ".");
+      loadCredit(t.dataset.pid, t.dataset.mid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "authorship-suggest": (t) => withBusy(t, async () => {
+    try {
+      await api("/manuscripts/" + encodeURIComponent(t.dataset.mid) +
+        "/authorship-proposals/suggest", "POST", {});
+      toast("Discussion draft created; human approval is still required.");
+      loadCredit(t.dataset.pid, t.dataset.mid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
+  "authorship-review": (t) => withBusy(t, async () => {
+    const note = window.prompt("Human review note for " + t.dataset.decision + " decision:", "");
+    if (note === null) return;
+    if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    try {
+      await api("/authorship-proposals/" + encodeURIComponent(t.dataset.proposal) +
+        "/review", "POST", { decision: t.dataset.decision, note: note.trim() });
+      toast("Authorship proposal " + t.dataset.decision + ".");
+      loadCredit(t.dataset.pid, t.dataset.mid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
+
   "ms-audit": (t) => withBusy(t, async () => {
     const box = document.getElementById("ms-results");
     if (box) box.innerHTML = loadingHTML("Running audit…");
@@ -2503,6 +2674,49 @@ const formActions = {
       "POST", payload);
     toast("Manuscript created.");
     location.hash = "#/project/" + form.dataset.pid + "/manuscripts/" + m.id;
+  },
+
+  "create-credit-contributor": async (form) => {
+    const body = fd(form);
+    const payload = {
+      display_name: body.display_name,
+      corresponding: body.corresponding === "on",
+    };
+    if (body.given_names) payload.given_names = body.given_names;
+    if (body.family_name) payload.family_name = body.family_name;
+    if (body.orcid) payload.orcid = body.orcid;
+    if (body.affiliation) payload.affiliation = body.affiliation;
+    await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/contributors", "POST", payload);
+    toast("Contributor added.");
+    loadCredit(form.dataset.pid, form.dataset.mid);
+  },
+
+  "propose-credit-role": async (form) => {
+    const body = fd(form);
+    await api("/manuscripts/" + encodeURIComponent(form.dataset.mid) +
+      "/credit-assignments", "POST", {
+        contributor_id: body.contributor_id,
+        role: body.role,
+        degree: body.degree,
+        rationale: body.rationale,
+      });
+    toast("CRediT role proposed; human review is required.");
+    loadCredit(form.dataset.pid, form.dataset.mid);
+  },
+
+  "propose-authorship-order": async (form) => {
+    const body = fd(form);
+    const order = Array.from(form.querySelectorAll("[data-credit-order-id]"))
+      .filter((item) => item.querySelector("[data-credit-order-include]").checked)
+      .map((item) => item.dataset.creditOrderId);
+    if (!order.length) { toast("Select at least one proposed author.", "err"); return; }
+    await api("/manuscripts/" + encodeURIComponent(form.dataset.mid) +
+      "/authorship-proposals", "POST", {
+        ordered_contributor_ids: order,
+        rationale: body.rationale,
+      });
+    toast("Manual authorship order proposed; human approval is still required.");
+    loadCredit(form.dataset.pid, form.dataset.mid);
   },
 
   "add-section": async (form) => {

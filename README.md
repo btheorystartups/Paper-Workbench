@@ -12,7 +12,7 @@ Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
 
 ## Status (P1–P6 + expansion + hardening — 2026-09-06)
 
-Implemented and tested (123 offline tests; live providers verified separately with user keys):
+Implemented and tested (132 offline tests; live providers verified separately with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -35,6 +35,10 @@ Implemented and tested (123 offline tests; live providers verified separately wi
   preserves evidence/literature provenance, records an audit event, and invalidates embeddings.
 - **Authoring** (P4): paper candidates (16 types / 7 structures), manuscripts, ordered
   sections whose claims are validated references into the claim ledger.
+- **CRediT authorship**: project contributors, the 14 controlled CRediT roles, explicit
+  proposed/confirmed/disputed/declined review states, and snapshot-bound authorship-order
+  proposals. A deterministic discussion draft is available offline, but only a current
+  human-approved order appears in manuscript exports.
 - **Audits** (P5): claim-coverage/verification-debt/unverified-source/dangling-ref/
   unreferenced-numbers checks + LLM skeptical review (objections persist as open,
   AI-suggested notes).
@@ -79,7 +83,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 123 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 132 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 

@@ -28,10 +28,13 @@ from sqlalchemy.orm import Session
 from ..audit import record_audit
 from ..config import get_settings
 from ..models import (
+    AuthorshipProposal,
     CitationEdge,
     Claim,
     ClaimEvidence,
+    Contributor,
     CostBudget,
+    CreditAssignment,
     Edge,
     Embedding,
     Excerpt,
@@ -57,6 +60,9 @@ _TABLES = [
     ("project", Project, "self"),
     ("research_objects", ResearchObject, "project"),
     ("edges", Edge, "project"),
+    ("contributors", Contributor, "project"),
+    ("credit_assignments", CreditAssignment, "project"),
+    ("authorship_proposals", AuthorshipProposal, "project"),
     ("sources", Source, "project"),
     ("citation_edges", CitationEdge, "project"),
     ("excerpts", Excerpt, "source"),
