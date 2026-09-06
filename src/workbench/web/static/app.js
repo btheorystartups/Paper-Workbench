@@ -556,9 +556,31 @@ async function tabSources(el, pid, sub) {
   let excerptPanel = "";
   if (selectedSid) {
     const src = sources.find((s) => s.id === selectedSid);
+    let extractionPanel = "";
+    if (src && src.ingest) {
+      const detail = src.ingest.extraction_detail || {};
+      const pageStates = (detail.page_results || []).reduce((counts, page) => {
+        counts[page.state] = (counts[page.state] || 0) + 1;
+        return counts;
+      }, {});
+      const stateBadges = Object.entries(pageStates).map(([name, count]) =>
+        badge(count + " " + pretty(name), name === "layout_text" ? "b-teal" : "b-orange")
+      ).join(" ");
+      const warnings = (detail.warnings || []).length
+        ? '<ul class="plain small-text">' + detail.warnings.map((warning) =>
+          "<li>" + esc(warning) + "</li>").join("") + "</ul>"
+        : '<span class="verified small-text">No extraction warnings.</span>';
+      extractionPanel =
+        '<div class="notice"><strong>Extraction provenance — review required</strong>' +
+        '<p class="small-text">' + esc(src.ingest.extractor) + " · " +
+        badge(pretty(src.ingest.extraction_confidence), "b-orange") +
+        (detail.ocr_status ? " · OCR " + badge(pretty(detail.ocr_status), "b-blue") : "") +
+        "</p><div>" + stateBadges + "</div>" + warnings + "</div>";
+    }
     excerptPanel =
       '<section class="panel" aria-labelledby="exc-h"><h2 id="exc-h">Excerpts — ' +
       esc(src ? trunc(src.title, 80) : selectedSid) + "</h2>" +
+      extractionPanel +
       '<div id="excerpt-list">' + loadingHTML() + "</div>" +
       '<hr class="soft">' +
       '<form class="stack" data-form="add-excerpt" data-sid="' + esc(selectedSid) + '">' +
@@ -615,6 +637,12 @@ async function tabSources(el, pid, sub) {
     '<input id="ing-title" name="title" type="text"></div>' +
     '<div class="field"><label for="ing-license">License (optional)</label>' +
     '<input id="ing-license" name="license" type="text"></div>' +
+    '<div class="field"><label for="ing-pdf-mode">PDF extraction mode</label>' +
+    '<select id="ing-pdf-mode" name="pdf_mode">' +
+    '<option value="auto">Auto: layout text, OCR low-text pages when available</option>' +
+    '<option value="text">Layout text only</option>' +
+    '<option value="ocr">Require local OCR for every page</option></select>' +
+    '<p class="dim small-text">OCR output is always marked unreviewed and never becomes evidence automatically.</p></div>' +
     '<div><button type="submit" class="primary">Ingest file</button></div>' +
     "</form></section></div>";
 
@@ -2150,12 +2178,15 @@ const formActions = {
 
   "ingest-file": async (form) => {
     const body = fd(form);
-    const payload = { path: body.path };
+    const payload = { path: body.path, pdf_mode: body.pdf_mode || "auto" };
     if (body.title) payload.title = body.title;
     if (body.license) payload.license = body.license;
     const r = await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/ingest",
       "POST", payload);
-    toast('Ingested "' + trunc(r.title, 50) + '" (' + pretty(r.access) + ").");
+    const detail = r.ingest.extraction_detail || {};
+    const extraction = pretty(r.ingest.extraction_confidence);
+    const ocr = detail.ocr_status ? ", OCR " + pretty(detail.ocr_status) : "";
+    toast('Ingested "' + trunc(r.title, 50) + '" (' + extraction + ocr + ").");
     route();
   },
 

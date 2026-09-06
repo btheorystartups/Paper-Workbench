@@ -12,7 +12,7 @@ Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
 
 ## Status (P1–P6 + expansion + hardening — 2026-09-06)
 
-Implemented and tested (108 offline tests; live providers verified separately with user keys):
+Implemented and tested (114 offline tests; live providers verified separately with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -20,7 +20,9 @@ Implemented and tested (108 offline tests; live providers verified separately wi
   content, full AI provenance per turn, propose → human-approve → execute pipeline
   (plan-hash bound). Live OpenAI (model from `OPENAI_MODEL`) and Anthropic adapters.
 - **Ingestion** (P2): md/txt/tex/bib/csv/pdf → content-addressed artifact copies,
-  honestly-labeled extraction; SSRF-guarded live web extraction.
+  honestly-labeled extraction; PDFs use layout-aware text extraction plus optional local
+  OCR for low-text pages, with controlled page states and mandatory review provenance;
+  SSRF-guarded live web extraction.
 - **Literature core** (P3): OpenAlex + Crossref adapters (normalized, DOI-canonicalized,
   deduped), saved searches (exploratory by default — never auto-"systematic"), explicit
   imports, screening states + literature matrix, novelty map with mandatory coverage notes.
@@ -73,7 +75,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 108 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 114 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
@@ -96,4 +98,7 @@ project; verifies every checksum first; rewrites artifact paths to the local dat
   and the manifest records which. LaTeX is the publication-quality path.
 - JATS validates against a bundled subset DTD, not full JATS 1.3 (`dtd_path=` accepts it).
 - Auth is a single-machine trust model; hardened multi-tenant deployment is out of scope.
+- Local OCR is optional: install `.[ocr]` plus Tesseract language data. Without it, automatic
+  PDF ingestion retains layout text and explicitly labels low-text pages unresolved; forced
+  OCR fails closed. OCR output is always `ocr_unreviewed`/`mixed_unreviewed`.
 - See `docs/CAPABILITY-MATRIX.md` for the full honest status per capability.

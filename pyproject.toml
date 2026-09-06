@@ -29,6 +29,10 @@ dev = [
 pdf = ["weasyprint>=60"]
 # Figure/table rendering (matplotlib + numpy). Render functions raise a clear error if absent.
 figures = ["matplotlib>=3.8"]
+# Optional local OCR. PyMuPDF delegates OCR to Tesseract and therefore also needs
+# Tesseract language data on the host. The application never installs or invokes it
+# unless PDF mode is auto/ocr and a page needs it.
+ocr = ["pymupdf>=1.24"]
 
 [build-system]
 requires = ["setuptools>=68"]
