@@ -28,6 +28,7 @@ from .services import (
     authoring,
     authorship,
     citation_graph,
+    compute,
     dialogue,
     export_service,
     figures,
@@ -43,7 +44,7 @@ from .services import (
     submissions,
     venues,
 )
-from .vocab import ClaimSupport, Novelty, ObjectKind, SourceAccess
+from .vocab import ClaimSupport, Novelty, ObjectKind, ResultStrength, SourceAccess
 
 
 @asynccontextmanager
@@ -1370,6 +1371,163 @@ def figure_image(figure_id: str, session: Session = Depends(_session)):
 def audit_artifacts(project_id: str, session: Session = Depends(_session)):
     findings = figures.audit_artifacts(session, project_id)
     return {"findings": findings, "counts": _severity_counts(findings)}
+
+
+# --- reproducible local compute (explicit approval + human review) ---
+
+
+class ComputeRunIn(BaseModel):
+    script_source_id: str
+    input_source_ids: list[str] = Field(default_factory=list, max_length=50)
+    arguments: list[str] = Field(default_factory=list, max_length=32)
+    timeout_seconds: int = Field(default=60, ge=1)
+    seed: int = Field(default=0, ge=-(2**31), lt=2**31)
+
+
+@app.post("/projects/{project_id}/compute-runs")
+def create_compute_run(
+    project_id: str,
+    body: ComputeRunIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require(session, project_id, user, "coauthor")
+    try:
+        run = compute.create_run(session, project_id, **body.model_dump())
+    except compute.ComputeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return compute.run_out(session, run)
+
+
+@app.get("/projects/{project_id}/compute-runs")
+def list_compute_runs(project_id: str, session: Session = Depends(_session)):
+    try:
+        return [compute.run_out(session, run) for run in compute.list_runs(session, project_id)]
+    except compute.ComputeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/compute-runs/{run_id}")
+def get_compute_run(run_id: str, session: Session = Depends(_session)):
+    try:
+        return compute.run_out(session, compute.get_run(session, run_id))
+    except compute.ComputeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/compute-runs/{run_id}/logs/{stream}")
+def get_compute_log(run_id: str, stream: Literal["stdout", "stderr"], session: Session = Depends(_session)):
+    from fastapi.responses import FileResponse
+
+    try:
+        path, filename = compute.captured_file(session, run_id, stream=stream)
+    except compute.ComputeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, media_type="text/plain; charset=utf-8", filename=filename)
+
+
+@app.get("/compute-runs/{run_id}/outputs/{output_index}")
+def get_compute_output(
+    run_id: str, output_index: int, session: Session = Depends(_session)
+):
+    from fastapi.responses import FileResponse
+
+    try:
+        path, filename = compute.captured_file(session, run_id, output_index=output_index)
+    except compute.ComputeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, media_type="application/octet-stream", filename=filename)
+
+
+class ComputeApprovalIn(BaseModel):
+    plan_hash: str = Field(min_length=64, max_length=64)
+    review_note: str = Field(min_length=1, max_length=4000)
+    acknowledge_unenforced_isolation: Literal[True]
+
+
+@app.post("/compute-runs/{run_id}/approve")
+def approve_compute_run(
+    run_id: str,
+    body: ComputeApprovalIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        run = compute.get_run(session, run_id)
+        _require(session, run.project_id, user, "coauthor")
+        compute.approve_run(session, run_id, **body.model_dump())
+    except compute.ComputeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return compute.run_out(session, run)
+
+
+class ComputeExecutionIn(BaseModel):
+    plan_hash: str = Field(min_length=64, max_length=64)
+    confirm_local_execution: Literal[True]
+
+
+@app.post("/compute-runs/{run_id}/execute")
+def execute_compute_run(
+    run_id: str,
+    body: ComputeExecutionIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        run = compute.get_run(session, run_id)
+        _require(session, run.project_id, user, "coauthor")
+        compute.execute_run(session, run_id, **body.model_dump())
+    except compute.ComputeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return compute.run_out(session, run)
+
+
+class ComputeReviewIn(BaseModel):
+    decision: Literal["verified", "rejected"]
+    review_note: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/compute-runs/{run_id}/review")
+def review_compute_run(
+    run_id: str,
+    body: ComputeReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        run = compute.get_run(session, run_id)
+        _require(session, run.project_id, user, "reviewer")
+        compute.review_run(session, run_id, **body.model_dump())
+    except compute.ComputeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return compute.run_out(session, run)
+
+
+class ComputePromotionIn(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    summary: str = Field(min_length=1, max_length=20_000)
+    strength: ResultStrength = ResultStrength.COMPUTATIONALLY_VERIFIED_WITHIN_SCOPE
+
+
+@app.post("/compute-runs/{run_id}/promote")
+def promote_compute_result(
+    run_id: str,
+    body: ComputePromotionIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        run = compute.get_run(session, run_id)
+        _require(session, run.project_id, user, "coauthor")
+        result = compute.promote_result(session, run_id, **body.model_dump())
+    except (compute.ComputeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return _object_out(result)
 
 
 # --- semantic retrieval (similarity, never evidence) ---

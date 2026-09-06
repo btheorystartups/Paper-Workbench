@@ -13,6 +13,7 @@ from workbench.services import (
     authoring,
     authorship,
     citation_graph,
+    compute,
     dialogue,
     publication_packages,
     research,
@@ -86,6 +87,12 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
     publication_packages.set_cover_letter(
         session, package.id, text="Portable cover letter", state="draft"
     )
+    script_path = tmp_path / "portable-analysis.py"
+    script_path.write_text("print('portable')\n", encoding="utf-8")
+    script_source = ingest_file(session, project.id, script_path)
+    compute_run = compute.create_run(
+        session, project.id, script_source_id=script_source.id, seed=17
+    )
     source.doi = "10.1000/portable"
     citation_edges, _created = citation_graph.record_citations(
         session,
@@ -121,6 +128,7 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
     assert result["row_counts"]["credit_assignments"] == 1
     assert result["row_counts"]["authorship_proposals"] == 1
     assert result["row_counts"]["publication_packages"] == 1
+    assert result["row_counts"]["compute_runs"] == 1
     assert result["artifact_file_count"] >= 2  # original + extracted.txt
 
     # simulate a fresh machine: wipe artifacts and DB rows, re-import
@@ -156,6 +164,7 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
         from workbench.models import (
             AuthorshipProposal,
             CitationEdge,
+            ComputeRun,
             Contributor,
             PublicationPackage,
             Turn,
@@ -167,6 +176,7 @@ def test_export_import_round_trip(session, project, tmp_path, data_dir):
         assert fresh.get(Contributor, contributor.id).display_name == "Ada Lovelace"
         assert fresh.get(AuthorshipProposal, proposal.id).status == "approved"
         assert fresh.get(PublicationPackage, package.id).cover_letter == "Portable cover letter"
+        assert fresh.get(ComputeRun, compute_run.id).plan["seed"] == 17
     finally:
         fresh.close()
 

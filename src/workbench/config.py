@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # Optional entry-point DTD for full JATS validation. Empty = bundled structural subset.
     jats_dtd_path: str = ""
 
+    # Local compute. Execution still requires hash-bound approval and per-run confirmation.
+    compute_enabled: bool = True
+    compute_max_timeout_seconds: int = 300
+    compute_max_output_files: int = 100
+    compute_max_output_bytes: int = 50_000_000
+    compute_max_log_bytes: int = 1_000_000
+
 
 def brave_api_key() -> str:
     return os.environ.get("WB_BRAVE_SEARCH_API_KEY") or os.environ.get(

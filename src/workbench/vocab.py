@@ -87,6 +87,27 @@ class ActionStatus(StrEnum):
     INVALIDATED = "invalidated"
 
 
+class ComputeState(StrEnum):
+    PLANNED = "planned"
+    APPROVED = "approved"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+class ComputeReviewState(StrEnum):
+    UNREVIEWED = "unreviewed"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+
+class ComputeNetworkPolicy(StrEnum):
+    """What the local runner can honestly assert about network containment."""
+
+    REQUESTED_OFFLINE_UNENFORCED = "requested_offline_unenforced"
+
+
 class RiskClass(StrEnum):
     READ_ONLY = "read_only"       # may run without confirmation
     REVERSIBLE = "reversible"     # internal mutation: visible review + undo

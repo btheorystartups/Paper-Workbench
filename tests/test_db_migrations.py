@@ -27,6 +27,7 @@ def test_upgrade_to_head_builds_full_schema(tmp_path, monkeypatch):
         "credit_assignments",
         "authorship_proposals",
         "publication_packages",
+        "compute_runs",
         "alembic_version",
     } <= tables
     # the credential columns that the legacy create_all DB was missing

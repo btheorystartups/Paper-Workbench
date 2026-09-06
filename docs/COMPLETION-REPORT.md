@@ -12,9 +12,9 @@ are optional downstream steps that preserve provenance and evidence states throu
 
 - The authoritative copy lives under the private Tools monorepo; the standalone public
   repository is a one-way mirror of that subtree.
-- **140 tests** across the suite, all passing offline (live provider paths were verified
+- **144 tests** across the suite, all passing offline (live provider paths were verified
   separately with the user's keys; no live calls are part of routine verification).
-- **9 Alembic migrations**; startup runs `alembic upgrade head`.
+- **10 Alembic migrations**; startup runs `alembic upgrade head`.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
   multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
@@ -37,17 +37,19 @@ are optional downstream steps that preserve provenance and evidence states throu
 | PDF intake hardening | 68b4b25 | layout-aware extraction, controlled page states, optional local OCR with page-level provenance |
 | Citation graph | 37adab3 | backward/forward discovery, controlled resolution/review, bounded traversal, portable provider provenance |
 | CRediT authorship | 285f4bc | controlled role assignments, review history, snapshot-bound advisory order proposals, approved export statements |
-| Publication packaging | pending commit | reviewed cover letter/declarations, frozen approval snapshot, venue/reviewer materials, checksummed local ZIP |
+| Publication packaging | 9a46801 | reviewed cover letter/declarations, frozen approval snapshot, venue/reviewer materials, checksummed local ZIP |
+| Reproducible compute | current slice | hash-bound ingested Python plans, environment/seeds, bounded local execution, immutable outputs, human review/promotion |
 
 See `docs/CAPABILITY-MATRIX.md` for capability-by-capability status.
 
 ## Verification evidence
 
-- **Unit/integration/security/API**: `pytest` → 140 passed. Covers evidence integrity,
+- **Unit/integration/security/API**: `pytest` → 144 passed. Covers evidence integrity,
   cross-project isolation, dialogue propose→approve→execute + plan-hash binding, prompt-
   injection fencing, auth (password/JWT/OIDC/roles), export (incl. PDF fallback + JATS DTD
   validation), submissions state machine, portfolio, semantic scope, startup migration,
-  CRediT assignment/order review gates, and publication-package approval/staleness/checksums.
+  CRediT assignment/order review gates, publication-package approval/staleness/checksums,
+  and compute plan/execute/review/promotion gates with portable manifests.
 - **Audit eval harness** (`scripts/run_evals.py`): 8 labeled scenarios, precision/recall
   **1.00** on all 7 finding codes (`docs/eval-report.md`).
 - **LLM-quality eval harness** (`scripts/run_llm_evals.py`): against **live gpt-4o**,
@@ -86,8 +88,11 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 - **OCR runtime** is optional and absent on this Windows box. Layout-aware PDF extraction
   is built in; local OCR requires `.[ocr]` plus Tesseract language data. Automatic mode
   records unavailable/failed OCR per page and continues; forced OCR fails closed.
-- **Reproducible compute runner** (isolated environment, pinned dependencies and seeds) is
-  not built; computation remains external to this workbench.
+- **Local compute containment** is deliberately partial: environment packages and seeds are
+  fingerprinted, inputs/outputs are checksummed, and subprocesses are bounded by timeout and
+  output ceilings, but network, filesystem, memory/CPU, and descendant-process isolation are
+  not enforceable in the built-in Windows runner. The UI requires explicit acknowledgement;
+  use only inspected scripts until a container-backed executor is added.
 - **LLM-quality evals** are a regression signal on known failure modes, not a correctness
   certificate. LLM output always enters a human-review gate.
 
@@ -98,8 +103,8 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 
 ## Recommended next actions
 
-1. Add a reproducible compute runner with pinned environments, seeds, immutable run
-   manifests, and explicit promotion of outputs into reviewed evidence.
+1. Optionally add a container-backed compute executor when Docker/Podman is available, so
+   network, filesystem, CPU/memory, and descendant-process limits become enforceable.
 2. Optionally supply an official JATS 1.3 DTD distribution and install GTK/Pango for full
    JATS validation and WeasyPrint typesetting on this Windows host.
 3. Harden multi-tenant authorization and production OIDC only if the workbench moves beyond
@@ -111,7 +116,7 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\alembic.exe upgrade head          # or let the server do it on boot
-.\.venv\Scripts\python.exe -m pytest               # 140 tests, offline
+.\.venv\Scripts\python.exe -m pytest               # 144 tests, offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app     # http://127.0.0.1:8000/ (UI)
 ```
 Copy `.env.example` to `.env`; everything defaults to offline fake mode.
