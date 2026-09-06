@@ -35,6 +35,7 @@ from .services import (
     outputs,
     paper_design,
     portfolio,
+    publication_packages,
     research,
     security,
     semantic,
@@ -1552,6 +1553,176 @@ def add_revision(submission_id: str, body: RevisionIn, session: Session = Depend
         raise HTTPException(404, str(exc)) from exc
     session.commit()
     return _submission_out(sub)
+
+
+# --- review-gated publication packages ---
+
+
+class PublicationPackageIn(BaseModel):
+    included_formats: list[str] = Field(
+        default_factory=lambda: ["md", "tex", "html", "docx", "bib", "pdf", "jats"]
+    )
+
+
+@app.post("/submissions/{submission_id}/publication-packages")
+def create_publication_package(
+    submission_id: str,
+    body: PublicationPackageIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        submission = submissions.get_submission(session, submission_id)
+        _require(session, submission.project_id, user, "coauthor")
+        package = publication_packages.create_package(
+            session, submission_id, included_formats=body.included_formats
+        )
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except (submissions.SubmissionError, publication_packages.PackageError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/projects/{project_id}/publication-packages")
+def list_publication_packages(project_id: str, session: Session = Depends(_session)):
+    try:
+        packages = publication_packages.list_packages(session, project_id=project_id)
+        return [publication_packages.package_out(session, package) for package in packages]
+    except publication_packages.PackageError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/publication-packages/{package_id}")
+def get_publication_package(package_id: str, session: Session = Depends(_session)):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class CoverLetterIn(BaseModel):
+    text: str = Field(min_length=1)
+    state: Literal["draft", "confirmed"] = "draft"
+    review_note: str = ""
+
+
+@app.post("/publication-packages/{package_id}/cover-letter")
+def set_package_cover_letter(
+    package_id: str,
+    body: CoverLetterIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        publication_packages.set_cover_letter(session, package_id, **body.model_dump())
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class CoverLetterTemplateIn(BaseModel):
+    significance: str = Field(min_length=1)
+    venue_fit: str = Field(min_length=1)
+    editor_name: str = "Editor"
+
+
+@app.post("/publication-packages/{package_id}/cover-letter/template")
+def draft_package_cover_letter(
+    package_id: str,
+    body: CoverLetterTemplateIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        publication_packages.draft_cover_letter(session, package_id, **body.model_dump())
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class DeclarationIn(BaseModel):
+    kind: str
+    state: Literal["draft", "confirmed", "not_applicable"]
+    text: str = ""
+    review_note: str = ""
+
+
+@app.post("/publication-packages/{package_id}/declarations")
+def set_package_declaration(
+    package_id: str,
+    body: DeclarationIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        publication_packages.set_declaration(session, package_id, **body.model_dump())
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/publication-packages/{package_id}/prepare")
+def prepare_publication_package(
+    package_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        publication_packages.prepare_for_review(session, package_id)
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class PublicationPackageReviewIn(BaseModel):
+    decision: Literal["approved", "rejected"]
+    note: str = Field(min_length=1)
+
+
+@app.post("/publication-packages/{package_id}/review")
+def review_publication_package(
+    package_id: str,
+    body: PublicationPackageReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        publication_packages.review_package(session, package_id, **body.model_dump())
+        session.commit()
+        return publication_packages.package_out(session, package)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/publication-packages/{package_id}/build")
+def build_publication_package(
+    package_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+        _require(session, package.project_id, user, "coauthor")
+        result = publication_packages.build_bundle(session, package_id)
+        session.commit()
+        return result
+    except publication_packages.PackageError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 # --- cross-project research memory (workspace-scoped) ---

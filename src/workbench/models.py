@@ -391,6 +391,39 @@ class Submission(_Stamped, Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
+class PublicationPackage(_Stamped, Base):
+    """Versioned, review-gated local bundle plan for one submission.
+
+    Approval records a hash-bound snapshot. Bundle builds are derived local artifacts and
+    never imply that anything was transmitted to a venue.
+    """
+
+    __tablename__ = "publication_packages"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    submission_id: Mapped[str] = mapped_column(ForeignKey("submissions.id"), index=True)
+    manuscript_id: Mapped[str] = mapped_column(
+        ForeignKey("research_objects.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(default=1)
+    state: Mapped[str] = mapped_column(String(20), default="draft")
+    included_formats: Mapped[list] = mapped_column(JSON, default=list)
+    cover_letter: Mapped[str] = mapped_column(Text, default="")
+    cover_letter_state: Mapped[str] = mapped_column(String(20), default="missing")
+    cover_letter_review_note: Mapped[str] = mapped_column(Text, default="")
+    declarations: Mapped[list] = mapped_column(JSON, default=list)
+    basis_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    builds: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("submission_id", "version"),
+        Index("ix_publication_package_submission_state", "submission_id", "state"),
+    )
+
+
 class UsageEvent(_Stamped, Base):
     """One provider call's token usage, attributed to a project and a call kind.
     `simulated` rows (fake provider) are recorded for observability but never count
