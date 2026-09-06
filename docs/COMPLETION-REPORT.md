@@ -1,6 +1,6 @@
 # Paper-Workbench — Completion Report
 
-Date: 2026-07-21 · Author: Claude (implementation lead) · For: Brian Droncheff
+Last verified: 2026-09-06 · Original implementation lead: Claude · For: Brian Droncheff
 
 ## Summary
 
@@ -10,10 +10,11 @@ runnable, tested, and verified against live providers. It is **not** a paper gen
 research organization and grounded dialogue are the core; manuscript authoring and export
 are optional downstream steps that preserve provenance and evidence states throughout.
 
-- Working tree clean; committed in coherent slices.
-- **~40 source modules** in `src/workbench/`, **83 tests** across the suite, all passing
-  offline (live provider paths verified separately with the user's keys).
-- **4 Alembic migrations**; startup runs `alembic upgrade head`.
+- The authoritative copy lives under the private Tools monorepo; the standalone public
+  repository is a one-way mirror of that subtree.
+- **108 tests** across the suite, all passing offline (live provider paths were verified
+  separately with the user's keys; no live calls are part of routine verification).
+- **5 Alembic migrations**; startup runs `alembic upgrade head`.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
   multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
@@ -31,12 +32,14 @@ are optional downstream steps that preserve provenance and evidence states throu
 | Hardening | dae90bc | JATS DTD validation, WeasyPrint PDF, LLM-quality evals, submissions |
 | UI + startup | eb87aa1 | Submissions tab + login; Alembic-driven startup migration (fixed /auth/me 500) |
 | Alternative outputs | (this session) | conf abstract, poster, plain-language, teaching, graphical-abstract |
+| Continued capability slices | later commits | branchable dialogue, integrity watch, reporting guidelines, project cost ceilings, project portability |
+| Source integrity + maintenance | pending commit | controlled duplicate-source review/merge, public CI, guarded mirror publisher |
 
 See `docs/CAPABILITY-MATRIX.md` for capability-by-capability status.
 
 ## Verification evidence
 
-- **Unit/integration/security/API**: `pytest` → 65 passed. Covers evidence integrity,
+- **Unit/integration/security/API**: `pytest` → 108 passed. Covers evidence integrity,
   cross-project isolation, dialogue propose→approve→execute + plan-hash binding, prompt-
   injection fencing, auth (password/JWT/OIDC/roles), export (incl. PDF fallback + JATS DTD
   validation), submissions state machine, portfolio, semantic scope, startup migration.
@@ -74,10 +77,13 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 - **Auth** is a single-machine trust model (local API keys / dev tokens, HS256 JWTs). Real
   multi-tenant deployment needs a production IdP and tenant hardening — schema is the
   migration path.
-- **CRediT authorship assist**: planned, not built. (Branchable threads, retraction
-  watch, guideline checklists, cost budgets, figures/tables and multi-candidate paper
-  design, previously listed here, all landed in later slices — see
-  `docs/CAPABILITY-MATRIX.md`.)
+- **OCR/layout-aware ingestion** remains partial: PDFs use honestly labeled lossy text
+  extraction; there is no OCR or layout model.
+- **Citation-graph exploration** remains partial: cited-by counts are retained, but there
+  is no backward/forward graph-walk UI.
+- **CRediT authorship assist** is planned, not built.
+- **Reproducible compute runner** (isolated environment, pinned dependencies and seeds) is
+  not built; computation remains external to this workbench.
 - **LLM-quality evals** are a regression signal on known failure modes, not a correctness
   certificate. LLM output always enters a human-review gate.
 
@@ -88,13 +94,15 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 
 ## Recommended next actions
 
-1. If typeset PDF matters: install GTK on the workstation, then `pip install '.[pdf]'`.
-2. ~~Wire a plotting engine for figures/tables~~ — done (commit cf1d7b7).
-3. ~~Multi-candidate paper generation~~ — done (commit d3ca78c).
-4. If collaboration goes multi-user: integrate a real OIDC provider and harden tenancy.
-5. Point `validate_jats` at the official JATS 1.3 DTD for full-spec validation.
-6. Remaining planned items: branchable threads, retraction watch, guideline checklists,
-   cost budgets, CRediT assist (see capability matrix).
+1. Harden source intake with OCR and layout-aware extraction, while retaining the original
+   artifact and labeling extraction confidence.
+2. Add backward/forward citation-graph exploration as discovery only; graph edges and
+   similarity must never become evidence automatically.
+3. Add review-gated CRediT contribution capture and authorship-order assistance.
+4. Complete publication packaging (cover letters, declarations, full JATS 1.3 validation;
+   optionally install GTK for WeasyPrint typesetting).
+5. Add a reproducible compute runner with pinned environments, seeds, immutable run
+   manifests, and explicit promotion of outputs into reviewed evidence.
 
 ## How to run
 
@@ -102,7 +110,7 @@ live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`)
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\alembic.exe upgrade head          # or let the server do it on boot
-.\.venv\Scripts\python.exe -m pytest               # 65 tests, offline
+.\.venv\Scripts\python.exe -m pytest               # 108 tests, offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app     # http://127.0.0.1:8000/ (UI)
 ```
 Copy `.env.example` to `.env`; everything defaults to offline fake mode.

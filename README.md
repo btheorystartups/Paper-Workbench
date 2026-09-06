@@ -10,9 +10,9 @@ of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
 Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
 
-## Status (P1–P6 + expansion + hardening — 2026-07-22)
+## Status (P1–P6 + expansion + hardening — 2026-09-06)
 
-Implemented and tested (101 offline tests; live providers verified with user keys):
+Implemented and tested (108 offline tests; live providers verified separately with user keys):
 - **Research graph** (P1): workspaces, projects, typed research objects, edges, sources
   (access level + license + acquisition mandatory), checksummed excerpts with locators,
   claims with enforced support states and claim→evidence links; audit-in-transaction.
@@ -24,6 +24,9 @@ Implemented and tested (101 offline tests; live providers verified with user key
 - **Literature core** (P3): OpenAlex + Crossref adapters (normalized, DOI-canonicalized,
   deduped), saved searches (exploratory by default — never auto-"systematic"), explicit
   imports, screening states + literature matrix, novelty map with mandatory coverage notes.
+- **Source integrity**: project-scoped duplicate candidates from controlled DOI/title/year
+  signals; conflicts block merging; every merge requires a human note and current plan hash,
+  preserves evidence/literature provenance, records an audit event, and invalidates embeddings.
 - **Authoring** (P4): paper candidates (16 types / 7 structures), manuscripts, ordered
   sections whose claims are validated references into the claim ledger.
 - **Audits** (P5): claim-coverage/verification-debt/unverified-source/dangling-ref/
@@ -53,6 +56,8 @@ Implemented and tested (101 offline tests; live providers verified with user key
 - **LLM-quality evals** (`scripts/run_llm_evals.py`): grounding, injection-resistance,
   hallucinated-citation, action-safety, abstention — 6/6 against live gpt-4o
   (docs/llm-eval-report.md). A regression signal, not a correctness certificate.
+- **Maintenance**: public-mirror CI runs Ruff and the offline test suite on Python 3.13;
+  the parent Tools repository includes a guarded, dry-run-by-default subtree publisher.
 
 Demos: `python -m workbench.demo` (offline) · `python -X utf8 scripts/golden_path.py`
 (full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (providers) ·
@@ -68,7 +73,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 101 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # 108 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 

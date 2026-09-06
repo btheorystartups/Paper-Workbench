@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-07-23. Tests: 101 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-06. Tests: 108 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -38,7 +38,8 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Ingest md/txt/tex/bib/csv/pdf → sources with provenance, originals preserved | Implemented | `ingest/files.py`; content-addressed artifact copies, extractor+confidence labeled |
 | Result cards (plain + formal, strength, provenance) | Implemented | research objects with typed `body` |
-| Duplicate / contradiction / weak-support detection | Partial | audits flag verification debt, unverified sources, unaccepted-AI citation; no auto dupe-merge UI |
+| Duplicate-source detection + reviewed merge | Implemented | `services/source_dedup.py`; controlled DOI/title/year signals and explicit conflict blockers; UI merge requires a human note and current plan hash; provenance is retained and audited |
+| Contradiction / weak-support detection | Partial | audits flag verification debt, unverified sources, and unaccepted-AI citation; no general semantic contradiction detector |
 | OCR / layout-aware PDF extraction | Partial | pypdf text extraction (labeled "lossy"); no OCR/layout model |
 | Bulk tagging / version comparison | Planned | single-object versioning via edges; no bulk UI |
 
@@ -145,7 +146,8 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Auth: bcrypt passwords, JWTs, OIDC login | Implemented | `auth.py`; off by default, enforced when `WB_AUTH_REQUIRED=true` |
 | Role enforcement (reviewer<editor<coauthor<owner) | Implemented | wired into object/section/member routes; gated on auth |
 | SSRF-safe fetching, secret-as-env, no secret logging | Implemented | `ingest/safe_fetch.py`, `config.py` |
-| Web UI (7 tabs + login + submissions) | Implemented | `web/static/`; browser-verified incl. live dialogue |
+| Web UI (8 tabs + login + submissions) | Implemented | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Manuscripts, Submissions, Figures |
+| Public-mirror CI + guarded publisher | Implemented | `.github/workflows/ci.yml` runs Ruff + offline pytest on Python 3.13; parent Tools `scripts/publish-paper-workbench.ps1` validates the subtree and defaults to dry-run |
 | Hardened multi-tenant production deployment / real IdP integration | Out of scope | single-machine trust model; documented migration path |
 | Cost budgets / token metering | Implemented | `services/usage.py`; every LLM call metered per project/kind; monthly ceiling fail-closed before live calls (fakes never blocked); UI readout + budget setter |
 | Mid-call cancellation | Out of scope | calls are single short requests; ceiling bounds total spend |
