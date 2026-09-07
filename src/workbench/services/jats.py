@@ -1,53 +1,58 @@
-"""JATS validation. Ships a DTD for the JATS structural subset this workbench emits and
-validates output against it with lxml. This is real DTD validation — honestly scoped to
-the element subset we produce, not the full JATS 1.3 DTD (point WB at the official DTD via
-validate_jats(dtd_path=...) for that). Without lxml, falls back to a well-formedness check.
+"""Offline JATS validation against the official NISO JATS 1.3 distribution.
+
+The bundled default is the unmodified Journal Archiving and Interchange MathML 2
+DTD. It is the honest general-purpose choice for Paper-Workbench: unlike the
+Publishing and Article Authoring tag sets, it does not require us to invent journal
+identifiers, ISSNs, abstracts, or references that may not exist yet. A caller may
+still select a stricter local entry-point DTD with ``WB_JATS_DTD_PATH``.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# DTD covering exactly the elements export_service._jats_xml emits. Kept in sync with it.
-JATS_SUBSET_DTD = """
-<!ELEMENT article (front, body, back?)>
-<!ATTLIST article article-type CDATA #IMPLIED
-                  xmlns:xlink CDATA #IMPLIED>
-<!ELEMENT front (article-meta)>
-<!ELEMENT article-meta (title-group, contrib-group?)>
-<!ELEMENT title-group (article-title)>
-<!ELEMENT article-title (#PCDATA)>
-<!ELEMENT contrib-group (contrib*)>
-<!ELEMENT contrib (name, role*)>
-<!ATTLIST contrib contrib-type CDATA #IMPLIED>
-<!ELEMENT name (surname, given-names?)>
-<!ELEMENT surname (#PCDATA)>
-<!ELEMENT given-names (#PCDATA)>
-<!ELEMENT role (#PCDATA)>
-<!ATTLIST role vocab CDATA #IMPLIED
-               vocab-identifier CDATA #IMPLIED>
-<!ELEMENT body (sec*)>
-<!ELEMENT sec (title, p*)>
-<!ATTLIST sec id CDATA #IMPLIED>
-<!ELEMENT title (#PCDATA)>
-<!ELEMENT p (#PCDATA)>
-<!ELEMENT back (ref-list)>
-<!ELEMENT ref-list (ref*)>
-<!ELEMENT ref (mixed-citation)>
-<!ATTLIST ref id CDATA #IMPLIED>
-<!ELEMENT mixed-citation (#PCDATA)>
-"""
+JATS_VERSION = "1.3"
+JATS_TAG_SET = "Journal Archiving and Interchange"
+JATS_MATHML_VERSION = "2.0"
+JATS_DISTRIBUTION_URL = (
+    "https://public.nlm.nih.gov/projects/jats/archiving/1.3/"
+    "JATS-Archiving-1-3-MathML2-DTD.zip"
+)
+JATS_DISTRIBUTION_SHA256 = (
+    "fe9ea21a6d86bcfe245ab00f11006a2863bb50de94edebf24988151a09804e2c"
+)
+_BUNDLED_DTD = (
+    Path(__file__).resolve().parents[1]
+    / "schemas"
+    / "jats_1_3_archiving"
+    / "JATS-archivearticle1-3.dtd"
+)
 
 
 @dataclass
 class ValidationResult:
     well_formed: bool
-    valid: bool | None  # None when no DTD validation was possible
-    method: str  # "dtd-subset" | "dtd-file" | "well-formed-only"
+    valid: bool | None  # None only when lxml is unavailable.
+    method: str  # "dtd-jats-1.3-archiving" | "dtd-file" | "well-formed-only"
     errors: list[str] = field(default_factory=list)
+    schema: str | None = None
+    schema_version: str | None = None
+    distribution_sha256: str | None = None
 
     def as_dict(self) -> dict:
-        return {"well_formed": self.well_formed, "valid": self.valid,
-                "method": self.method, "errors": self.errors}
+        return {
+            "well_formed": self.well_formed,
+            "valid": self.valid,
+            "method": self.method,
+            "errors": self.errors,
+            "schema": self.schema,
+            "schema_version": self.schema_version,
+            "distribution_sha256": self.distribution_sha256,
+        }
+
+
+def bundled_jats_dtd_path() -> Path:
+    """Return the packaged official JATS 1.3 DTD entry point."""
+    return _BUNDLED_DTD
 
 
 def _lxml_available() -> bool:
@@ -57,9 +62,18 @@ def _lxml_available() -> bool:
 
 
 def validate_jats(xml_text: str, *, dtd_path: str | None = None) -> ValidationResult:
-    """Validate a JATS document. Uses the bundled subset DTD by default, or a full
-    JATS DTD file if `dtd_path` is given. Falls back to a well-formedness check when
-    lxml is not installed."""
+    """Validate JATS XML offline and fail closed when the selected DTD cannot load.
+
+    With no override, validation uses the packaged official NISO JATS 1.3 Archiving
+    DTD and its local modules. ``no_network=True`` prevents validation from fetching
+    schemas or entities at runtime.
+    """
+    custom_dtd = bool(dtd_path)
+    method = "dtd-file" if custom_dtd else "dtd-jats-1.3-archiving"
+    schema = "custom DTD" if custom_dtd else JATS_TAG_SET
+    schema_version = None if custom_dtd else JATS_VERSION
+    distribution_sha256 = None if custom_dtd else JATS_DISTRIBUTION_SHA256
+
     if not _lxml_available():
         return _well_formed_only(xml_text)
 
@@ -69,37 +83,51 @@ def validate_jats(xml_text: str, *, dtd_path: str | None = None) -> ValidationRe
         parser = etree.XMLParser(resolve_entities=False, no_network=True)
         doc = etree.fromstring(xml_text.encode("utf-8"), parser)
     except etree.XMLSyntaxError as exc:
-        return ValidationResult(well_formed=False, valid=False, method="dtd-subset",
-                                errors=[f"not well-formed: {exc}"])
+        return ValidationResult(
+            well_formed=False,
+            valid=False,
+            method=method,
+            errors=[f"not well-formed: {exc}"],
+            schema=schema,
+            schema_version=schema_version,
+            distribution_sha256=distribution_sha256,
+        )
 
-    if dtd_path:
-        method = "dtd-file"
-        path = Path(dtd_path)
-        if not path.is_file():
-            return ValidationResult(
-                well_formed=True,
-                valid=False,
-                method=method,
-                errors=[f"DTD file not found: {path}"],
-            )
-        try:
-            dtd = etree.DTD(str(path))
-        except (OSError, etree.DTDParseError) as exc:
-            return ValidationResult(
-                well_formed=True,
-                valid=False,
-                method=method,
-                errors=[f"DTD could not be loaded: {exc}"],
-            )
-    else:
-        from io import StringIO
-
-        dtd = etree.DTD(StringIO(JATS_SUBSET_DTD))
-        method = "dtd-subset"
+    path = Path(dtd_path) if custom_dtd else bundled_jats_dtd_path()
+    if not path.is_file():
+        return ValidationResult(
+            well_formed=True,
+            valid=False,
+            method=method,
+            errors=[f"DTD file not found: {path}"],
+            schema=schema,
+            schema_version=schema_version,
+            distribution_sha256=distribution_sha256,
+        )
+    try:
+        dtd = etree.DTD(str(path))
+    except (OSError, etree.DTDParseError) as exc:
+        return ValidationResult(
+            well_formed=True,
+            valid=False,
+            method=method,
+            errors=[f"DTD could not be loaded: {exc}"],
+            schema=schema,
+            schema_version=schema_version,
+            distribution_sha256=distribution_sha256,
+        )
 
     valid = dtd.validate(doc)
-    errors = [str(e) for e in dtd.error_log.filter_from_errors()]
-    return ValidationResult(well_formed=True, valid=valid, method=method, errors=errors)
+    errors = [str(error) for error in dtd.error_log.filter_from_errors()]
+    return ValidationResult(
+        well_formed=True,
+        valid=valid,
+        method=method,
+        errors=errors,
+        schema=schema,
+        schema_version=schema_version,
+        distribution_sha256=distribution_sha256,
+    )
 
 
 def _well_formed_only(xml_text: str) -> ValidationResult:
@@ -107,7 +135,16 @@ def _well_formed_only(xml_text: str) -> ValidationResult:
 
     try:
         ET.fromstring(xml_text)
-        return ValidationResult(well_formed=True, valid=None, method="well-formed-only")
+        return ValidationResult(
+            well_formed=True,
+            valid=None,
+            method="well-formed-only",
+            errors=["lxml is unavailable; official DTD validation did not run"],
+        )
     except ET.ParseError as exc:
-        return ValidationResult(well_formed=False, valid=None, method="well-formed-only",
-                                errors=[str(exc)])
+        return ValidationResult(
+            well_formed=False,
+            valid=None,
+            method="well-formed-only",
+            errors=[str(exc)],
+        )

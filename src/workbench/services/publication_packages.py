@@ -399,13 +399,6 @@ def readiness(session: Session, package_id: str) -> dict:
         {"code": item["code"], "message": item["message"]}
         for item in snapshot["venue_findings"]
     )
-    if "jats" in package.included_formats and not get_settings().jats_dtd_path:
-        warnings.append(
-            {
-                "code": "jats-subset-validation",
-                "message": "JATS will use the bundled subset DTD, not the full JATS 1.3 DTD",
-            }
-        )
     stale = package.basis_hash is not None and package.basis_hash != current_hash
     return {
         "ready": not blockers,

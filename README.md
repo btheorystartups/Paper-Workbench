@@ -49,7 +49,7 @@ Implemented and tested (146 offline tests; live providers verified separately wi
   AI-suggested/simulated badges, support states, approval-gated AI actions).
 - **Expansion**: Semantic Scholar + Unpaywall adapters; project-scoped semantic search
   (similarity ≠ evidence); venue profiles with verify-gated compliance audits;
-  collaboration roles (local trust model); PDF (fallback renderer) + JATS export;
+  collaboration roles (local trust model); typeset PDF + official JATS 1.3 export;
   cross-project memory (unpublished results, usage tracing, saved-search rerun);
   audit eval harness (docs/eval-report.md — precision/recall 1.00 on 7 codes).
 
@@ -73,8 +73,10 @@ Implemented and tested (146 offline tests; live providers verified separately wi
 - **Figures & tables**: rendered from content-hashed datasets (matplotlib, colour-blind-safe
   palette); records the source data hash so figures go **stale** if the data changes;
   grounded, review-gated captions; export bundles them into `supplements/` with provenance.
-- **Export hardening**: JATS validated against a bundled DTD (lxml); PDF via WeasyPrint when
-  its GTK libraries are present, else the deterministic fallback (the manifest records which).
+- **Export hardening**: JATS validates offline against the bundled official NISO JATS 1.3
+  Archiving DTD (lxml); PDF uses a real WeasyPrint render probe, publication CSS, page numbers,
+  references, and visible support/access states. The manifest records renderer mode, version,
+  and any deterministic fallback.
 - **LLM-quality evals** (`scripts/run_llm_evals.py`): grounding, injection-resistance,
   hallucinated-citation, action-safety, abstention — 6/6 against live gpt-4o
   (docs/llm-eval-report.md). A regression signal, not a correctness certificate.
@@ -98,8 +100,8 @@ risk register, and the phased roadmap/continuation ledger.
 
 ```powershell
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest              # 146 tests, fully offline
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,pdf]"
+.\.venv\Scripts\python.exe -m pytest              # 148 tests, fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
@@ -118,11 +120,13 @@ project; verifies every checksum first; rewrites artifact paths to the local dat
 
 ## Known limitations
 
-- Typeset PDF needs GTK (WeasyPrint); without it the deterministic fallback renderer runs
-  and the manifest records which. LaTeX is the publication-quality path.
-- JATS validates against a bundled subset DTD by default. Set `WB_JATS_DTD_PATH` to the
-  local entry-point file from an official JATS 1.3 DTD distribution for full validation;
-  the app never downloads a DTD at runtime.
+- WeasyPrint library use on Windows needs Pango. Install MSYS2's
+  `mingw-w64-x86_64-pango` package; without a usable runtime, `auto` runs the deterministic
+  fallback and records why. `weasyprint` mode fails closed instead.
+- JATS uses the official JATS 1.3 Archiving/Interchange DTD because it validates research
+  drafts without fabricating absent journal identifiers, ISSNs, abstracts, or references.
+  Set `WB_JATS_DTD_PATH` to a stricter venue-specific entry point when those fields exist.
+  Validation never downloads schemas at runtime.
 - Auth is a single-machine trust model; hardened multi-tenant deployment is out of scope.
 - Local-Python compute is reproducibility capture, not a security sandbox: network, filesystem,
   and descendant-process isolation are explicitly unenforced. Prefer the optional Docker

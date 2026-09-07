@@ -128,7 +128,9 @@ def test_pdf_and_jats_export(session, project, tmp_path, monkeypatch):
                           claim_ids=[claim.id])
     result = export_service.export_manuscript(session, ms.id, formats=["pdf", "jats"])
     pdf = Path(result["files"]["pdf"]).read_bytes()
-    assert pdf.startswith(b"%PDF-1.4") and pdf.rstrip().endswith(b"%%EOF")
+    assert pdf.startswith(b"%PDF-") and pdf.rstrip().endswith(b"%%EOF")
+    assert result["pdf_renderer"] in {"minimal", "weasyprint"}
+    assert result["jats_validation"]["method"] == "dtd-jats-1.3-archiving"
     import pypdf
     reader = pypdf.PdfReader(str(result["files"]["pdf"]))
     text = "".join(p.extract_text() for p in reader.pages)

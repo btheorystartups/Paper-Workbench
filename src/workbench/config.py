@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Export
     pdf_renderer: str = "auto"  # "auto" | "weasyprint" | "minimal"
-    # Optional entry-point DTD for full JATS validation. Empty = bundled structural subset.
+    # Optional stricter/venue-specific DTD. Empty = bundled official JATS 1.3 Archiving DTD.
     jats_dtd_path: str = ""
 
     # Local compute. Execution still requires hash-bound approval and per-run confirmation.
