@@ -1382,6 +1382,11 @@ class ComputeRunIn(BaseModel):
     arguments: list[str] = Field(default_factory=list, max_length=32)
     timeout_seconds: int = Field(default=60, ge=1)
     seed: int = Field(default=0, ge=-(2**31), lt=2**31)
+    executor: Literal["local_python", "docker"] = "local_python"
+    container_image: str = ""
+    memory_mb: int = Field(default=512, ge=64)
+    cpus: float = Field(default=1.0, ge=0.1)
+    pids_limit: int = Field(default=64, ge=16)
 
 
 @app.post("/projects/{project_id}/compute-runs")

@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-09-06. Tests: 144 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-07. Tests: 146 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -49,7 +49,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Method-neutral core (any research type) | Implemented | typed object kinds + JSON bodies; no method hard-coded |
 | Correspondence-Matrix as demo corpus | Implemented | `demo.py`, `golden_path.py` ingest the real CM materials |
-| Reproducible compute environment (manifests, env fingerprint, seeds, review gate) | Implemented / Partial containment | `services/compute.py`; immutable hash-bound plans, ingested scripts/inputs, package fingerprint, bounded local subprocess, captured outputs, explicit review/promotion. No shell/install; network/filesystem/descendant isolation is honestly unenforced pending a container executor |
+| Reproducible compute environment (manifests, env fingerprint, seeds, review gate) | Implemented (Docker) / Partial local fallback | `services/compute.py`; immutable hash-bound plans, ingested scripts/inputs, captured outputs, explicit review/promotion. Local Python records unenforced containment honestly. Optional Docker requires a cached digest, never pulls, and enforces no network, read-only root/inputs, non-root execution, dropped capabilities, no-new-privileges, and memory/CPU/PID limits |
 | Result-status labeling (proved/empirical/computational/heuristic/conjectured/AI) | Implemented | `ResultStrength` vocab |
 
 ## 4. Paper-design & decomposition wizard

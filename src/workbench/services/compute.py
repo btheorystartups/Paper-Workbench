@@ -33,7 +33,10 @@ from ..vocab import (
 )
 from . import research
 
-NETWORK_POLICY = ComputeNetworkPolicy.REQUESTED_OFFLINE_UNENFORCED
+LOCAL_NETWORK_POLICY = ComputeNetworkPolicy.REQUESTED_OFFLINE_UNENFORCED
+CONTAINER_NETWORK_POLICY = ComputeNetworkPolicy.ENFORCED_OFFLINE_CONTAINER
+EXECUTORS = {"local_python", "docker"}
+CONTAINER_IMAGE_RE = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 PROMOTABLE_STRENGTHS = {
     ResultStrength.COMPUTATIONALLY_VERIFIED_WITHIN_SCOPE,
     ResultStrength.HEURISTICALLY_SUPPORTED,
@@ -137,6 +140,66 @@ def environment_manifest() -> dict:
     }
 
 
+def _docker_host_environment() -> dict[str, str]:
+    allowed = ("SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "TEMP", "TMP")
+    return {name: os.environ[name] for name in allowed if os.environ.get(name)}
+
+
+def container_image_manifest(image_ref: str) -> dict:
+    """Inspect one already-cached, digest-pinned image without pulling or running it."""
+    settings = get_settings()
+    runtime = settings.compute_container_runtime.strip().lower()
+    if runtime != "docker":
+        raise ComputeError("only the docker container runtime is currently supported")
+    if not CONTAINER_IMAGE_RE.fullmatch(image_ref):
+        raise ComputeError("container image must use repository@sha256:<64 lowercase hex>")
+    executable = shutil.which(runtime)
+    if not executable:
+        raise ComputeError("docker executable not found")
+    try:
+        version_result = subprocess.run(
+            [executable, "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            shell=False,
+            env=_docker_host_environment(),
+        )
+        if version_result.returncode != 0 or not version_result.stdout.strip():
+            raise ComputeError("docker daemon is unavailable")
+        inspect_result = subprocess.run(
+            [executable, "image", "inspect", image_ref],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            shell=False,
+            env=_docker_host_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ComputeError(f"docker image inspection failed: {type(exc).__name__}") from exc
+    if inspect_result.returncode != 0:
+        raise ComputeError("digest-pinned container image is not available locally; no pull was attempted")
+    try:
+        record = json.loads(inspect_result.stdout)[0]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ComputeError("docker returned invalid image metadata") from exc
+    repo_digests = sorted(record.get("RepoDigests") or [])
+    if image_ref not in repo_digests:
+        raise ComputeError("cached image metadata does not contain the requested repository digest")
+    return {
+        "runtime": "docker",
+        "runtime_version": version_result.stdout.strip(),
+        "image_ref": image_ref,
+        "image_id": record.get("Id", ""),
+        "repo_digests": repo_digests,
+        "os": record.get("Os", ""),
+        "architecture": record.get("Architecture", ""),
+        "created": record.get("Created", ""),
+    }
+
+
 def _binding(
     session: Session,
     project_id: str,
@@ -146,6 +209,11 @@ def _binding(
     arguments: list[str],
     timeout_seconds: int,
     seed: int,
+    executor: str,
+    container_image: str,
+    memory_mb: int,
+    cpus: float,
+    pids_limit: int,
 ) -> tuple[dict, Path, list[tuple[Path, dict]]]:
     _source, script_path, script_descriptor = _source_artifact(
         session, project_id, script_source_id, script=True
@@ -159,6 +227,35 @@ def _binding(
             f"inputs/{index:02d}-{_safe_name(descriptor['filename'], f'input-{index}')}"
         )
         inputs.append((input_path, descriptor))
+    if executor == "docker":
+        container = container_image_manifest(container_image)
+        network_policy = CONTAINER_NETWORK_POLICY
+        runner = {
+            "kind": "docker_container",
+            "shell": False,
+            "package_installation": False,
+            "pull_policy": "never",
+            "image": container,
+            "filesystem_scope": "read_only_root_and_inputs_single_writable_output_mount",
+            "descendant_process_containment": "cgroup_pids_limit",
+            "resources": {
+                "memory_mb": memory_mb,
+                "cpus": cpus,
+                "pids_limit": pids_limit,
+                "tmpfs_mb": 64,
+            },
+        }
+        environment = {"container_image": container}
+    else:
+        network_policy = LOCAL_NETWORK_POLICY
+        runner = {
+            "kind": "local_python_subprocess",
+            "shell": False,
+            "package_installation": False,
+            "filesystem_scope": "staged_work_directory_by_convention_unenforced",
+            "descendant_process_containment": "unenforced",
+        }
+        environment = environment_manifest()
     binding = {
         "schema_version": 1,
         "project_id": project_id,
@@ -167,15 +264,9 @@ def _binding(
         "arguments": arguments,
         "timeout_seconds": timeout_seconds,
         "seed": seed,
-        "network_policy": str(NETWORK_POLICY),
-        "runner": {
-            "kind": "local_python_subprocess",
-            "shell": False,
-            "package_installation": False,
-            "filesystem_scope": "staged_work_directory_by_convention_unenforced",
-            "descendant_process_containment": "unenforced",
-        },
-        "environment": environment_manifest(),
+        "network_policy": str(network_policy),
+        "runner": runner,
+        "environment": environment,
     }
     return binding, script_path, inputs
 
@@ -189,11 +280,19 @@ def create_run(
     arguments: list[str] | None = None,
     timeout_seconds: int = 60,
     seed: int = 0,
+    executor: str = "local_python",
+    container_image: str = "",
+    memory_mb: int = 512,
+    cpus: float = 1.0,
+    pids_limit: int = 64,
 ) -> ComputeRun:
     project = _project(session, project_id)
     settings = get_settings()
     input_source_ids = input_source_ids or []
     arguments = arguments or []
+    executor = executor.strip().lower()
+    if executor not in EXECUTORS:
+        raise ComputeError(f"executor must be one of {sorted(EXECUTORS)}")
     if script_source_id in input_source_ids:
         raise ComputeError("the script source must not also be an input source")
     if len(set(input_source_ids)) != len(input_source_ids):
@@ -208,6 +307,24 @@ def create_run(
         raise ComputeError("seed must be a signed 32-bit integer")
     if len(arguments) > 32 or any(len(value) > 1000 or "\x00" in value for value in arguments):
         raise ComputeError("arguments are limited to 32 strings of at most 1000 characters")
+    if executor == "docker":
+        container_image = container_image.strip() or settings.compute_container_default_image.strip()
+        if not container_image:
+            raise ComputeError("docker execution requires a digest-pinned container image")
+        if not 64 <= memory_mb <= settings.compute_container_max_memory_mb:
+            raise ComputeError(
+                f"container memory_mb must be between 64 and "
+                f"{settings.compute_container_max_memory_mb}"
+            )
+        if not 0.1 <= cpus <= settings.compute_container_max_cpus:
+            raise ComputeError(
+                f"container cpus must be between 0.1 and {settings.compute_container_max_cpus}"
+            )
+        if not 16 <= pids_limit <= settings.compute_container_max_pids:
+            raise ComputeError(
+                f"container pids_limit must be between 16 and "
+                f"{settings.compute_container_max_pids}"
+            )
 
     binding, _script_path, _inputs = _binding(
         session,
@@ -217,13 +334,18 @@ def create_run(
         arguments=arguments,
         timeout_seconds=timeout_seconds,
         seed=seed,
+        executor=executor,
+        container_image=container_image,
+        memory_mb=memory_mb,
+        cpus=cpus,
+        pids_limit=pids_limit,
     )
     run = ComputeRun(
         project_id=project_id,
         script_source_id=script_source_id,
         state=ComputeState.PLANNED,
         review_state=ComputeReviewState.UNREVIEWED,
-        network_policy=NETWORK_POLICY,
+        network_policy=ComputeNetworkPolicy(binding["network_policy"]),
         plan_hash=stable_hash(binding),
         plan=binding,
     )
@@ -243,6 +365,10 @@ def create_run(
 
 def _current_binding(session: Session, run: ComputeRun) -> tuple[dict, Path, list[tuple[Path, dict]]]:
     plan = run.plan or {}
+    runner = plan.get("runner", {})
+    is_container = runner.get("kind") == "docker_container"
+    resources = runner.get("resources", {})
+    image = runner.get("image", {})
     return _binding(
         session,
         run.project_id,
@@ -251,6 +377,11 @@ def _current_binding(session: Session, run: ComputeRun) -> tuple[dict, Path, lis
         arguments=list(plan.get("arguments", [])),
         timeout_seconds=int(plan.get("timeout_seconds", 0)),
         seed=int(plan.get("seed", 0)),
+        executor="docker" if is_container else "local_python",
+        container_image=str(image.get("image_ref", "")),
+        memory_mb=int(resources.get("memory_mb", 512)),
+        cpus=float(resources.get("cpus", 1.0)),
+        pids_limit=int(resources.get("pids_limit", 64)),
     )
 
 
@@ -261,7 +392,7 @@ def plan_status(session: Session, run: ComputeRun) -> dict:
         return {
             "stale": current_hash != run.plan_hash,
             "current_plan_hash": current_hash,
-            "reason": "plan inputs or Python environment changed"
+            "reason": "plan inputs or execution environment changed"
             if current_hash != run.plan_hash
             else "",
         }
@@ -285,6 +416,10 @@ def approve_run(
     if not review_note.strip():
         raise ComputeError("approval requires a human review note")
     if not acknowledge_unenforced_isolation:
+        if run.plan.get("runner", {}).get("kind") == "docker_container":
+            raise ComputeError(
+                "approval requires acknowledging the container image and Docker daemon boundary"
+            )
         raise ComputeError(
             "approval requires acknowledging that network and full process isolation are unenforced"
         )
@@ -302,7 +437,7 @@ def approve_run(
         action="approve_compute_run",
         object_type="compute_run",
         object_id=run.id,
-        detail={"plan_hash": run.plan_hash, "isolation_acknowledged": True},
+        detail={"plan_hash": run.plan_hash, "execution_boundary_acknowledged": True},
     )
     return run
 
@@ -323,6 +458,96 @@ def _minimal_environment(run: ComputeRun, work_dir: Path, output_dir: Path) -> d
         }
     )
     return environment
+
+
+def _mount_spec(path: Path, target: str, *, readonly: bool = False) -> str:
+    source = str(path.resolve())
+    if any(character in source for character in (",", "\n", "\r")):
+        raise ComputeError("container staging paths may not contain commas or newlines")
+    value = f"type=bind,source={source},target={target}"
+    return value + (",readonly" if readonly else "")
+
+
+def _container_command(
+    run: ComputeRun, work_dir: Path, output_dir: Path
+) -> tuple[list[str], list[str], dict[str, str], str]:
+    executable = shutil.which("docker")
+    if not executable:
+        raise ComputeError("docker executable not found")
+    runner = run.plan["runner"]
+    resources = runner["resources"]
+    image_ref = runner["image"]["image_ref"]
+    container_name = f"paper-workbench-{run.id}"
+    memory = f"{int(resources['memory_mb'])}m"
+    command = [
+        executable,
+        "run",
+        "--rm",
+        "--pull=never",
+        f"--name={container_name}",
+        f"--label=paper-workbench.compute-run={run.id}",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges:true",
+        "--user=65534:65534",
+        "--init",
+        "--ipc=none",
+        f"--pids-limit={int(resources['pids_limit'])}",
+        f"--memory={memory}",
+        f"--memory-swap={memory}",
+        f"--cpus={float(resources['cpus']):g}",
+        "--ulimit=nofile=256:256",
+        f"--tmpfs=/tmp:rw,noexec,nosuid,nodev,size={int(resources['tmpfs_mb'])}m,mode=1777",
+        f"--mount={_mount_spec(work_dir, '/work', readonly=True)}",
+        f"--mount={_mount_spec(output_dir, '/work/outputs')}",
+        "--workdir=/work",
+        f"--env=PYTHONHASHSEED={run.plan['seed']}",
+        "--env=PYTHONDONTWRITEBYTECODE=1",
+        "--env=PYTHONIOENCODING=utf-8",
+        "--env=TZ=UTC",
+        f"--env=WB_COMPUTE_SEED={run.plan['seed']}",
+        "--env=WB_COMPUTE_INPUT_MANIFEST=/work/inputs-manifest.json",
+        "--env=WB_COMPUTE_OUTPUT_DIR=/work/outputs",
+        f"--env=WB_COMPUTE_NETWORK_POLICY={run.network_policy}",
+        image_ref,
+        "python3",
+        "-B",
+        "-s",
+        "/work/script.py",
+        *run.plan["arguments"],
+    ]
+    recorded = [
+        "docker",
+        "run",
+        "<enforced-controls-and-staged-mounts>",
+        image_ref,
+        "python3",
+        "-B",
+        "-s",
+        "/work/script.py",
+        *run.plan["arguments"],
+    ]
+    return command, recorded, _docker_host_environment(), container_name
+
+
+def _remove_timed_out_container(container_name: str) -> None:
+    executable = shutil.which("docker")
+    if not executable:
+        return
+    try:
+        subprocess.run(
+            [executable, "rm", "--force", container_name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+            shell=False,
+            env=_docker_host_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _store_bytes(payload: bytes, filename: str) -> dict:
@@ -421,7 +646,20 @@ def execute_run(
 
     stdout_path = run_root / "stdout.log"
     stderr_path = run_root / "stderr.log"
-    command = [sys.executable, "-B", "-s", str(staged_script), *run.plan["arguments"]]
+    is_container = run.plan.get("runner", {}).get("kind") == "docker_container"
+    container_name = ""
+    if is_container:
+        command, recorded_command, process_environment, container_name = _container_command(
+            run, work_dir, output_dir
+        )
+        process_cwd = work_dir
+    else:
+        command = [sys.executable, "-B", "-s", str(staged_script), *run.plan["arguments"]]
+        recorded_command = [
+            "<approved-python>", "-B", "-s", "script.py", *run.plan["arguments"]
+        ]
+        process_environment = _minimal_environment(run, work_dir, output_dir)
+        process_cwd = work_dir
     started_at = _now()
     run.state = ComputeState.RUNNING
     session.flush()
@@ -432,8 +670,8 @@ def execute_run(
         try:
             completed = subprocess.run(
                 command,
-                cwd=work_dir,
-                env=_minimal_environment(run, work_dir, output_dir),
+                cwd=process_cwd,
+                env=process_environment,
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
@@ -445,6 +683,8 @@ def execute_run(
             exit_code = completed.returncode
         except subprocess.TimeoutExpired:
             timed_out = True
+            if container_name:
+                _remove_timed_out_container(container_name)
 
     failure_reason = ""
     try:
@@ -471,13 +711,15 @@ def execute_run(
         "exit_code": exit_code,
         "timed_out": timed_out,
         "failure_reason": failure_reason,
-        "command": ["<approved-python>", "-B", "-s", "script.py", *run.plan["arguments"]],
+        "executor": "docker" if is_container else "local_python",
+        "command": recorded_command,
         "shell": False,
         "package_installation_performed": False,
         "network_policy": str(run.network_policy),
-        "network_isolation_enforced": False,
-        "filesystem_isolation_enforced": False,
-        "descendant_process_containment_enforced": False,
+        "network_isolation_enforced": is_container,
+        "filesystem_isolation_enforced": is_container,
+        "descendant_process_containment_enforced": is_container,
+        "resource_limits_enforced": is_container,
         "environment": binding["environment"],
         "script": binding["script"],
         "inputs": binding["inputs"],

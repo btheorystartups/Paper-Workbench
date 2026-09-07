@@ -106,6 +106,7 @@ class ComputeNetworkPolicy(StrEnum):
     """What the local runner can honestly assert about network containment."""
 
     REQUESTED_OFFLINE_UNENFORCED = "requested_offline_unenforced"
+    ENFORCED_OFFLINE_CONTAINER = "enforced_offline_container"
 
 
 class RiskClass(StrEnum):
