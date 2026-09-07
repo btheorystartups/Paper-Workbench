@@ -1,0 +1,3 @@
+# Preserve the official JATS distribution byte-for-byte, including upstream
+# line endings and whitespace.
+src/workbench/schemas/jats_1_3_archiving/** -text

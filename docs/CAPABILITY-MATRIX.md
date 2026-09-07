@@ -126,8 +126,8 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Capability | Status | Notes |
 |---|---|---|
 | Markdown, LaTeX, HTML, DOCX, BibTeX | Implemented | `services/export_service.py` |
-| PDF | Implemented (fallback) / Partial (typeset) | deterministic PDF always; WeasyPrint typeset when GTK present (absent on this box → auto-fallback, recorded in manifest) |
-| JATS XML, DTD-validated | Implemented / Partial (full DTD asset) | bundled JATS-subset via lxml; `WB_JATS_DTD_PATH` enables fail-closed validation against a local official JATS 1.3 distribution; no runtime download |
+| PDF | Implemented | WeasyPrint 69.0 + MSYS2 Pango verified on this Windows host; real render capability probe, publication CSS, page numbers, references, controlled-state labels, and renderer provenance; deterministic fallback remains available |
+| JATS XML, DTD-validated | Implemented | bundled, unmodified official NISO JATS 1.3 Archiving/Interchange MathML 2 DTD distribution; fully offline lxml validation with source archive checksum; `WB_JATS_DTD_PATH` supports stricter venue-specific schemas and fails closed |
 | Provenance manifest (checksums, access levels, audit findings, renderer, JATS validation) | Implemented | `manifest.json` |
 | Cover letter / response-to-reviewers / declarations bundle | Implemented | `services/publication_packages.py`; controlled component states, deterministic cover template, snapshot-bound approval, local checksummed ZIP; never submits externally |
 | Alternative outputs (conf abstract, poster, plain-language, teaching, graphical-abstract) | Implemented | `services/outputs.py`; live gpt-4o verified |

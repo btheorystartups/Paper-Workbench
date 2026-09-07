@@ -8,13 +8,14 @@ Rules:
 - The manifest records source access levels, AI-provenance summary, audit findings at
   export time, and sha256 of every emitted file. Export implies nothing was submitted
   or published anywhere.
-- PDF is intentionally deferred (WeasyPrint/GTK on Windows); LaTeX output compiles with
-  any standard toolchain.
+- PDF uses WeasyPrint when its native runtime passes a real render probe, with a
+  dependency-free renderer retained as an explicitly recorded fallback.
 """
 
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -90,46 +91,102 @@ def _claims_block(claim_ids: list[str], claims: dict[str, Claim], sources: dict[
     return lines
 
 
-_WEASYPRINT_CACHE: bool | None = None
+_WEASYPRINT_STATUS_CACHE: dict | None = None
+
+
+def _configure_weasyprint_windows_runtime() -> None:
+    """Point WeasyPrint at a conventional MSYS2 Pango install without changing PATH."""
+    import os
+
+    if os.name != "nt" or os.environ.get("WEASYPRINT_DLL_DIRECTORIES"):
+        return
+    candidate = Path(r"C:\msys64\mingw64\bin")
+    if (candidate / "libpango-1.0-0.dll").is_file():
+        os.environ["WEASYPRINT_DLL_DIRECTORIES"] = str(candidate)
+
+
+def weasyprint_status() -> dict:
+    """Probe a real in-memory render and return non-sensitive capability details."""
+    global _WEASYPRINT_STATUS_CACHE
+    if _WEASYPRINT_STATUS_CACHE is None:
+        try:
+            _configure_weasyprint_windows_runtime()
+            import weasyprint
+
+            probe = weasyprint.HTML(string="<!doctype html><p>Paper-Workbench probe</p>").write_pdf()
+            if not probe.startswith(b"%PDF-"):
+                raise RuntimeError("renderer returned non-PDF bytes")
+            _WEASYPRINT_STATUS_CACHE = {
+                "available": True,
+                "version": weasyprint.__version__,
+                "error": None,
+            }
+        except Exception as exc:  # ImportError or native-library/rendering failure.
+            _WEASYPRINT_STATUS_CACHE = {
+                "available": False,
+                "version": None,
+                "error": f"{type(exc).__name__}: WeasyPrint capability probe failed",
+            }
+    return dict(_WEASYPRINT_STATUS_CACHE)
 
 
 def weasyprint_available() -> bool:
-    """Probe whether WeasyPrint can actually be USED (import succeeds AND its native
-    GTK/Pango libraries load). Catches OSError from missing DLLs, not just ImportError.
-    Cached because the probe is not free."""
-    global _WEASYPRINT_CACHE
-    if _WEASYPRINT_CACHE is None:
-        try:
-            import weasyprint  # noqa: F401
-
-            _WEASYPRINT_CACHE = True
-        except Exception:  # ImportError, OSError (missing libgobject), etc.
-            _WEASYPRINT_CACHE = False
-    return _WEASYPRINT_CACHE
+    """Return true only when WeasyPrint completes an in-memory PDF render."""
+    return bool(weasyprint_status()["available"])
 
 
 def _weasyprint_pdf(html: str) -> bytes:
+    _configure_weasyprint_windows_runtime()
     import weasyprint
 
     return weasyprint.HTML(string=html).write_pdf()
 
 
-def _render_pdf(title: str, html: str, paragraphs: list[str], mode: str) -> tuple[bytes, str]:
-    """Return (pdf_bytes, renderer_used). mode: auto|weasyprint|minimal.
-    'weasyprint' requires it; 'auto' uses it when available and falls back; 'minimal'
-    always uses the built-in deterministic renderer."""
+@dataclass(frozen=True)
+class PdfRenderResult:
+    data: bytes
+    renderer: str
+    requested_mode: str
+    renderer_version: str | None = None
+    fallback_reason: str | None = None
+
+    def manifest(self) -> dict:
+        return {
+            "renderer": self.renderer,
+            "requested_mode": self.requested_mode,
+            "renderer_version": self.renderer_version,
+            "fallback_reason": self.fallback_reason,
+        }
+
+
+def _render_pdf(title: str, html: str, paragraphs: list[str], mode: str) -> PdfRenderResult:
+    """Render with an explicit, provenance-recorded renderer selection."""
+    if mode not in {"auto", "weasyprint", "minimal"}:
+        raise research.IntegrityError(
+            "pdf_renderer must be one of: auto, weasyprint, minimal"
+        )
     if mode == "minimal":
-        return _minimal_pdf(title, paragraphs), "minimal"
+        return PdfRenderResult(_minimal_pdf(title, paragraphs), "minimal", mode)
+    status = weasyprint_status()
     if mode == "weasyprint":
-        if not weasyprint_available():
+        if not status["available"]:
             raise research.IntegrityError(
                 "pdf_renderer=weasyprint but WeasyPrint/GTK is unavailable on this system"
             )
-        return _weasyprint_pdf(html), "weasyprint"
+        return PdfRenderResult(
+            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"])
+        )
     # auto
-    if weasyprint_available():
-        return _weasyprint_pdf(html), "weasyprint"
-    return _minimal_pdf(title, paragraphs), "minimal"
+    if status["available"]:
+        return PdfRenderResult(
+            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"])
+        )
+    return PdfRenderResult(
+        _minimal_pdf(title, paragraphs),
+        "minimal",
+        mode,
+        fallback_reason=str(status["error"]),
+    )
 
 
 def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
@@ -193,6 +250,141 @@ def _minimal_pdf(title: str, paragraphs: list[str]) -> bytes:
     return bytes(out)
 
 
+_PUBLICATION_PDF_CSS = """
+@page {
+  size: A4;
+  margin: 22mm 20mm 24mm;
+  @top-right {
+    content: string(manuscript-title);
+    color: #64748b;
+    font: 8pt Arial, sans-serif;
+  }
+  @bottom-center {
+    content: "Page " counter(page) " of " counter(pages);
+    color: #64748b;
+    font: 8pt Arial, sans-serif;
+  }
+}
+@page:first { @top-right { content: none; } }
+html { color: #172033; font-family: Georgia, "Times New Roman", serif; }
+body { font-size: 10.5pt; line-height: 1.55; }
+.title-block { border-bottom: 1.5pt solid #1d4ed8; margin-bottom: 12mm; padding-bottom: 7mm; }
+h1 {
+  color: #102a56;
+  font-family: Arial, sans-serif;
+  font-size: 23pt;
+  line-height: 1.15;
+  margin: 0 0 4mm;
+  string-set: manuscript-title content();
+}
+.authors { color: #475569; font-family: Arial, sans-serif; margin: 0; }
+h2 {
+  border-bottom: .5pt solid #cbd5e1;
+  color: #173e73;
+  font-family: Arial, sans-serif;
+  font-size: 14pt;
+  margin: 9mm 0 3mm;
+  padding-bottom: 1.5mm;
+  page-break-after: avoid;
+}
+p { margin: 0 0 3.5mm; orphans: 3; widows: 3; }
+ul, ol { margin: 2mm 0 4mm; padding-left: 7mm; }
+li { margin: 0 0 2.5mm; page-break-inside: avoid; }
+.claims { list-style: square; }
+.support, .access {
+  background: #e8eef8;
+  border-radius: 2mm;
+  color: #173e73;
+  display: inline-block;
+  font: bold 7.5pt Arial, sans-serif;
+  letter-spacing: .02em;
+  margin-left: 1.5mm;
+  padding: .6mm 1.5mm;
+  text-transform: uppercase;
+}
+.references { font-size: 9pt; }
+.ref-key { color: #475569; font-family: Consolas, monospace; margin-right: 1mm; }
+.provenance-note {
+  border-left: 2pt solid #1d4ed8;
+  color: #475569;
+  font: 8.5pt/1.4 Arial, sans-serif;
+  margin: 0 0 7mm;
+  padding: 2mm 0 2mm 3mm;
+}
+"""
+
+
+def _html_claim_item(line: str) -> str:
+    import html
+
+    marker = " *[support: "
+    claim_text, separator, state = line.rpartition(marker)
+    if separator and state.endswith("]*"):
+        return (
+            f"<li>{html.escape(claim_text)} "
+            f"<span class='support'>support: {html.escape(state[:-2])}</span></li>"
+        )
+    return f"<li>{html.escape(line)}</li>"
+
+
+def _publication_pdf_html(
+    manuscript, sections, claims, sources, session: Session, credit: dict, credit_lines: list[str]
+) -> str:
+    """Build a self-contained, offline HTML document for publication PDF rendering."""
+    import html
+
+    title = html.escape(manuscript.title)
+    parts = [
+        "<!doctype html>",
+        "<html lang='en'><head><meta charset='utf-8'>",
+        f"<title>{title}</title><style>{_PUBLICATION_PDF_CSS}</style></head><body>",
+        f"<header class='title-block'><h1>{title}</h1>",
+    ]
+    if credit["authors"]:
+        author_line = "; ".join(html.escape(author["display_name"]) for author in credit["authors"])
+        parts.append(f"<p class='authors'>{author_line}</p>")
+    parts.extend(
+        [
+            "</header>",
+            "<aside class='provenance-note'>Support and source-access labels are controlled "
+            "Paper-Workbench states. Export does not imply submission or publication.</aside>",
+        ]
+    )
+
+    for section in sections:
+        parts.append(f"<section><h2>{html.escape(section.title)}</h2>")
+        if section.body.get("text"):
+            parts.append(f"<p>{html.escape(section.body['text'])}</p>")
+        claim_lines = _claims_block(
+            section.body.get("claim_ids", []), claims, sources, session, "md"
+        )
+        if claim_lines:
+            parts.append("<ul class='claims'>")
+            parts.extend(_html_claim_item(line) for line in claim_lines)
+            parts.append("</ul>")
+        parts.append("</section>")
+
+    if credit_lines:
+        parts.append("<section><h2>Author contributions (CRediT)</h2><ul>")
+        parts.extend(f"<li>{html.escape(line)}</li>" for line in credit_lines)
+        parts.append("</ul></section>")
+    if sources:
+        parts.append("<section><h2>References</h2><ol class='references'>")
+        for source in sorted(sources.values(), key=_bib_key):
+            citation = (
+                f"{source.authors} ({source.year or 'n.d.'}). {source.title}. {source.venue}."
+                + (f" doi:{source.doi}" if source.doi else "")
+            )
+            parts.append(
+                f"<li><span class='ref-key'>[{html.escape(_bib_key(source))}]</span>"
+                f"{html.escape(citation)} "
+                f"<span class='access'>access: {html.escape(str(source.access))}</span></li>"
+            )
+        parts.append("</ol></section>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
 def _credit_lines(credit: dict) -> list[str]:
     lines = []
     for author in credit["authors"]:
@@ -203,17 +395,22 @@ def _credit_lines(credit: dict) -> list[str]:
     return lines
 
 
+def _jats_id(prefix: str, value: str) -> str:
+    """Build a stable XML ID even when a database UUID starts with a digit."""
+    return f"{prefix}-{re.sub(r'[^A-Za-z0-9_.-]', '-', value)}"
+
+
 def _jats_xml(
     manuscript, sections, claims, sources, session: Session, credit: dict | None = None
 ) -> str:
-    """Minimal JATS 1.3-shaped article XML (front/body/back). Structural export for
-    interchange; not validated against the full JATS DTD."""
+    """Emit JATS 1.3 Archiving/Interchange XML without inventing missing metadata."""
     from xml.sax.saxutils import escape
 
     credit = credit or {"authors": []}
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">',
+        '<article xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'article-type="research-article" dtd-version="1.3">',
         "<front><article-meta>",
         f"<title-group><article-title>{escape(manuscript.title)}</article-title></title-group>",
     ]
@@ -237,7 +434,7 @@ def _jats_xml(
         parts.append("</contrib-group>")
     parts.extend(["</article-meta></front>", "<body>"])
     for s in sections:
-        parts.append(f'<sec id="{s.id}"><title>{escape(s.title)}</title>')
+        parts.append(f'<sec id="{_jats_id("sec", s.id)}"><title>{escape(s.title)}</title>')
         if s.body.get("text"):
             parts.append(f"<p>{escape(s.body['text'])}</p>")
         for line in _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md"):
@@ -246,7 +443,7 @@ def _jats_xml(
     parts.append("</body><back><ref-list>")
     for src in sources.values():
         parts.append(
-            f'<ref id="{_bib_key(src)}"><mixed-citation>{escape(src.authors)} '
+            f'<ref id="{_jats_id("ref", src.id)}"><mixed-citation>{escape(src.authors)} '
             f"({src.year or 'n.d.'}). {escape(src.title)}. {escape(src.venue)}."
             + (f" doi:{escape(src.doi)}" if src.doi else "")
             + "</mixed-citation></ref>"
@@ -441,44 +638,37 @@ def export_manuscript(
     extra_manifest: dict = {}
     if "pdf" in formats:
         paragraphs = []
-        html_parts = [f"<h1>{__import__('html').escape(manuscript.title)}</h1>"]
         if credit["authors"]:
             author_line = "; ".join(a["display_name"] for a in credit["authors"])
             paragraphs.append(author_line)
-            html_parts.append(f"<p>{__import__('html').escape(author_line)}</p>")
         for s in sections:
             paragraphs.append(s.title.upper())
-            html_parts.append(f"<h2>{__import__('html').escape(s.title)}</h2>")
             if s.body.get("text"):
                 paragraphs.append(s.body["text"])
-                html_parts.append(f"<p>{__import__('html').escape(s.body['text'])}</p>")
             block = _claims_block(s.body.get("claim_ids", []), claims, sources, session, "md")
             paragraphs.extend(block)
-            if block:
-                html_parts.append(
-                    "<ul>" + "".join(f"<li>{__import__('html').escape(b)}</li>" for b in block)
-                    + "</ul>"
-                )
         if credit_lines:
             paragraphs.append("AUTHOR CONTRIBUTIONS (CRediT)")
             paragraphs.extend(credit_lines)
-            html_parts.append("<h2>Author contributions (CRediT)</h2><ul>")
-            html_parts.extend(
-                f"<li>{__import__('html').escape(line)}</li>" for line in credit_lines
+        if sources:
+            paragraphs.append("REFERENCES")
+            paragraphs.extend(
+                f"{_bib_key(source)}: {source.authors} ({source.year or 'n.d.'}). "
+                f"{source.title}. {source.venue}. [access: {source.access}]"
+                for source in sorted(sources.values(), key=_bib_key)
             )
-            html_parts.append("</ul>")
-        pdf_html = (
-            "<!doctype html><meta charset='utf-8'><title>"
-            + __import__("html").escape(manuscript.title) + "</title>" + "\n".join(html_parts)
+        pdf_html = _publication_pdf_html(
+            manuscript, sections, claims, sources, session, credit, credit_lines
         )
-        pdf_bytes, renderer_used = _render_pdf(
+        render = _render_pdf(
             manuscript.title, pdf_html, paragraphs, get_settings().pdf_renderer
         )
         written["pdf"] = out_dir / "manuscript.pdf"
-        written["pdf"].write_bytes(pdf_bytes)
-        extra_manifest["pdf_renderer"] = renderer_used
+        written["pdf"].write_bytes(render.data)
+        extra_manifest["pdf_renderer"] = render.renderer
+        extra_manifest["pdf_rendering"] = render.manifest()
 
-    # --- JATS XML (validated against bundled JATS-subset DTD when lxml present) ---
+    # --- JATS XML (validated offline against official JATS 1.3 by default) ---
     if "jats" in formats:
         from .jats import validate_jats
 

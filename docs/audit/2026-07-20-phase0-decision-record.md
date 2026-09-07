@@ -236,3 +236,23 @@ Ledger status (2026-09-07, container-compute hardening):
   database/data directory without any provider call or research data. A real smoke run passed
   against the already-cached Python 3.13 / NumPy 2.3.2 image digest `sha256:4917c298...aac7`;
   `--network=none` and `--pull=never` were active and no container remained afterward.
+
+Ledger status (2026-09-08, publication-rendering hardening):
+- **Official JATS validation by default** — the unmodified NISO JATS 1.3 Journal Archiving
+  and Interchange MathML 2 DTD distribution is bundled with its official archive URL and
+  SHA-256. Validation is local and network-disabled. Archiving/Interchange is deliberate:
+  Publishing and Article Authoring require journal metadata that a general research draft may
+  not possess, and Paper-Workbench will not fabricate it. A fail-closed local DTD override
+  remains available for stricter venue-specific packages.
+- **JATS output compatibility** — emitted articles declare `dtd-version="1.3"`; database UUIDs
+  are converted to stable valid XML IDs. Validation provenance records tag set, version,
+  distribution checksum, method, and errors in the export manifest.
+- **Native Windows typesetting** — MSYS2 Pango and WeasyPrint 69.0 are installed and verified
+  with a real in-memory PDF render. `auto` now probes rendering rather than import alone;
+  explicit `weasyprint` fails closed, while fallback use records its reason and requested mode.
+- **Publication PDF fidelity** — the self-contained renderer adds A4 margins, running page
+  numbers, typographic hierarchy, references, CRediT contributions, and visually distinct
+  controlled claim-support/source-access labels. It uses no external web assets.
+- **Verification** — 148 offline tests and Ruff are green; all 63 official DTD files match the
+  downloaded archive byte-for-byte, the built wheel contains all modules plus source metadata,
+  and a two-page WeasyPrint smoke PDF passed Poppler rendering and visual inspection.
