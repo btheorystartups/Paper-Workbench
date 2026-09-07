@@ -1,6 +1,7 @@
 """Offline tests for the review-gated local compute runner."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,21 @@ from fastapi.testclient import TestClient
 from workbench.ingest.files import ingest_file
 from workbench.services import compute
 from workbench.vocab import ComputeReviewState, ComputeState, ObjectKind, ResultStrength
+
+TEST_IMAGE = "example.invalid/paper-python@sha256:" + "a" * 64
+
+
+def _container_manifest(image_ref=TEST_IMAGE):
+    return {
+        "runtime": "docker",
+        "runtime_version": "28.3.3",
+        "image_ref": image_ref,
+        "image_id": "sha256:" + "a" * 64,
+        "repo_digests": [image_ref],
+        "os": "linux",
+        "architecture": "amd64",
+        "created": "2026-09-01T00:00:00Z",
+    }
 
 
 @pytest.fixture()
@@ -203,6 +219,129 @@ def test_failure_and_timeout_never_become_reviewable(
     )
     assert timed.state == ComputeState.TIMED_OUT
     assert timed.execution["timed_out"] is True
+
+
+def test_container_plan_is_digest_bound_and_command_is_fail_closed(
+    session, project, tmp_path, compute_data_dir, monkeypatch
+):
+    with pytest.raises(compute.ComputeError, match="repository@sha256"):
+        compute.container_image_manifest("python:3.13")
+    monkeypatch.setattr(compute, "container_image_manifest", _container_manifest)
+    script_source = _ingest_script(session, project, tmp_path, "print('container')\n")
+    run = compute.create_run(
+        session,
+        project.id,
+        script_source_id=script_source.id,
+        executor="docker",
+        container_image=TEST_IMAGE,
+        memory_mb=768,
+        cpus=1.5,
+        pids_limit=48,
+    )
+    assert run.network_policy == "enforced_offline_container"
+    assert run.plan["runner"]["image"]["image_ref"] == TEST_IMAGE
+    assert run.plan["runner"]["pull_policy"] == "never"
+    assert run.plan["runner"]["resources"] == {
+        "memory_mb": 768,
+        "cpus": 1.5,
+        "pids_limit": 48,
+        "tmpfs_mb": 64,
+    }
+
+    work_dir = tmp_path / "staged-work"
+    output_dir = work_dir / "outputs"
+    output_dir.mkdir(parents=True)
+    monkeypatch.setattr(compute.shutil, "which", lambda name: "docker" if name == "docker" else None)
+    command, recorded, environment, container_name = compute._container_command(
+        run, work_dir, output_dir
+    )
+    assert "--pull=never" in command
+    assert "--network=none" in command
+    assert "--read-only" in command
+    assert "--cap-drop=ALL" in command
+    assert "--security-opt=no-new-privileges:true" in command
+    assert "--user=65534:65534" in command
+    assert "--pids-limit=48" in command
+    assert "--memory=768m" in command
+    assert "--memory-swap=768m" in command
+    assert "--cpus=1.5" in command
+    assert not any("privileged" in value for value in command)
+    assert TEST_IMAGE in command
+    assert recorded[0:2] == ["docker", "run"]
+    assert "OPENAI_API_KEY" not in environment
+    assert container_name == f"paper-workbench-{run.id}"
+
+
+def test_container_execution_records_enforced_boundary(
+    session, project, tmp_path, compute_data_dir, monkeypatch
+):
+    monkeypatch.setattr(compute, "container_image_manifest", _container_manifest)
+    monkeypatch.setattr(compute.shutil, "which", lambda name: "docker" if name == "docker" else None)
+    script_source = _ingest_script(session, project, tmp_path, "print('container')\n")
+    run = compute.create_run(
+        session,
+        project.id,
+        script_source_id=script_source.id,
+        executor="docker",
+        container_image=TEST_IMAGE,
+    )
+    compute.approve_run(
+        session,
+        run.id,
+        plan_hash=run.plan_hash,
+        review_note="reviewed image, script, and container limits",
+        acknowledge_unenforced_isolation=True,
+    )
+    observed_command = []
+
+    def fake_container_run(command, **kwargs):
+        observed_command.extend(command)
+        kwargs["stdout"].write(b"container result\n")
+        output = Path(kwargs["cwd"]) / "outputs" / "result.txt"
+        output.write_text("bounded output", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(compute.subprocess, "run", fake_container_run)
+    compute.execute_run(
+        session, run.id, plan_hash=run.plan_hash, confirm_local_execution=True
+    )
+    assert run.state == ComputeState.SUCCEEDED
+    assert run.execution["executor"] == "docker"
+    assert run.execution["network_isolation_enforced"] is True
+    assert run.execution["filesystem_isolation_enforced"] is True
+    assert run.execution["descendant_process_containment_enforced"] is True
+    assert run.execution["resource_limits_enforced"] is True
+    assert run.execution["environment"]["container_image"]["image_ref"] == TEST_IMAGE
+    assert run.outputs[0]["evidence_state"] == "compute_unreviewed"
+    assert "--pull=never" in observed_command
+
+    timed = compute.create_run(
+        session,
+        project.id,
+        script_source_id=script_source.id,
+        executor="docker",
+        container_image=TEST_IMAGE,
+        timeout_seconds=1,
+    )
+    compute.approve_run(
+        session,
+        timed.id,
+        plan_hash=timed.plan_hash,
+        review_note="reviewed timeout cleanup",
+        acknowledge_unenforced_isolation=True,
+    )
+    removed = []
+
+    def fake_timeout(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, timeout=1)
+
+    monkeypatch.setattr(compute.subprocess, "run", fake_timeout)
+    monkeypatch.setattr(compute, "_remove_timed_out_container", removed.append)
+    compute.execute_run(
+        session, timed.id, plan_hash=timed.plan_hash, confirm_local_execution=True
+    )
+    assert timed.state == ComputeState.TIMED_OUT
+    assert removed == [f"paper-workbench-{timed.id}"]
 
 
 def test_compute_api_preserves_both_human_gates(tmp_path, monkeypatch):

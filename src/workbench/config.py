@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     compute_max_output_files: int = 100
     compute_max_output_bytes: int = 50_000_000
     compute_max_log_bytes: int = 1_000_000
+    compute_container_runtime: str = "docker"
+    compute_container_default_image: str = ""
+    compute_container_max_memory_mb: int = 4096
+    compute_container_max_cpus: float = 4.0
+    compute_container_max_pids: int = 256
 
 
 def brave_api_key() -> str:

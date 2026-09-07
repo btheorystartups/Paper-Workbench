@@ -1966,10 +1966,11 @@ async function tabCompute(el, pid) {
 
   el.innerHTML =
     '<section class="panel" aria-labelledby="compute-h"><h2 id="compute-h">Reproducible compute</h2>' +
-    '<p class="boundary-warning"><strong>Local execution boundary:</strong> this runner does not ' +
-    'enforce network, filesystem, or descendant-process isolation on this host. It never ' +
-    'installs packages and never uses a shell. Inspect the script before approval.</p>' +
-    '<p class="dim small-text">A plan is bound to script, input, interpreter, package, ' +
+    '<p class="boundary-warning"><strong>Choose the execution boundary:</strong> local Python ' +
+    'does not enforce network/filesystem/process isolation. The Docker executor uses a cached, ' +
+    'digest-pinned image with network disabled, read-only inputs/root, and resource limits. ' +
+    'Neither executor installs packages or uses a shell. Always inspect the script and image.</p>' +
+    '<p class="dim small-text">A plan is bound to script, input, execution environment, ' +
     'argument, timeout, and seed hashes. A successful run remains ' +
     '<strong>compute_unreviewed</strong> until a human verifies it; promotion creates a ' +
     'controlled research result but never a claim.</p>' + cards + "</section>" +
@@ -1978,6 +1979,13 @@ async function tabCompute(el, pid) {
     '<div class="field"><label for="compute-script">Ingested Python script</label>' +
     '<select id="compute-script" name="script_source_id" required>' + scriptOptions +
     "</select></div>" +
+    '<div class="field"><label for="compute-executor">Executor</label>' +
+    '<select id="compute-executor" name="executor">' +
+    '<option value="local_python">Local Python (containment unenforced)</option>' +
+    '<option value="docker">Docker (enforced offline container)</option></select></div>' +
+    '<div class="field"><label for="compute-image">Docker image digest (Docker only)</label>' +
+    '<input id="compute-image" name="container_image" type="text" ' +
+    'placeholder="repository@sha256:&lt;64 lowercase hex&gt;"></div>' +
     '<fieldset><legend>Input artifacts (optional)</legend><div class="chips">' +
     inputChoices + "</div></fieldset>" +
     '<div class="field"><label for="compute-args">Arguments (one per line)</label>' +
@@ -1986,6 +1994,14 @@ async function tabCompute(el, pid) {
     '<input id="compute-timeout" name="timeout_seconds" type="number" min="1" value="60" required></div>' +
     '<div class="field"><label for="compute-seed">Seed</label>' +
     '<input id="compute-seed" name="seed" type="number" value="0" required></div></div>' +
+    '<fieldset><legend>Docker resource ceilings</legend><div class="field-row">' +
+    '<div class="field"><label for="compute-memory">Memory MB</label>' +
+    '<input id="compute-memory" name="memory_mb" type="number" min="64" value="512"></div>' +
+    '<div class="field"><label for="compute-cpus">CPUs</label>' +
+    '<input id="compute-cpus" name="cpus" type="number" min="0.1" step="0.1" value="1"></div>' +
+    '<div class="field"><label for="compute-pids">PID limit</label>' +
+    '<input id="compute-pids" name="pids_limit" type="number" min="16" value="64"></div>' +
+    "</div></fieldset>" +
     '<div><button type="submit" class="primary"' + (scripts.length ? "" : " disabled") +
     ">Create immutable plan</button></div></form></section>";
 }
@@ -1995,15 +2011,20 @@ function renderComputeRun(run, pid) {
   const script = plan.script || {};
   const status = run.plan_status || {};
   const execution = run.execution || {};
+  const runner = plan.runner || {};
+  const isContainer = runner.kind === "docker_container";
   const stateColor = run.state === "succeeded" ? "b-green" :
     (["failed", "timed_out"].includes(run.state) ? "b-red" : "b-amber");
   let actions = "";
   if (run.state === "planned") {
     actions = '<button type="button" class="approve" data-action="compute-approve" data-run="' +
-      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '">Approve exact plan</button>';
+      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '" data-executor="' +
+      (isContainer ? "docker" : "local_python") + '">Approve exact plan</button>';
   } else if (run.state === "approved") {
     actions = '<button type="button" class="primary" data-action="compute-execute" data-run="' +
-      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '">Execute locally</button>';
+      esc(run.id) + '" data-plan="' + esc(run.plan_hash) + '" data-executor="' +
+      (isContainer ? "docker" : "local_python") + '">Execute ' +
+      (isContainer ? "in Docker" : "locally") + "</button>";
   } else if (run.state === "succeeded" && run.review_state === "unreviewed") {
     actions = '<button type="button" class="approve" data-action="compute-review" data-run="' +
       esc(run.id) + '" data-decision="verified">Verify outputs</button> ' +
@@ -2033,6 +2054,11 @@ function renderComputeRun(run, pid) {
     '<div><button type="submit" class="primary">Create reviewed result</button></div></form>' : "";
   const promoted = (run.promoted_object_ids || []).length ? '<p class="small-text">Promoted result: ' +
     '<span class="mono">' + esc(run.promoted_object_ids[0]) + "</span></p>" : "";
+  const containerDetail = isContainer ? '<div class="small-text mono">image ' +
+    esc((runner.image || {}).image_ref || "") + " · memory " +
+    esc((runner.resources || {}).memory_mb) + " MB · CPUs " +
+    esc((runner.resources || {}).cpus) + " · PIDs " +
+    esc((runner.resources || {}).pids_limit) + "</div>" : "";
   return '<article class="finding"><h3>' + esc(script.title || "Compute run") + " " +
     badge(run.state, stateColor) + " " + badge(run.review_state, run.review_state === "verified" ?
       "b-green" : (run.review_state === "rejected" ? "b-red" : "b-amber")) +
@@ -2040,7 +2066,9 @@ function renderComputeRun(run, pid) {
     '<div class="small-text dim">Plan <span class="mono">' + esc(run.plan_hash) +
     "</span><br>seed " + esc(plan.seed) + " · timeout " + esc(plan.timeout_seconds) +
     "s · inputs " + esc((plan.inputs || []).length) + " · " +
-    esc(run.network_policy) + "</div>" + (status.reason ? '<p class="error-box small-text">' +
+    esc(isContainer ? "Docker" : "local Python") + " · " +
+    esc(run.network_policy) + "</div>" + containerDetail +
+    (status.reason ? '<p class="error-box small-text">' +
     esc(status.reason) + "</p>" : "") + failure + logs + outputs + actions + promotion + promoted +
     "</article>";
 }
@@ -2353,9 +2381,13 @@ const clickActions = {
     const note = window.prompt("Human review note for this exact script/input/environment plan:", "");
     if (note === null) return;
     if (!note.trim()) { toast("A human review note is required.", "err"); return; }
+    const boundary = t.dataset.executor === "docker"
+      ? "Acknowledge the digest-pinned image and Docker daemon as the execution boundary? " +
+        "The plan enforces no network, read-only root/inputs, and resource limits."
+      : "Acknowledge that this local Python run does NOT enforce network, filesystem, or " +
+        "descendant-process isolation?";
     const acknowledged = window.confirm(
-      "Acknowledge that this local Python run does NOT enforce network, filesystem, or " +
-      "descendant-process isolation? Only continue after inspecting the script.");
+      boundary + " Only continue after inspecting the script and execution environment.");
     if (!acknowledged) return;
     try {
       await api("/compute-runs/" + encodeURIComponent(t.dataset.run) + "/approve", "POST", {
@@ -2369,9 +2401,12 @@ const clickActions = {
   }),
 
   "compute-execute": (t) => withBusy(t, async () => {
+    const boundary = t.dataset.executor === "docker"
+      ? "Execute this approved artifact in the digest-pinned offline container now?"
+      : "Execute this approved Python artifact locally now? Network and full process " +
+        "isolation are not enforced.";
     const confirmed = window.confirm(
-      "Execute this approved Python artifact locally now? This starts a local process; " +
-      "network and full process isolation are not enforced.");
+      boundary + " This starts a local process managed by Paper-Workbench.");
     if (!confirmed) return;
     try {
       await api("/compute-runs/" + encodeURIComponent(t.dataset.run) + "/execute", "POST", {
@@ -3072,6 +3107,11 @@ const formActions = {
       arguments: args,
       timeout_seconds: parseInt(body.timeout_seconds, 10),
       seed: parseInt(body.seed, 10),
+      executor: body.executor,
+      container_image: body.container_image || "",
+      memory_mb: parseInt(body.memory_mb, 10),
+      cpus: parseFloat(body.cpus),
+      pids_limit: parseInt(body.pids_limit, 10),
     });
     toast("Immutable compute plan created; inspect and approve it before execution.");
     route();

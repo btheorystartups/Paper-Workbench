@@ -213,3 +213,26 @@ Ledger status (2026-09-06, reproducible-compute slice):
   executed during development verification.
 - **Verification** — 144 offline tests, Ruff, JavaScript syntax, migration checks, timeout/
   failure paths, secret-env exclusion, artifact download checks, and transfer round trips green.
+
+Ledger status (2026-09-07, container-compute hardening):
+- **Optional enforced executor** — compute plans can select Docker while local Python remains
+  available. Docker plans accept only `repository@sha256:<digest>` images that already exist
+  locally; image identity and daemon version enter the plan hash, and `--pull=never` prevents
+  registry access during planning or execution.
+- **Container boundary** — the generated command uses no shell and applies `--network=none`, a
+  read-only root and staged-input mount, one writable output mount, numeric non-root user,
+  all-capability drop, no-new-privileges, private IPC, bounded tmpfs/file descriptors, and
+  explicit memory, swap, CPU, and PID ceilings. Timed-out runs target only their exact named
+  container for forced cleanup.
+- **Review boundary unchanged** — digest pinning and containment do not make computation true.
+  Container outputs still begin as `compute_unreviewed`, require a human verification note,
+  and can produce at most one controlled research result; no claim is created automatically.
+- **Host/image trust is explicit** — Docker Desktop and the selected image remain trusted code.
+  The local-Python fallback continues to state that containment is unenforced. UI approval text
+  distinguishes both boundaries rather than presenting them as equivalent.
+- **Verification** — 146 offline tests cover digest rejection, fail-closed command construction,
+  required hardening flags, bounded execution provenance, and all prior gates. The standalone
+  `scripts/verify_compute_container.py` harness exercises one synthetic run in a temporary
+  database/data directory without any provider call or research data. A real smoke run passed
+  against the already-cached Python 3.13 / NumPy 2.3.2 image digest `sha256:4917c298...aac7`;
+  `--network=none` and `--pull=never` were active and no container remained afterward.
