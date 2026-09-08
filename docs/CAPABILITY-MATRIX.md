@@ -91,7 +91,7 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 |---|---|---|
 | Sections with purpose, claim references, word budgets | Implemented | `authoring.add_section`; claim refs validated |
 | Controlled AI modes; structured outputs referencing object IDs | Implemented | dialogue actions + skeptical review; outputs grounded in claims |
-| Coauthor/reviewer/editor roles, invitation, permissions | Partial | `services/security.py` + auth; local trust model (not hardened multi-tenant) |
+| Coauthor/reviewer/editor roles, invitation, permissions | Implemented | workspace tenant roles + project roles; centralized direct-resource authorization; cross-tenant IDs are hidden; membership grants audited |
 | CRediT / authorship-order assist | Implemented | `services/authorship.py`; 14 controlled roles; proposed/confirmed/disputed/declined assignments; deterministic advisory order drafts; current snapshot + human approval required before export |
 
 ## 9. Figures, tables & supplements
@@ -143,11 +143,12 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 | Capability | Status | Notes |
 |---|---|---|
-| Auth: bcrypt passwords, JWTs, OIDC login | Implemented | `auth.py`; off by default, enforced when `WB_AUTH_REQUIRED=true` |
-| Role enforcement (reviewer<editor<coauthor<owner) | Implemented | wired into object/section/member routes; gated on auth |
+| Auth: bcrypt passwords, JWTs, OIDC login | Implemented | `auth.py`; audience-bound JWTs; explicit live/fake/disabled OIDC modes; issuer-qualified identities; verified-email and JIT controls |
+| Role enforcement (reviewer<editor<coauthor<owner) | Implemented | all protected routes authenticate centrally; workspace tenancy + direct-resource project resolution prevent ID substitution; controlled role floor per operation |
 | SSRF-safe fetching, secret-as-env, no secret logging | Implemented | `ingest/safe_fetch.py`, `config.py` |
 | Web UI (9 tabs + login + submissions) | Implemented | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Manuscripts, Submissions, Compute, Figures |
 | Public-mirror CI + guarded publisher | Implemented | `.github/workflows/ci.yml` runs Ruff + offline pytest on Python 3.13; parent Tools `scripts/publish-paper-workbench.ps1` validates the subtree and defaults to dry-run |
-| Hardened multi-tenant production deployment / real IdP integration | Out of scope | single-machine trust model; documented migration path |
+| Multi-tenant authorization + real IdP token verification foundation | Implemented | workspace tenant memberships; claim bindings; HTTPS JWKS + asymmetric algorithm allowlist; hashed tenant-scoped API credentials; migration/backfill |
+| Turnkey internet-facing IdP/browser deployment | Partial | backend verifies real ID tokens; operator must supply IdP client/Authorization Code + PKCE or gateway, TLS/proxy policy, distributed throttling, monitoring, and production DB review |
 | Cost budgets / token metering | Implemented | `services/usage.py`; every LLM call metered per project/kind; monthly ceiling fail-closed before live calls (fakes never blocked); UI readout + budget setter |
 | Mid-call cancellation | Out of scope | calls are single short requests; ceiling bounds total spend |

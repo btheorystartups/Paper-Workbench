@@ -4,19 +4,23 @@ Run: uvicorn workbench.main:app --reload
 """
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import auth, db
+from .audit import record_audit
 from .config import get_settings
 from .models import (
     AuthorshipProposal,
     Claim,
     CreditAssignment,
+    Project,
     ProposedAction,
     ResearchObject,
     Source,
@@ -51,11 +55,65 @@ from .vocab import ClaimSupport, Novelty, ObjectKind, ResultStrength, SourceAcce
 async def lifespan(_app: FastAPI):
     # Alembic is the schema source of truth; this builds a fresh DB or migrates a managed
     # one. (Tests call db.create_all() directly for speed.)
+    auth.validate_auth_configuration()
     db.upgrade_to_head()
     yield
 
 
 app = FastAPI(title="Paper-Workbench", version="0.1.0", lifespan=lifespan)
+
+_PUBLIC_PATHS = {"/health", "/auth/register", "/auth/login", "/auth/oidc/login"}
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+@app.middleware("http")
+async def _production_auth_boundary(request: Request, call_next):
+    """Fail closed before endpoint code for every non-public production request."""
+    settings = get_settings()
+    path = request.url.path
+    if (
+        not settings.auth_required
+        or request.method == "OPTIONS"
+        or path in _PUBLIC_PATHS
+        or path == "/"
+        or path == "/ui"
+        or path.startswith("/ui/")
+    ):
+        return await call_next(request)
+
+    token = _bearer_token(request.headers.get("authorization"))
+    session = db.session_factory()()
+    try:
+        principal = auth.principal_from_bearer(session, token)
+        required_scope = security.required_api_scope(path, request.method)
+        auth.require_api_scope(principal, required_scope)
+        security.authorize_request_scope(
+            session,
+            path=path,
+            method=request.method,
+            user_id=principal.id,
+            bound_workspace_id=principal.workspace_id,
+        )
+        session.commit()  # persists only API-key last-used metadata on read requests
+        request.state.principal = principal
+    except auth.AuthError as exc:
+        session.rollback()
+        status = 401 if "authentication" in str(exc) or "bearer" in str(exc) else 403
+        return JSONResponse(status_code=status, content={"detail": str(exc)})
+    except security.HiddenResource as exc:
+        session.rollback()
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except security.Forbidden as exc:
+        session.rollback()
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    finally:
+        session.close()
+    return await call_next(request)
 
 _STATIC_DIR = __import__("pathlib").Path(__file__).parent / "web" / "static"
 if _STATIC_DIR.is_dir():
@@ -74,14 +132,16 @@ def _session():
 
 
 def _principal(
+    request: Request,
     session: Session = Depends(_session),
     authorization: str | None = Header(default=None),
 ):
     """Resolve the acting user from an optional `Authorization: Bearer <token>` header.
     In local mode (auth_required=false) an absent token yields the default local user."""
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
+    principal = getattr(request.state, "principal", None)
+    if principal is not None:
+        return principal
+    token = _bearer_token(authorization)
     try:
         return auth.principal_from_bearer(session, token)
     except auth.AuthError as exc:
@@ -94,7 +154,32 @@ def _require(session, project_id: str, user, minimum: str) -> None:
     if not get_settings().auth_required:
         return
     try:
-        security.require_role(session, project_id, user.id, minimum)
+        security.require_role(
+            session,
+            project_id,
+            user.id,
+            minimum,
+            bound_workspace_id=user.workspace_id,
+        )
+    except security.HiddenResource as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except security.Forbidden as exc:
+        raise HTTPException(403, str(exc)) from exc
+
+
+def _require_workspace(session, workspace_id: str, user, minimum: str) -> None:
+    if not get_settings().auth_required:
+        return
+    try:
+        security.require_workspace_role(
+            session,
+            workspace_id,
+            user.id,
+            minimum,
+            bound_workspace_id=user.workspace_id,
+        )
+    except security.HiddenResource as exc:
+        raise HTTPException(404, str(exc)) from exc
     except security.Forbidden as exc:
         raise HTTPException(403, str(exc)) from exc
 
@@ -109,13 +194,19 @@ class RegisterIn(BaseModel):
 
 
 @app.post("/auth/register")
-def auth_register(body: RegisterIn, session: Session = Depends(_session)):
+def auth_register(
+    body: RegisterIn,
+    session: Session = Depends(_session),
+    x_workbench_bootstrap: str | None = Header(default=None),
+):
     try:
+        auth.authorize_registration(session, x_workbench_bootstrap)
         user = auth.register_local_user(
             session, name=body.name, email=body.email, password=body.password
         )
     except auth.AuthError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        status = 403 if "registration is disabled" in str(exc) else 409
+        raise HTTPException(status, str(exc)) from exc
     session.commit()
     return {"id": user.id, "name": user.name, "email": user.email}
 
@@ -123,58 +214,117 @@ def auth_register(body: RegisterIn, session: Session = Depends(_session)):
 class LoginIn(BaseModel):
     email: str
     password: str
+    workspace_id: str | None = None
 
 
 @app.post("/auth/login")
 def auth_login(body: LoginIn, session: Session = Depends(_session)):
+    if get_settings().auth_required and not get_settings().auth_password_login_enabled:
+        raise HTTPException(403, "password login is disabled")
     try:
-        user, token = auth.login_password(session, email=body.email, password=body.password)
+        user, token = auth.login_password(
+            session,
+            email=body.email,
+            password=body.password,
+            workspace_id=body.workspace_id,
+        )
     except auth.AuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     session.commit()
-    return {"access_token": token, "token_type": "bearer", "user_id": user.id}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "workspace_id": auth.decode_access_token(token).get("wid"),
+    }
 
 
 class OidcLoginIn(BaseModel):
     id_token: str
+    workspace_id: str | None = None
 
 
 @app.post("/auth/oidc/login")
 def auth_oidc_login(body: OidcLoginIn, session: Session = Depends(_session)):
     try:
-        user, token = auth.login_oidc(session, body.id_token)
+        user, token = auth.login_oidc(
+            session, body.id_token, workspace_id=body.workspace_id
+        )
     except auth.AuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     session.commit()
-    return {"access_token": token, "token_type": "bearer", "user_id": user.id}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "workspace_id": auth.decode_access_token(token).get("wid"),
+    }
 
 
 @app.get("/auth/me")
-def auth_me(user=Depends(_principal)):
-    return {"id": user.id, "name": user.name, "email": user.email,
-            "oidc_linked": bool(user.oidc_subject)}
+def auth_me(session: Session = Depends(_session), user=Depends(_principal)):
+    from .models import FederatedIdentity
+
+    oidc_linked = session.scalars(
+        select(FederatedIdentity).where(
+            FederatedIdentity.user_id == user.id,
+            FederatedIdentity.deleted_at.is_(None),
+        )
+    ).first()
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "oidc_linked": bool(oidc_linked or user.oidc_subject),
+        "workspace_id": user.workspace_id,
+        "auth_method": user.auth_method,
+    }
 
 
 @app.get("/health")
 def health():
     settings = get_settings()
-    return {"status": "ok", "provider_mode": settings.provider_mode}
+    return {
+        "status": "ok",
+        "provider_mode": settings.provider_mode,
+        "auth_required": settings.auth_required,
+        "oidc_mode": settings.oidc_mode,
+    }
 
 
 @app.get("/workspaces")
-def list_workspaces(session: Session = Depends(_session)):
-    from .models import Workspace
+def list_workspaces(
+    session: Session = Depends(_session), user=Depends(_principal)
+):
+    from .models import Workspace, WorkspaceMember
 
+    query = select(Workspace).where(Workspace.deleted_at.is_(None))
+    if get_settings().auth_required:
+        query = (
+            query.join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+            .where(
+                WorkspaceMember.user_id == user.id,
+                WorkspaceMember.deleted_at.is_(None),
+            )
+            .distinct()
+        )
+        if user.workspace_id:
+            query = query.where(Workspace.id == user.workspace_id)
     return [
         {"id": w.id, "name": w.name}
-        for w in session.scalars(select(Workspace).where(Workspace.deleted_at.is_(None)))
+        for w in session.scalars(query)
     ]
 
 
 @app.get("/workspaces/{workspace_id}/projects")
-def list_projects(workspace_id: str, session: Session = Depends(_session)):
+def list_projects(
+    workspace_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
     from .models import Project
 
+    _require_workspace(session, workspace_id, user, "viewer")
     return [
         {"id": p.id, "name": p.name, "description": p.description}
         for p in session.scalars(
@@ -306,8 +456,15 @@ class WorkspaceIn(BaseModel):
 
 
 @app.post("/workspaces")
-def create_workspace(body: WorkspaceIn, session: Session = Depends(_session)):
+def create_workspace(
+    body: WorkspaceIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    if user.workspace_id:
+        raise HTTPException(403, "workspace-bound credentials cannot create tenants")
     ws = research.create_workspace(session, body.name)
+    security.add_workspace_member(session, ws.id, user.id, "owner")
     session.commit()
     return {"id": ws.id, "name": ws.name}
 
@@ -319,9 +476,15 @@ class ProjectIn(BaseModel):
 
 
 @app.post("/projects")
-def create_project(body: ProjectIn, session: Session = Depends(_session)):
+def create_project(
+    body: ProjectIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require_workspace(session, body.workspace_id, user, "member")
     try:
         project = research.create_project(session, body.workspace_id, body.name, body.description)
+        security.add_member(session, project.id, user.id, "owner")
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -350,14 +513,27 @@ class ImportIn(BaseModel):
 
 
 @app.post("/projects/import")
-def import_project_bundle(body: ImportIn, session: Session = Depends(_session)):
+def import_project_bundle(
+    body: ImportIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
     """Restore a project bundle from a local ZIP path (refuses to overwrite)."""
     from .services import transfer
 
+    if body.workspace_id:
+        _require_workspace(session, body.workspace_id, user, "member")
+    elif user.workspace_id:
+        raise HTTPException(403, "workspace-bound credentials cannot create tenants")
     try:
         result = transfer.import_project(
             session, body.path, workspace_id=body.workspace_id
         )
+        if body.workspace_id is None:
+            security.add_workspace_member(
+                session, result["workspace_id"], user.id, "owner"
+            )
+        security.add_member(session, result["project_id"], user.id, "owner")
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -1582,7 +1758,12 @@ class VenueIn(BaseModel):
 
 
 @app.post("/venues")
-def create_venue(body: VenueIn, session: Session = Depends(_session)):
+def create_venue(
+    body: VenueIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require_workspace(session, body.workspace_id, user, "admin")
     try:
         venue = venues.create_venue(
             session, body.workspace_id, name=body.name, rules=body.rules,
@@ -1595,7 +1776,17 @@ def create_venue(body: VenueIn, session: Session = Depends(_session)):
 
 
 @app.post("/venues/{venue_id}/verify")
-def verify_venue(venue_id: str, session: Session = Depends(_session)):
+def verify_venue(
+    venue_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import VenueProfile
+
+    existing = session.get(VenueProfile, venue_id)
+    if existing is None:
+        raise HTTPException(404, "venue not found")
+    _require_workspace(session, existing.workspace_id, user, "admin")
     try:
         venue = venues.verify_venue(session, venue_id)
     except research.IntegrityError as exc:
@@ -1605,7 +1796,20 @@ def verify_venue(venue_id: str, session: Session = Depends(_session)):
 
 
 @app.get("/manuscripts/{manuscript_id}/venue-compliance/{venue_id}")
-def venue_compliance(manuscript_id: str, venue_id: str, session: Session = Depends(_session)):
+def venue_compliance(
+    manuscript_id: str,
+    venue_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import Project, VenueProfile
+
+    manuscript = session.get(ResearchObject, manuscript_id)
+    venue = session.get(VenueProfile, venue_id)
+    project = session.get(Project, manuscript.project_id) if manuscript else None
+    if venue is None or project is None or venue.workspace_id != project.workspace_id:
+        raise HTTPException(404, "venue not found")
+    _require_workspace(session, venue.workspace_id, user, "viewer")
     try:
         findings = venues.audit_venue_compliance(session, manuscript_id, venue_id)
     except research.IntegrityError as exc:
@@ -1613,7 +1817,7 @@ def venue_compliance(manuscript_id: str, venue_id: str, session: Session = Depen
     return {"findings": findings, "counts": _severity_counts(findings)}
 
 
-# --- users / collaboration roles (local trust model) ---
+# --- users, tenant membership, and scoped credentials ---
 
 
 class UserIn(BaseModel):
@@ -1622,6 +1826,8 @@ class UserIn(BaseModel):
 
 @app.post("/users")
 def create_user(body: UserIn, session: Session = Depends(_session)):
+    if get_settings().auth_required:
+        raise HTTPException(403, "legacy user creation is available only in local mode")
     user = security.create_user(session, body.name)
     session.commit()
     return {"id": user.id, "name": user.name, "api_key": user.api_key}
@@ -1642,8 +1848,270 @@ def add_member(
         member = security.add_member(session, project_id, body.user_id, body.role)
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
+    project = session.get(Project, project_id)
+    record_audit(
+        session,
+        workspace_id=project.workspace_id,
+        actor=user.id,
+        action="grant_project_role",
+        object_type="project_member",
+        object_id=member.id,
+        detail={"target_user_id": member.user_id, "role": member.role},
+    )
     session.commit()
     return {"id": member.id, "user_id": member.user_id, "role": member.role}
+
+
+class WorkspaceMemberIn(BaseModel):
+    user_id: str
+    role: str
+
+
+@app.get("/workspaces/{workspace_id}/members")
+def list_workspace_members(
+    workspace_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import WorkspaceMember
+
+    _require_workspace(session, workspace_id, user, "admin")
+    rows = session.scalars(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.deleted_at.is_(None),
+        )
+    )
+    return [{"user_id": row.user_id, "role": row.role} for row in rows]
+
+
+@app.post("/workspaces/{workspace_id}/members")
+def add_workspace_member(
+    workspace_id: str,
+    body: WorkspaceMemberIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require_workspace(session, workspace_id, user, "owner")
+    try:
+        member = security.add_workspace_member(
+            session, workspace_id, body.user_id, body.role
+        )
+    except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    record_audit(
+        session,
+        workspace_id=workspace_id,
+        actor=user.id,
+        action="grant_workspace_role",
+        object_type="workspace_member",
+        object_id=member.id,
+        detail={"target_user_id": member.user_id, "role": member.role},
+    )
+    session.commit()
+    return {"id": member.id, "user_id": member.user_id, "role": member.role}
+
+
+class OidcBindingIn(BaseModel):
+    tenant_key: str = Field(min_length=1, max_length=500)
+    default_role: str = "member"
+
+
+@app.get("/workspaces/{workspace_id}/oidc-bindings")
+def list_oidc_bindings(
+    workspace_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import OidcWorkspaceBinding
+
+    _require_workspace(session, workspace_id, user, "owner")
+    rows = session.scalars(
+        select(OidcWorkspaceBinding).where(
+            OidcWorkspaceBinding.workspace_id == workspace_id,
+            OidcWorkspaceBinding.deleted_at.is_(None),
+        )
+    )
+    return [
+        {
+            "id": row.id,
+            "issuer": row.issuer,
+            "tenant_key": row.tenant_key,
+            "default_role": row.default_role,
+        }
+        for row in rows
+    ]
+
+
+@app.post("/workspaces/{workspace_id}/oidc-bindings")
+def create_oidc_binding(
+    workspace_id: str,
+    body: OidcBindingIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import OidcWorkspaceBinding
+
+    _require_workspace(session, workspace_id, user, "owner")
+    settings = get_settings()
+    if settings.oidc_mode != "live" or not settings.oidc_issuer:
+        raise HTTPException(422, "live OIDC issuer must be configured before binding")
+    if body.default_role not in security.WORKSPACE_ROLE_RANK:
+        raise HTTPException(422, "invalid default workspace role")
+    if body.default_role in {"admin", "owner"}:
+        raise HTTPException(422, "OIDC JIT bindings cannot grant admin or owner")
+    existing = session.scalars(
+        select(OidcWorkspaceBinding).where(
+            OidcWorkspaceBinding.issuer == settings.oidc_issuer,
+            OidcWorkspaceBinding.tenant_key == body.tenant_key,
+        )
+    ).first()
+    if existing and existing.workspace_id != workspace_id:
+        raise HTTPException(409, "issuer tenant key is already bound")
+    if existing:
+        existing.default_role = body.default_role
+        existing.deleted_at = None
+        binding = existing
+    else:
+        binding = OidcWorkspaceBinding(
+            workspace_id=workspace_id,
+            issuer=settings.oidc_issuer,
+            tenant_key=body.tenant_key,
+            default_role=body.default_role,
+        )
+        session.add(binding)
+        session.flush()
+    record_audit(
+        session,
+        workspace_id=workspace_id,
+        actor=user.id,
+        action="bind_oidc_tenant",
+        object_type="oidc_workspace_binding",
+        object_id=binding.id,
+        detail={
+            "issuer": binding.issuer,
+            "tenant_key": binding.tenant_key,
+            "default_role": binding.default_role,
+        },
+    )
+    session.commit()
+    return {
+        "id": binding.id,
+        "issuer": binding.issuer,
+        "tenant_key": binding.tenant_key,
+        "default_role": binding.default_role,
+    }
+
+
+class ApiCredentialIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    scopes: list[str] = Field(default_factory=lambda: ["read", "write"])
+    expires_at: datetime | None = None
+
+
+@app.get("/workspaces/{workspace_id}/api-keys")
+def list_api_credentials(
+    workspace_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import ApiCredential
+
+    _require_workspace(session, workspace_id, user, "viewer")
+    rows = session.scalars(
+        select(ApiCredential).where(
+            ApiCredential.workspace_id == workspace_id,
+            ApiCredential.user_id == user.id,
+            ApiCredential.deleted_at.is_(None),
+        )
+    )
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "key_prefix": row.key_prefix,
+            "scopes": row.scopes,
+            "expires_at": row.expires_at,
+            "revoked_at": row.revoked_at,
+            "last_used_at": row.last_used_at,
+        }
+        for row in rows
+    ]
+
+
+@app.post("/workspaces/{workspace_id}/api-keys")
+def create_api_credential(
+    workspace_id: str,
+    body: ApiCredentialIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    _require_workspace(session, workspace_id, user, "viewer")
+    if user.auth_method == "api_key" and "admin" not in user.scopes:
+        raise HTTPException(403, "creating API credentials requires admin scope")
+    if "admin" in body.scopes:
+        _require_workspace(session, workspace_id, user, "owner")
+    expires_at = body.expires_at
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at and expires_at <= datetime.now(UTC):
+        raise HTTPException(422, "expires_at must be in the future")
+    try:
+        credential, token = auth.create_api_credential(
+            session,
+            user_id=user.id,
+            workspace_id=workspace_id,
+            name=body.name,
+            scopes=body.scopes,
+            expires_at=expires_at,
+        )
+    except auth.AuthError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    record_audit(
+        session,
+        workspace_id=workspace_id,
+        actor=user.id,
+        action="create_api_credential",
+        object_type="api_credential",
+        object_id=credential.id,
+        detail={"name": credential.name, "scopes": credential.scopes},
+    )
+    session.commit()
+    return {
+        "id": credential.id,
+        "name": credential.name,
+        "key_prefix": credential.key_prefix,
+        "scopes": credential.scopes,
+        "api_key": token,
+        "warning": "This credential is shown once and cannot be recovered.",
+    }
+
+
+@app.post("/api-keys/{credential_id}/revoke")
+def revoke_api_credential(
+    credential_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    from .models import ApiCredential
+
+    credential = session.get(ApiCredential, credential_id)
+    if credential is None or credential.deleted_at is not None:
+        raise HTTPException(404, "API credential not found")
+    if credential.user_id != user.id:
+        _require_workspace(session, credential.workspace_id, user, "owner")
+    credential.revoked_at = datetime.now(UTC)
+    record_audit(
+        session,
+        workspace_id=credential.workspace_id,
+        actor=user.id,
+        action="revoke_api_credential",
+        object_type="api_credential",
+        object_id=credential.id,
+        detail={"owner_user_id": credential.user_id},
+    )
+    session.commit()
+    return {"id": credential.id, "revoked": True}
 
 
 # --- submission tracking ---

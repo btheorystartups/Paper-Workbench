@@ -49,11 +49,27 @@ class Settings(BaseSettings):
     auth_required: bool = False
     auth_secret: str = "dev-insecure-secret"  # MUST be overridden when auth_required
     auth_ttl_minutes: int = 720
+    auth_allow_registration: bool = False
+    auth_password_login_enabled: bool = True
+    auth_bootstrap_token: str = ""
+    auth_token_issuer: str = "paper-workbench"
+    auth_token_audience: str = "paper-workbench-api"
+    auth_clock_skew_seconds: int = 30
 
-    # OIDC (used only when provider_mode=live and oidc_issuer set)
+    # OIDC is deliberately independent of AI/search provider mode. Production must set
+    # mode=live; fake accepts deterministic JSON claims only for offline/local tests and
+    # is refused whenever enforced auth is enabled.
+    oidc_mode: str = "disabled"  # "disabled" | "fake" | "live"
     oidc_issuer: str = ""
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
+    oidc_allowed_algorithms: str = "RS256,ES256"
+    oidc_jwks_timeout_seconds: float = 5.0
+    oidc_require_https: bool = True
+    oidc_tenant_claim: str = ""
+    oidc_allow_email_linking: bool = False
+    oidc_allow_jit_provisioning: bool = False
+    oidc_allow_jit_membership: bool = False
 
     # Export
     pdf_renderer: str = "auto"  # "auto" | "weasyprint" | "minimal"
