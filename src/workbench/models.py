@@ -341,17 +341,31 @@ class Embedding(_Stamped, Base):
 
 
 class User(_Stamped, Base):
-    """Collaboration identity. `api_key` is the local dev-token path; `email` +
-    `password_hash` enable real password auth; `oidc_subject` links a federated identity.
-    None of these are populated in local single-user mode until auth is enabled."""
+    """Global login identity.
+
+    Production OIDC identities and API credentials live in dedicated tables below so
+    issuer/tenant boundaries are explicit. ``api_key`` and ``oidc_subject`` remain only
+    as compatibility fields for pre-hardening local databases.
+    """
 
     __tablename__ = "users"
     name: Mapped[str] = mapped_column(String(200))
-    api_key: Mapped[str] = mapped_column(String(64), unique=True)
+    api_key: Mapped[str | None] = mapped_column(String(64), unique=True, default=None)
     email: Mapped[str | None] = mapped_column(String(320), unique=True, default=None)
     password_hash: Mapped[str | None] = mapped_column(String(255), default=None)
     oidc_subject: Mapped[str | None] = mapped_column(String(255), unique=True, default=None)
     email_verified: Mapped[bool] = mapped_column(default=False)
+
+
+class WorkspaceMember(_Stamped, Base):
+    """Tenant membership. A workspace is the deployment tenant boundary."""
+
+    __tablename__ = "workspace_members"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))  # viewer|member|admin|owner
+
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id"),)
 
 
 class ProjectMember(_Stamped, Base):
@@ -361,6 +375,49 @@ class ProjectMember(_Stamped, Base):
     role: Mapped[str] = mapped_column(String(20))  # owner|coauthor|reviewer|editor
 
     __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+
+
+class FederatedIdentity(_Stamped, Base):
+    """Issuer-qualified OIDC identity; ``sub`` is unique only within an issuer."""
+
+    __tablename__ = "federated_identities"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    issuer: Mapped[str] = mapped_column(String(500))
+    subject: Mapped[str] = mapped_column(String(500))
+    email_at_link: Mapped[str | None] = mapped_column(String(320), default=None)
+    last_login_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject"),
+        Index("ix_federated_identity_user_issuer", "user_id", "issuer"),
+    )
+
+
+class OidcWorkspaceBinding(_Stamped, Base):
+    """Maps a trusted IdP tenant/group claim to one workbench workspace."""
+
+    __tablename__ = "oidc_workspace_bindings"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    issuer: Mapped[str] = mapped_column(String(500))
+    tenant_key: Mapped[str] = mapped_column(String(500))
+    default_role: Mapped[str] = mapped_column(String(20), default="member")
+
+    __table_args__ = (UniqueConstraint("issuer", "tenant_key"),)
+
+
+class ApiCredential(_Stamped, Base):
+    """Revocable, tenant-bound API credential. Only a SHA-256 digest is stored."""
+
+    __tablename__ = "api_credentials"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    key_prefix: Mapped[str] = mapped_column(String(16), index=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    scopes: Mapped[list] = mapped_column(JSON, default=list)
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class VenueProfile(_Stamped, Base):

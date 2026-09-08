@@ -256,3 +256,33 @@ Ledger status (2026-09-08, publication-rendering hardening):
 - **Verification** — 148 offline tests and Ruff are green; all 63 official DTD files match the
   downloaded archive byte-for-byte, the built wheel contains all modules plus source metadata,
   and a two-page WeasyPrint smoke PDF passed Poppler rendering and visual inspection.
+
+Ledger status (2026-09-08, workspace-tenancy and OIDC hardening):
+- **Tenant boundary made explicit** — a workspace is the tenant. Workspace memberships use
+  controlled `viewer/member/admin/owner` roles; project roles remain
+  `reviewer/editor/coauthor/owner`. Enforced-auth requests must pass both boundaries, and
+  workspace admins/owners retain recovery authority over projects in their tenant.
+- **Direct-ID authorization** — one central request guard resolves projects, sources, claims,
+  threads, actions, manuscripts, artifacts, compute runs, submissions, packages, venues, and
+  API credentials back to their owning workspace/project. Missing and cross-tenant identifiers
+  are both returned as not found; controlled operation-specific role floors apply before route
+  code. Default credential-free local behavior remains unchanged.
+- **Provider-neutral OIDC boundary** — authentication mode is no longer coupled to LLM/search
+  provider mode. Enforced auth refuses fake JSON OIDC. Live verification requires HTTPS issuer
+  and JWKS URLs, an audience, required claims/expiry, and an explicit asymmetric RS/ES algorithm
+  allowlist. Identities are unique by `(issuer, subject)`; unverified email never links an
+  account, while verified-email linking and JIT user/membership creation are separate opt-ins.
+- **Controlled IdP tenancy** — an owner must map each trusted IdP tenant-claim value to one
+  workspace. JIT bindings may grant only `viewer` or `member`, never administrative roles.
+- **Automation credentials** — production API keys are random, workspace-bound, expirable,
+  revocable, and scoped to `read/write/admin`; only a SHA-256 digest and display prefix are
+  stored. Legacy plaintext development keys are accepted only when enforced auth is off. Raw
+  keys are returned once and never enter audit events.
+- **Migration and compatibility** — the eleventh Alembic revision adds workspace membership,
+  federated identity, OIDC binding, and API-credential tables, makes legacy user keys nullable,
+  and lifts existing project owners/members into workspace roles without locking out an
+  unowned local workspace. Local grace mode remains available only when auth is disabled.
+- **Verification** — 160 offline tests and Ruff are green, including cross-tenant API attacks,
+  direct-resource ID substitution, scoped-key denial/revocation, issuer collision, tenant-claim
+  binding, legacy migration backfill, and real RSA ID-token signature/issuer/audience checks.
+  No IdP, provider, or other live API was contacted.

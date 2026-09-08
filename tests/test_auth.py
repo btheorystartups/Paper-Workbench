@@ -8,6 +8,8 @@ import pytest
 @pytest.fixture()
 def auth_env(monkeypatch):
     monkeypatch.setenv("WB_AUTH_SECRET", "test-secret-please-change-0123456789")
+    monkeypatch.setenv("WB_OIDC_MODE", "fake")
+    monkeypatch.setenv("WB_OIDC_ALLOW_JIT_PROVISIONING", "true")
     from workbench import config
 
     config.get_settings.cache_clear()
@@ -61,13 +63,16 @@ def test_enforced_auth_requires_real_secret(monkeypatch):
 
 def test_oidc_fake_flow_links_account(session, auth_env):
     from workbench import auth
+    from workbench.models import FederatedIdentity
 
     id_token = json.dumps(
         {"sub": "oidc|123", "email": "fed@example.com", "name": "Fed User",
          "email_verified": True}
     )
     user, token = auth.login_oidc(session, id_token)
-    assert user.oidc_subject == "oidc|123"
+    identity = session.query(FederatedIdentity).one()
+    assert identity.subject == "oidc|123"
+    assert identity.issuer == "https://fake-oidc.invalid"
     assert user.email_verified is True
     assert auth.decode_token(token) == user.id
     # second login with same subject reuses the account
@@ -96,6 +101,7 @@ def test_principal_from_bearer_paths(session, auth_env):
 def test_no_token_rejected_when_required(session, monkeypatch):
     monkeypatch.setenv("WB_AUTH_REQUIRED", "true")
     monkeypatch.setenv("WB_AUTH_SECRET", "real-secret-0123456789-abcdefghij")
+    monkeypatch.setenv("WB_AUTH_ALLOW_REGISTRATION", "true")
     from workbench import auth, config
 
     config.get_settings.cache_clear()
@@ -110,6 +116,7 @@ def test_role_enforcement_via_api(tmp_path, monkeypatch):
     monkeypatch.setenv("WB_PROVIDER_MODE", "fake")
     monkeypatch.setenv("WB_AUTH_REQUIRED", "true")
     monkeypatch.setenv("WB_AUTH_SECRET", "real-secret-0123456789-abcdefghij")
+    monkeypatch.setenv("WB_AUTH_ALLOW_REGISTRATION", "true")
     from fastapi.testclient import TestClient
 
     from workbench import config, db

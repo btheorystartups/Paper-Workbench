@@ -12,9 +12,9 @@ are optional downstream steps that preserve provenance and evidence states throu
 
 - The authoritative copy lives under the private Tools monorepo; the standalone public
   repository is a one-way mirror of that subtree.
-- **148 tests** across the suite, all passing offline (live provider paths were verified
+- **160 tests** across the suite, all passing offline (live provider paths were verified
   separately with the user's keys; no live calls are part of routine verification).
-- **10 Alembic migrations**; startup runs `alembic upgrade head`.
+- **11 Alembic migrations**; startup runs `alembic upgrade head`.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
   multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
@@ -39,17 +39,20 @@ are optional downstream steps that preserve provenance and evidence states throu
 | CRediT authorship | 285f4bc | controlled role assignments, review history, snapshot-bound advisory order proposals, approved export statements |
 | Publication packaging | 9a46801 | reviewed cover letter/declarations, frozen approval snapshot, venue/reviewer materials, checksummed local ZIP |
 | Reproducible compute | 648e00e + current slice | hash-bound plans, local + digest-pinned Docker executors, immutable outputs, human review/promotion |
+| Workspace tenancy + OIDC hardening | current slice | tenant memberships, centralized resource authorization, issuer-qualified OIDC, claim bindings, hashed scoped API keys |
 
 See `docs/CAPABILITY-MATRIX.md` for capability-by-capability status.
 
 ## Verification evidence
 
-- **Unit/integration/security/API**: `pytest` → 146 passed. Covers evidence integrity,
+- **Unit/integration/security/API**: `pytest` → 160 passed. Covers evidence integrity,
   cross-project isolation, dialogue propose→approve→execute + plan-hash binding, prompt-
   injection fencing, auth (password/JWT/OIDC/roles), export (incl. PDF fallback + JATS DTD
   validation), submissions state machine, portfolio, semantic scope, startup migration,
   CRediT assignment/order review gates, publication-package approval/staleness/checksums,
-  and compute plan/execute/review/promotion gates with portable manifests.
+  compute plan/execute/review/promotion gates with portable manifests, workspace-tenant
+  isolation, direct-ID substitution denial, OIDC issuer/audience/signature checks, migration
+  backfill, and hashed/scoped/revocable API credentials.
 - **Audit eval harness** (`scripts/run_evals.py`): 8 labeled scenarios, precision/recall
   **1.00** on all 7 finding codes (`docs/eval-report.md`).
 - **LLM-quality eval harness** (`scripts/run_llm_evals.py`): against **live gpt-4o**,
@@ -87,9 +90,13 @@ tracked). No writes, purchases, submissions, or publications anywhere.
   Archiving/Interchange MathML 2 DTD distribution. The manifest records tag set, version, and
   official archive SHA-256. `WB_JATS_DTD_PATH` remains a fail-closed override for stricter
   venue-specific schemas; schemas are never downloaded at runtime.
-- **Auth** is a single-machine trust model (local API keys / dev tokens, HS256 JWTs). Real
-  multi-tenant deployment needs a production IdP and tenant hardening — schema is the
-  migration path.
+- **Auth** now has a workspace-as-tenant boundary, explicit tenant/project memberships,
+  centralized route authorization, audience-bound workbench JWTs, issuer-qualified OIDC
+  identities, explicit claim bindings, and hashed tenant-scoped API credentials. Fake OIDC
+  is refused when auth is enforced; email linking and JIT provisioning/membership are separate
+  opt-ins. A public deployment still requires an operator-selected IdP/browser code flow or
+  authenticating gateway, TLS/proxy policy, distributed throttling, monitoring, and a
+  production database review.
 - **OCR runtime** is optional and absent on this Windows box. Layout-aware PDF extraction
   is built in; local OCR requires `.[ocr]` plus Tesseract language data. Automatic mode
   records unavailable/failed OCR per page and continues; forced OCR fails closed.
@@ -103,13 +110,14 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 
 ## Blockers
 
-None outstanding. Two user decisions remain optional (defaults active): which LLM to use
-live (OpenAI configured, gpt-4o) and whether to enable auth (`WB_AUTH_REQUIRED`).
+None outstanding for local use. Production deployment still requires explicit choices for
+the identity provider, tenant claim, redirect/client flow, hostname/TLS boundary, and database.
 
 ## Recommended next actions
 
-1. Harden multi-tenant authorization and production OIDC only if the workbench moves beyond
-   its current single-machine trust boundary.
+1. If an internet-facing deployment is desired, select the IdP and hosting boundary, then add
+   Authorization Code + PKCE (or gateway) integration, distributed login throttling, trusted
+   proxy/host policy, and deployment monitoring against a non-production tenant first.
 
 ## How to run
 

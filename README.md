@@ -49,13 +49,16 @@ Implemented and tested (146 offline tests; live providers verified separately wi
   AI-suggested/simulated badges, support states, approval-gated AI actions).
 - **Expansion**: Semantic Scholar + Unpaywall adapters; project-scoped semantic search
   (similarity ≠ evidence); venue profiles with verify-gated compliance audits;
-  collaboration roles (local trust model); typeset PDF + official JATS 1.3 export;
+  workspace-tenant and project roles; typeset PDF + official JATS 1.3 export;
   cross-project memory (unpublished results, usage tracing, saved-search rerun);
   audit eval harness (docs/eval-report.md — precision/recall 1.00 on 7 codes).
 
-- **Auth** (optional, off by default): bcrypt passwords + short-lived JWTs + OIDC login;
-  role enforcement (reviewer<editor<coauthor<owner) activates only when
-  `WB_AUTH_REQUIRED=true`. Endpoints under `/auth/*`.
+- **Auth** (optional, off by default): bcrypt passwords; audience-bound, short-lived JWTs;
+  issuer-qualified OIDC identities; explicit IdP-tenant→workspace bindings; workspace and
+  project roles; and revocable, scoped API keys stored only as hashes. Enforced mode protects
+  all non-public API routes and hides cross-tenant resource identifiers. Endpoints under
+  `/auth/*`, `/workspaces/*/members`, `/workspaces/*/oidc-bindings`, and
+  `/workspaces/*/api-keys`.
 - **Submission tracking**: audited state machine (drafting → submitted → under review →
   revision requested → resubmitted → accepted/rejected/withdrawn) with response-to-reviewers.
 - **Publication packaging**: versioned local package plans with controlled cover-letter and
@@ -101,7 +104,7 @@ risk register, and the phased roadmap/continuation ledger.
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,pdf]"
-.\.venv\Scripts\python.exe -m pytest              # 148 tests, fully offline
+.\.venv\Scripts\python.exe -m pytest              # fully offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app --reload   # API on :8000, docs at /docs
 ```
 
@@ -110,6 +113,36 @@ py -3.13 -m venv .venv
 Copy `.env.example` to `.env`. Everything defaults to offline fake mode. Live providers
 require both `WB_PROVIDER_MODE=live` and the relevant key; keys live only in the
 environment, never in the database, never in logs.
+
+### Enforced workspace tenancy and OIDC
+
+A workspace is the tenant boundary. Set `WB_AUTH_REQUIRED=true` and a random
+`WB_AUTH_SECRET` of at least 32 characters. Self-registration is denied unless
+`WB_AUTH_ALLOW_REGISTRATION=true`; legacy plaintext development keys are never accepted in
+enforced mode. Creating a workspace makes the acting user its owner, and creating a project
+makes that user the project owner. Workspace owners/admins can administer all projects in
+their tenant; other users need explicit project membership.
+
+For a fresh password-auth deployment with registration closed, set a separate
+`WB_AUTH_BOOTSTRAP_TOKEN` (at least 24 characters) and send it once in the
+`X-Workbench-Bootstrap` header to `/auth/register`. The bootstrap path is refused after any
+active user exists; remove the token from the environment afterward.
+
+OIDC is configured independently of search/LLM providers. Set `WB_OIDC_MODE=live` plus an
+HTTPS issuer, audience, and JWKS URL. Algorithms are restricted to an explicit asymmetric
+allowlist. Automatic account linking, user provisioning, and tenant membership are each
+separate opt-ins. If an IdP organization claim is used, an owner must first bind each trusted
+claim value through `POST /workspaces/{id}/oidc-bindings`; a claim never grants admin/owner.
+`POST /auth/oidc/login` accepts the resulting ID token and verifies its signature, issuer,
+audience, required claims, and expiry. It does not perform a browser redirect or authorization
+code exchange.
+
+Create automation credentials with `POST /workspaces/{id}/api-keys`. The raw `wbk_...` value
+is returned once; only its SHA-256 digest, prefix, tenant, scopes, expiration, revocation, and
+last-use metadata are stored. Credential creation/revocation, tenant bindings, and membership
+grants are audit events. See `.env.example` for every fail-closed switch.
+The rollout sequence and remaining deployment-owned controls are in
+[`docs/AUTH-DEPLOYMENT.md`](docs/AUTH-DEPLOYMENT.md).
 
 ## Backup / portability
 
@@ -127,7 +160,11 @@ project; verifies every checksum first; rewrites artifact paths to the local dat
   drafts without fabricating absent journal identifiers, ISSNs, abstracts, or references.
   Set `WB_JATS_DTD_PATH` to a stricter venue-specific entry point when those fields exist.
   Validation never downloads schemas at runtime.
-- Auth is a single-machine trust model; hardened multi-tenant deployment is out of scope.
+- The workspace-tenant authorization and real-ID-token verification foundation is built, but
+  an internet-facing deployment still needs an operator-selected IdP client, browser
+  Authorization Code + PKCE integration (or an authenticating gateway), TLS/reverse-proxy
+  hardening, distributed login throttling, deployment-specific backup/monitoring, and a
+  production database review. Those operational controls are not simulated as complete.
 - Local-Python compute is reproducibility capture, not a security sandbox: network, filesystem,
   and descendant-process isolation are explicitly unenforced. Prefer the optional Docker
   executor for enforceable containment. Docker still trusts the selected image and daemon;
