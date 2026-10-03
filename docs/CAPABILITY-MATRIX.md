@@ -5,7 +5,7 @@ Honest status of every capability against the original megaprompt. Legend:
 **Simulated** (fake by default; real path exists behind a key) · **Planned** ·
 **Out of scope** (deliberately excluded).
 
-Last updated 2026-09-07. Tests: 146 offline, green. Live providers (OpenAI gpt-4o, Brave,
+Last updated 2026-09-11. Tests: 212 offline, green. Live providers (OpenAI gpt-4o, Brave,
 OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 
 ## Core model & platform
@@ -16,10 +16,10 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Controlled state vocabularies (claim support, result strength, novelty, source access) | Implemented | `vocab.py`; enforced in services, never collapsed in UI/export |
 | Workspace/project isolation + soft delete + timestamps | Implemented | `workspace_id`/`project_id` scoping on every row |
 | Provenance that survives export | Implemented | export manifest: checksums, access levels, audit findings, AI provenance |
-| Schema migrations | Implemented | Alembic; `db.upgrade_to_head()` runs at startup; 10 migrations, reversibility checked |
+| Schema migrations | Implemented | 12 Alembic migrations; local startup upgrades automatically, hosted mode requires an explicit direct-URL migration run |
 | Audit-in-transaction | Implemented | `audit.py`; every consequential mutation writes an AuditEvent |
 | Provider abstraction + offline fakes (default) | Implemented | `providers/`, `WB_PROVIDER_MODE=fake` → zero network |
-| Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; artifact files bundled, paths portable, tamper-detected |
+| Project backup: checksummed ZIP export/import (restore, not merge) | Implemented | `services/transfer.py`; private/local artifacts bundled, references portable, tamper-detected; authorized hosted download and bounded browser restore |
 
 ## 1. Natural-language research dialogue & direction engine
 
@@ -31,6 +31,9 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Propose → human-approve → execute → audit (plan-hash bound) | Implemented | speculation never auto-promoted; `test_dialogue.py`, `test_api.py` |
 | Explicit modes (explore/explain/challenge/compare/plan/act) | Implemented | `dialogue.MODES`; stance instruction in system prompt; evidence rules identical in every mode; UI selector |
 | Branchable threads | Implemented | `dialogue.branch_thread`: fork at any turn, history copied with provenance markers, actions never copied; UI "Branch here" per turn |
+| Manuscript-aware section conversation | Implemented | Selected prose, outline, linked claims and available evidence/excerpts; context inspector and editable thread brief; 12 recent messages; bounded context |
+| Reviewed prose revisions and undo | Implemented | Before/after review; revised proposals, reject, snapshot-bound approval and undo; concurrent edits blocked; evidence states preserved; `test_manuscript_chat.py` |
+| Dedicated terminal dialogue CLI / MCP adapter | Planned | HTTP endpoints exist; no dedicated terminal client or MCP adapter |
 
 ## 2. Project intake & research-object registry
 
@@ -94,6 +97,17 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Coauthor/reviewer/editor roles, invitation, permissions | Implemented | workspace tenant roles + project roles; centralized direct-resource authorization; cross-tenant IDs are hidden; membership grants audited |
 | CRediT / authorship-order assist | Implemented | `services/authorship.py`; 14 controlled roles; proposed/confirmed/disputed/declined assignments; deterministic advisory order drafts; current snapshot + human approval required before export |
 
+## 8a. Evidence-grounded client and research proposals
+
+| Capability | Status | Notes |
+|---|---|---|
+| Project-local proposal brief, collections, and extraction coverage | Implemented (synthetic verification) | `Proposal`, `ProposalSource`, and `ProposalPassage`; author/client/background are evidence labels, not access roles; metadata-only, missing, scanned, stale, and deleted text remain limitations |
+| Bounded passage retrieval and fit matrix | Implemented (synthetic verification) | lexical chunks from stored extraction with checksum/locator; rows distinguish user requirements, established material, model inferences, and proposed validation; no-fit and insufficient-evidence are first-class outcomes |
+| Reviewable outline/draft and guarded edits | Implemented (synthetic verification) | staged/idempotent generation records use existing metering; fake mode is visibly simulated; concurrent/stale section edits reject rather than overwrite; review and undo are explicit |
+| Immutable named versions and proposal exports | Implemented (synthetic verification) | v1/v2 snapshots retain brief, prose, fit rows, citations, evidence/source hashes, and approval state; MD/HTML/DOCX exports bind to exactly one snapshot; PDF reports unavailable renderer honestly |
+| Chosen public URL intake | Implemented (synthetic verification) | one URL only, no script execution/crawl; private-network initial and redirect targets rejected; redirect/time/byte limits and fetched snapshots recorded |
+| Live proposal quality or client applicability | Not verified | no real client data, paid calls, method benchmark, deployment, or live provider evaluation was authorized for this slice |
+
 ## 9. Figures, tables & supplements
 
 | Capability | Status | Notes |
@@ -146,9 +160,9 @@ OpenAlex, Crossref) verified with the user's keys. Code: `src/workbench/`.
 | Auth: bcrypt passwords, JWTs, OIDC login | Implemented | `auth.py`; audience-bound JWTs; explicit live/fake/disabled OIDC modes; issuer-qualified identities; verified-email and JIT controls |
 | Role enforcement (reviewer<editor<coauthor<owner) | Implemented | all protected routes authenticate centrally; workspace tenancy + direct-resource project resolution prevent ID substitution; controlled role floor per operation |
 | SSRF-safe fetching, secret-as-env, no secret logging | Implemented | `ingest/safe_fetch.py`, `config.py` |
-| Web UI (9 tabs + login + submissions) | Implemented | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Manuscripts, Submissions, Compute, Figures |
+| Web UI (10 tabs + login + submissions) | Implemented (proposal slice synthetic-verified) | `web/static/`; Objects, Sources, Claims, Literature, Dialogue, Proposals, Manuscripts, Submissions, Compute, Figures |
 | Public-mirror CI + guarded publisher | Implemented | `.github/workflows/ci.yml` runs Ruff + offline pytest on Python 3.13; parent Tools `scripts/publish-paper-workbench.ps1` validates the subtree and defaults to dry-run |
 | Multi-tenant authorization + real IdP token verification foundation | Implemented | workspace tenant memberships; claim bindings; HTTPS JWKS + asymmetric algorithm allowlist; hashed tenant-scoped API credentials; migration/backfill |
-| Turnkey internet-facing IdP/browser deployment | Partial | backend verifies real ID tokens; operator must supply IdP client/Authorization Code + PKCE or gateway, TLS/proxy policy, distributed throttling, monitoring, and production DB review |
+| Turnkey internet-facing IdP/browser deployment | Partial | Preview password/CSRF/workspace-isolation and server-side logout revocation passed; old vulnerable Previews retired; real IdP/PKCE, authenticated artifact workflows, throttling, backups/monitoring, and security review remain; see `audit/2026-09-11-manuscript-chat.md` |
 | Cost budgets / token metering | Implemented | `services/usage.py`; every LLM call metered per project/kind; monthly ceiling fail-closed before live calls (fakes never blocked); UI readout + budget setter |
 | Mid-call cancellation | Out of scope | calls are single short requests; ceiling bounds total spend |

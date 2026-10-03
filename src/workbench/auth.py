@@ -6,6 +6,7 @@ plaintext development keys are refused, and API credentials are revocable, hashe
 and bound to one workspace tenant.
 """
 
+import base64
 import hashlib
 import hmac
 import secrets
@@ -13,9 +14,10 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -23,6 +25,7 @@ from .models import (
     ApiCredential,
     FederatedIdentity,
     OidcWorkspaceBinding,
+    RevokedAccessToken,
     User,
     WorkspaceMember,
 )
@@ -101,6 +104,7 @@ def issue_token(
     workspace_id: str | None = None,
     auth_method: str = "password",
     ttl_minutes: int | None = None,
+    csrf_token: str | None = None,
     now: float | None = None,
 ) -> str:
     import jwt
@@ -120,6 +124,8 @@ def issue_token(
     }
     if workspace_id:
         payload["wid"] = workspace_id
+    if csrf_token:
+        payload["csrf"] = csrf_token
     return jwt.encode(payload, _secret(), algorithm="HS256")
 
 
@@ -151,6 +157,35 @@ def decode_token(token: str, *, now: float | None = None) -> str:
     """Compatibility API returning the subject from a validated access token."""
     del now  # retained for callers of the pre-hardening signature
     return str(decode_access_token(token)["sub"])
+
+
+def _session_hash(payload: dict) -> str:
+    # Key on signed identity, not JWT spelling: base64 padding variants can represent
+    # the same valid signature and must not bypass revocation.
+    return hashlib.sha256(f"{payload['iss']}\0{payload['jti']}".encode()).hexdigest()
+
+
+def revoke_access_token(session: Session, token: str) -> None:
+    """Revoke exactly this signed session, including tokens issued before this migration.
+
+    The caller must commit before reporting successful logout. A unique hash and savepoint
+    make concurrent logout requests idempotent without rolling back the outer transaction.
+    Expiry includes verification leeway; operators may prune only after expires_at.
+    """
+    payload = decode_access_token(token)
+    token_hash = _session_hash(payload)
+    if session.get(RevokedAccessToken, token_hash) is not None:
+        return
+    expires = float(payload["exp"]) + max(0, get_settings().auth_clock_skew_seconds)
+    try:
+        with session.begin_nested():
+            session.add(RevokedAccessToken(
+                token_hash=token_hash, expires_at=datetime.fromtimestamp(expires, UTC)
+            ))
+            session.flush()
+    except IntegrityError:
+        if session.get(RevokedAccessToken, token_hash) is None:
+            raise
 
 
 def _workspace_for_user(
@@ -213,6 +248,7 @@ def login_password(
     email: str,
     password: str,
     workspace_id: str | None = None,
+    csrf_token: str | None = None,
 ) -> tuple[User, str]:
     user = session.scalars(
         select(User).where(User.email == _email(email), User.deleted_at.is_(None))
@@ -221,7 +257,10 @@ def login_password(
         raise AuthError("invalid email or password")
     selected_workspace = _workspace_for_user(session, user.id, workspace_id)
     return user, issue_token(
-        user.id, workspace_id=selected_workspace, auth_method="password"
+        user.id,
+        workspace_id=selected_workspace,
+        auth_method="password",
+        csrf_token=csrf_token,
     )
 
 
@@ -279,7 +318,7 @@ class OidcVerifier:
             )
         self._jwk_client = jwk_client
 
-    def verify(self, id_token: str) -> OidcClaims:
+    def verify(self, id_token: str, *, expected_nonce: str | None = None) -> OidcClaims:
         import jwt
 
         if len(id_token) > 65536:
@@ -299,6 +338,10 @@ class OidcVerifier:
             )
         except jwt.PyJWTError as exc:
             raise AuthError(f"OIDC verification failed: {exc}") from exc
+        if expected_nonce is not None:
+            nonce = _claim_string(payload, "nonce")
+            if nonce is None or not hmac.compare_digest(nonce, expected_nonce):
+                raise AuthError("OIDC verification failed: nonce mismatch")
         email = _claim_string(payload, "email")
         return OidcClaims(
             issuer=str(payload["iss"]),
@@ -317,7 +360,7 @@ class FakeOidcVerifier:
         self._issuer = issuer or "https://fake-oidc.invalid"
         self._tenant_claim = tenant_claim
 
-    def verify(self, id_token: str) -> OidcClaims:
+    def verify(self, id_token: str, *, expected_nonce: str | None = None) -> OidcClaims:
         import json
 
         try:
@@ -325,6 +368,10 @@ class FakeOidcVerifier:
             token_issuer = str(data.get("iss") or self._issuer)
             if token_issuer != self._issuer:
                 raise AuthError("fake OIDC issuer mismatch")
+            if expected_nonce is not None:
+                nonce = _claim_string(data, "nonce")
+                if nonce is None or not hmac.compare_digest(nonce, expected_nonce):
+                    raise AuthError("fake OIDC nonce mismatch")
             email = _claim_string(data, "email")
             return OidcClaims(
                 issuer=token_issuer,
@@ -348,6 +395,148 @@ def _validate_oidc_url(value: str, label: str) -> str:
     if parsed.username or parsed.password or parsed.fragment:
         raise AuthError(f"{label} must not contain credentials or a fragment")
     return value
+
+
+@dataclass(frozen=True)
+class OidcBrowserFlow:
+    state: str
+    nonce: str
+    code_verifier: str
+    return_to: str
+
+
+def _flow_audience() -> str:
+    return f"{get_settings().auth_token_audience}:oidc-flow"
+
+
+def _safe_return_to(value: str | None) -> str:
+    candidate = (value or "/ui/").strip()
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        raise AuthError("OIDC return path must be a same-origin absolute path")
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        raise AuthError("OIDC return path must be a same-origin absolute path")
+    return candidate
+
+
+def start_oidc_browser_flow(return_to: str | None = None) -> tuple[str, str]:
+    """Return (authorization URL, signed flow cookie) for Authorization Code + PKCE."""
+    import jwt
+
+    settings = get_settings()
+    if not settings.oidc_browser_enabled:
+        raise AuthError("browser OIDC login is disabled")
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=")
+    now = int(time.time())
+    payload = {
+        "iss": settings.auth_token_issuer,
+        "aud": _flow_audience(),
+        "iat": now,
+        "exp": now + settings.oidc_flow_ttl_minutes * 60,
+        "jti": secrets.token_hex(16),
+        "typ": "oidc_flow",
+        "state": state,
+        "nonce": nonce,
+        "verifier": verifier,
+        "return_to": _safe_return_to(return_to),
+    }
+    flow_cookie = jwt.encode(payload, _secret(), algorithm="HS256")
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": settings.oidc_client_id,
+            "redirect_uri": settings.oidc_redirect_uri,
+            "scope": settings.oidc_scope,
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": challenge.decode("ascii"),
+            "code_challenge_method": "S256",
+        }
+    )
+    return f"{settings.oidc_authorization_url}?{query}", flow_cookie
+
+
+def decode_oidc_browser_flow(flow_cookie: str, state: str) -> OidcBrowserFlow:
+    import jwt
+
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            flow_cookie,
+            _secret(),
+            algorithms=["HS256"],
+            audience=_flow_audience(),
+            issuer=settings.auth_token_issuer,
+            leeway=max(0, settings.auth_clock_skew_seconds),
+            options={
+                "require": [
+                    "iss",
+                    "aud",
+                    "iat",
+                    "exp",
+                    "jti",
+                    "typ",
+                    "state",
+                    "nonce",
+                    "verifier",
+                    "return_to",
+                ]
+            },
+        )
+        if payload.get("typ") != "oidc_flow":
+            raise AuthError("invalid OIDC flow token type")
+        token_state = str(payload["state"])
+        if not hmac.compare_digest(token_state, state):
+            raise AuthError("OIDC state mismatch")
+        return OidcBrowserFlow(
+            state=token_state,
+            nonce=str(payload["nonce"]),
+            code_verifier=str(payload["verifier"]),
+            return_to=_safe_return_to(str(payload["return_to"])),
+        )
+    except jwt.PyJWTError as exc:
+        raise AuthError(f"invalid or expired OIDC flow: {exc}") from exc
+
+
+def exchange_oidc_authorization_code(code: str, code_verifier: str) -> str:
+    """Exchange one authorization code without logging credentials or token content."""
+    import httpx
+
+    settings = get_settings()
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": settings.oidc_client_id,
+        "code": code,
+        "redirect_uri": settings.oidc_redirect_uri,
+        "code_verifier": code_verifier,
+    }
+    if settings.oidc_client_secret:
+        data["client_secret"] = settings.oidc_client_secret
+    try:
+        response = httpx.post(
+            settings.oidc_token_url,
+            data=data,
+            timeout=max(0.1, settings.oidc_jwks_timeout_seconds),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AuthError("OIDC authorization-code exchange failed") from exc
+    id_token = payload.get("id_token") if isinstance(payload, dict) else None
+    if not isinstance(id_token, str) or not id_token or len(id_token) > 65536:
+        raise AuthError("OIDC token response did not contain a valid ID token")
+    return id_token
+
+
+def verify_csrf(access_token: str, csrf_cookie: str | None, csrf_header: str | None) -> None:
+    if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+        raise AuthError("CSRF validation failed")
+    expected = decode_access_token(access_token).get("csrf")
+    if not isinstance(expected, str) or not hmac.compare_digest(expected, csrf_cookie):
+        raise AuthError("CSRF validation failed")
 
 
 @lru_cache(maxsize=8)
@@ -416,6 +605,26 @@ def validate_auth_configuration() -> None:
             raise AuthError("WB_AUTH_CLOCK_SKEW_SECONDS must be between 0 and 300")
         if settings.oidc_mode.strip().lower() == "fake":
             raise AuthError("fake OIDC is refused when WB_AUTH_REQUIRED=true")
+    if settings.auth_cookie_sessions_enabled:
+        names = {
+            settings.auth_cookie_name,
+            settings.auth_csrf_cookie_name,
+            settings.oidc_flow_cookie_name,
+        }
+        if "" in names or len(names) != 3:
+            raise AuthError("auth cookie names must be non-empty and distinct")
+    if settings.oidc_browser_enabled:
+        if settings.oidc_mode.strip().lower() != "live":
+            raise AuthError("browser OIDC requires WB_OIDC_MODE=live")
+        if not settings.auth_cookie_sessions_enabled:
+            raise AuthError("browser OIDC requires cookie sessions")
+        if not settings.oidc_client_id.strip():
+            raise AuthError("browser OIDC requires WB_OIDC_CLIENT_ID")
+        _validate_oidc_url(settings.oidc_authorization_url, "OIDC authorization URL")
+        _validate_oidc_url(settings.oidc_token_url, "OIDC token URL")
+        _validate_oidc_url(settings.oidc_redirect_uri, "OIDC redirect URI")
+        if not 1 <= settings.oidc_flow_ttl_minutes <= 30:
+            raise AuthError("WB_OIDC_FLOW_TTL_MINUTES must be between 1 and 30")
     if settings.oidc_mode.strip().lower() == "live":
         if settings.oidc_allow_jit_membership and not settings.oidc_tenant_claim:
             raise AuthError("OIDC JIT membership requires WB_OIDC_TENANT_CLAIM")
@@ -423,12 +632,17 @@ def validate_auth_configuration() -> None:
 
 
 def login_oidc(
-    session: Session, id_token: str, *, workspace_id: str | None = None
+    session: Session,
+    id_token: str,
+    *,
+    workspace_id: str | None = None,
+    csrf_token: str | None = None,
+    expected_nonce: str | None = None,
 ) -> tuple[User, str]:
     from .services import security
 
     settings = get_settings()
-    claims = get_oidc_verifier().verify(id_token)
+    claims = get_oidc_verifier().verify(id_token, expected_nonce=expected_nonce)
     identity = session.scalars(
         select(FederatedIdentity).where(
             FederatedIdentity.issuer == claims.issuer,
@@ -493,7 +707,10 @@ def login_oidc(
             )
     selected_workspace = _workspace_for_user(session, user.id, selected_workspace)
     return user, issue_token(
-        user.id, workspace_id=selected_workspace, auth_method="oidc"
+        user.id,
+        workspace_id=selected_workspace,
+        auth_method="oidc",
+        csrf_token=csrf_token,
     )
 
 
@@ -584,6 +801,8 @@ def principal_from_bearer(session: Session, token: str | None) -> Principal:
 
     try:
         payload = decode_access_token(token)
+        if session.get(RevokedAccessToken, _session_hash(payload)):
+            raise AuthError("session revoked")
         user = session.get(User, str(payload["sub"]))
         if user is None or user.deleted_at is not None:
             raise AuthError("token subject not found")

@@ -1,0 +1,52 @@
+{
+  "run_id": "641e7d2c9d76475ca297e973dd8f8dc8",
+  "deployment_id": "dpl_BoCfTGBdWq1DwxoHu8zBMbLZKGjB",
+  "project_id": "prj_a4tgpf6rsmYp7H3JroXUH4x6ERk3",
+  "started_at": "2026-09-11T06:01:39.942900+00:00",
+  "fixture_ids": {
+    "users": [
+      "56b8b93c55b4578d87704ae77da61ff0",
+      "9834c9de1fd45a34a70f14566210e13b"
+    ],
+    "workspaces": [
+      "2ee81280192c5b999020a1a3af965bf0",
+      "d22a3fd180475101995ee2df04502b28"
+    ],
+    "memberships": [
+      "21343d738db654afabaabb9a3888c809",
+      "ff97b14b2eea51b8a3d387452dd38e52"
+    ]
+  },
+  "checks": [],
+  "session_replay_after_logout": [],
+  "status": "passed",
+  "alembic_revision": "a91d4e7b620f",
+  "revocation_hashes": [
+    "fa109517433d280302eddecc6a0daff6fb9ae3267a232fba2221e527db0021c8",
+    "86519a210db5f710702f65fd1b6cecf60d8ed6b3bf97055d596462924f9a6fcf"
+  ],
+  "cleanup": {
+    "deleted": {
+      "proposed_actions": 0,
+      "turns": 0,
+      "threads": 0,
+      "claim_evidence": 0,
+      "excerpts": 0,
+      "claims": 0,
+      "edges": 0,
+      "research_objects": 0,
+      "sources": 0,
+      "usage_events": 0,
+      "project_members": 0,
+      "projects": 0,
+      "revoked_access_tokens": 0,
+      "audit_events": 0,
+      "workspace_members": 0,
+      "workspaces": 0,
+      "users": 0
+    },
+    "remaining": 0
+  },
+  "finished_at": "2026-09-11T06:02:17.462517+00:00",
+  "findings": []
+}

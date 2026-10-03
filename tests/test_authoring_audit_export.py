@@ -81,7 +81,9 @@ def test_audit_findings(session, manuscript_setup):
     findings = audits.audit_manuscript(session, ms.id)
     codes = {f["code"] for f in findings}
     assert "section-unreferenced-numbers" in codes   # Discussion numbers, no claims
-    assert "claim-verification-debt" in codes        # the VERIFICATION_REQUIRED claim
+    assert "claim-verification-debt" not in codes    # unrelated project claim
+    assert any(f["code"] == "claim-verification-debt"
+               for f in audits.audit_claims(session, ms.project_id))
     assert "claim-source-unverified" in codes        # source not human-verified
     assert not any(f["code"] == "section-dangling-claim" for f in findings)
 
@@ -122,7 +124,7 @@ def test_export_bundle(session, manuscript_setup):
     assert "export != submission/publication" in manifest["exported_by"]
     for entry in manifest["files"].values():
         assert len(entry["sha256"]) == 64
-    # audit findings are embedded at export time (verification-debt claim exists)
-    assert any(
+    # An unrelated project's ledger claim does not contaminate this manuscript's audit.
+    assert not any(
         f["code"] == "claim-verification-debt" for f in manifest["audit_findings_at_export"]
     )

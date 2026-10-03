@@ -8,6 +8,14 @@ WB_PROVIDER_MODE=live.
 from dataclasses import dataclass, field
 from typing import Protocol
 
+REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
+
+
+def validate_reasoning_effort(value: str | None) -> str | None:
+    if value is not None and value not in REASONING_EFFORTS:
+        raise ValueError("unsupported reasoning effort")
+    return value
+
 
 @dataclass
 class SearchResult:
@@ -43,6 +51,7 @@ class ChatResult:
     provider_request_id: str
     proposed_actions: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
 
 
 class SearchProvider(Protocol):
@@ -61,4 +70,5 @@ class ChatProvider(Protocol):
         messages: list[dict],
         model: str,
         max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> ChatResult: ...

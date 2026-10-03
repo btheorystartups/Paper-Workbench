@@ -1,6 +1,6 @@
 # Paper-Workbench — Completion Report
 
-Last verified: 2026-09-07 · Original implementation lead: Claude · For: Brian Droncheff
+Last verified: 2026-09-11 · Original implementation lead: Claude · For: Brian Droncheff
 
 ## Summary
 
@@ -12,12 +12,17 @@ are optional downstream steps that preserve provenance and evidence states throu
 
 - The authoritative copy lives under the private Tools monorepo; the standalone public
   repository is a one-way mirror of that subtree.
-- **160 tests** across the suite, all passing offline (live provider paths were verified
+- **212 tests** across the suite, all passing offline (live provider paths were verified
   separately with the user's keys; no live calls are part of routine verification).
-- **11 Alembic migrations**; startup runs `alembic upgrade head`.
+- **12 Alembic migrations**; local startup runs `alembic upgrade head`, while hosted mode
+  requires a separately controlled migration run.
 - Post-P6 additions: alternative outputs, figures/tables with data provenance, and
   multi-candidate paper design (see `docs/CAPABILITY-MATRIX.md`).
 - **Ruff**: clean.
+- **Isolated Preview**: Ready with fake providers and enforced auth. Manuscript-aware chat,
+  reviewed edits, undo, and shared logout revocation passed 72 authenticated staging checks.
+  Synthetic fixture records were removed; older vulnerable Previews were retired.
+  See [current verification](audit/2026-09-11-manuscript-chat.md).
 - Phase 0 decision record, capability matrix, and this report in `docs/`.
 
 ## What was built (by slice)
@@ -40,19 +45,21 @@ are optional downstream steps that preserve provenance and evidence states throu
 | Publication packaging | 9a46801 | reviewed cover letter/declarations, frozen approval snapshot, venue/reviewer materials, checksummed local ZIP |
 | Reproducible compute | 648e00e + current slice | hash-bound plans, local + digest-pinned Docker executors, immutable outputs, human review/promotion |
 | Workspace tenancy + OIDC hardening | current slice | tenant memberships, centralized resource authorization, issuer-qualified OIDC, claim bindings, hashed scoped API keys |
+| Vercel/PostgreSQL/private-Blob foundation | current slice | serverless entry/guardrails, psycopg URLs and migration separation, HttpOnly/CSRF sessions, backend OIDC Authorization Code + PKCE, portable private artifacts and authorized hosted transfer/export paths |
 
 See `docs/CAPABILITY-MATRIX.md` for capability-by-capability status.
 
 ## Verification evidence
 
-- **Unit/integration/security/API**: `pytest` → 160 passed. Covers evidence integrity,
+- **Unit/integration/security/API**: `pytest` → 212 passed. Covers evidence integrity,
   cross-project isolation, dialogue propose→approve→execute + plan-hash binding, prompt-
   injection fencing, auth (password/JWT/OIDC/roles), export (incl. PDF fallback + JATS DTD
   validation), submissions state machine, portfolio, semantic scope, startup migration,
   CRediT assignment/order review gates, publication-package approval/staleness/checksums,
   compute plan/execute/review/promotion gates with portable manifests, workspace-tenant
   isolation, direct-ID substitution denial, OIDC issuer/audience/signature checks, migration
-  backfill, and hashed/scoped/revocable API credentials.
+  backfill, hashed/scoped/revocable API credentials, content-addressed private storage,
+  bounded uploads, authorized downloads, and portable hosted project restore.
 - **Audit eval harness** (`scripts/run_evals.py`): 8 labeled scenarios, precision/recall
   **1.00** on all 7 finding codes (`docs/eval-report.md`).
 - **LLM-quality eval harness** (`scripts/run_llm_evals.py`): against **live gpt-4o**,
@@ -94,9 +101,13 @@ tracked). No writes, purchases, submissions, or publications anywhere.
   centralized route authorization, audience-bound workbench JWTs, issuer-qualified OIDC
   identities, explicit claim bindings, and hashed tenant-scoped API credentials. Fake OIDC
   is refused when auth is enforced; email linking and JIT provisioning/membership are separate
-  opt-ins. A public deployment still requires an operator-selected IdP/browser code flow or
-  authenticating gateway, TLS/proxy policy, distributed throttling, monitoring, and a
-  production database review.
+  opt-ins. Backend-owned Authorization Code + PKCE, Secure HttpOnly sessions, token-bound
+  CSRF, PostgreSQL URL normalization, and fail-closed Vercel settings are implemented. A
+  Content-addressed private Blob integration and authorized server-side retrieval are built.
+  The isolated Preview database/Blob resources and synthetic checks are verified. Real-data
+  operation still requires real IdP/PKCE verification,
+  authenticated artifact Function smoke tests, distributed throttling, monitoring/backups,
+  and production review.
 - **OCR runtime** is optional and absent on this Windows box. Layout-aware PDF extraction
   is built in; local OCR requires `.[ocr]` plus Tesseract language data. Automatic mode
   records unavailable/failed OCR per page and continues; forced OCR fails closed.
@@ -110,14 +121,17 @@ tracked). No writes, purchases, submissions, or publications anywhere.
 
 ## Blockers
 
-None outstanding for local use. Production deployment still requires explicit choices for
-the identity provider, tenant claim, redirect/client flow, hostname/TLS boundary, and database.
+None outstanding for local use. Production deployment is blocked on
+real IdP/PKCE and authenticated artifact tests, distributed throttling,
+monitoring/backups, and a production security review. Synthetic Preview resource and
+temporary-user password/CSRF/workspace-isolation/session-revocation checks have passed.
 
 ## Recommended next actions
 
-1. If an internet-facing deployment is desired, select the IdP and hosting boundary, then add
-   Authorization Code + PKCE (or gateway) integration, distributed login throttling, trusted
-   proxy/host policy, and deployment monitoring against a non-production tenant first.
+1. Exercise the [section-chat writing workflow](MANUSCRIPT-CHAT.md), then prepare a bounded
+   private writing pilot with an explicitly selected live provider, data-sharing scope,
+   and budget. Continue real PKCE and authenticated artifact verification, distributed
+   throttling, and monitoring/backups before admitting real staging data or production aliases.
 
 ## How to run
 
@@ -125,7 +139,7 @@ the identity provider, tenant claim, redirect/client flow, hostname/TLS boundary
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,pdf]"
 .\.venv\Scripts\alembic.exe upgrade head          # or let the server do it on boot
-.\.venv\Scripts\python.exe -m pytest               # 148 tests, offline
+.\.venv\Scripts\python.exe -m pytest               # 212 tests, offline
 .\.venv\Scripts\uvicorn.exe workbench.main:app     # http://127.0.0.1:8000/ (UI)
 ```
 Copy `.env.example` to `.env`; everything defaults to offline fake mode.

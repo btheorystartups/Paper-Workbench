@@ -4,6 +4,7 @@ import pytest
 
 # Force offline fakes and an isolated DB per test session, before workbench imports settings.
 os.environ["WB_PROVIDER_MODE"] = "fake"
+os.environ["WB_LOAD_DOTENV"] = "false"
 
 
 @pytest.fixture()

@@ -159,6 +159,9 @@ def test_approved_bundle_is_checksummed_and_local_only(
     bundle = Path(result["path"])
     assert bundle.is_file()
     assert hashlib.sha256(bundle.read_bytes()).hexdigest() == result["sha256"]
+    from workbench import storage
+
+    assert storage.read_bytes(result["artifact"]) == bundle.read_bytes()
     assert result["external_submission_performed"] is False
 
     with zipfile.ZipFile(bundle) as archive:
@@ -176,6 +179,7 @@ def test_approved_bundle_is_checksummed_and_local_only(
         } <= names
         manifest = json.loads(archive.read("package-manifest.json"))
         assert manifest["local_bundle_only"] is True
+        assert manifest["server_assembled_only"] is True
         assert manifest["external_submission_performed"] is False
         for name, entry in manifest["files"].items():
             assert hashlib.sha256(archive.read(name)).hexdigest() == entry["sha256"]

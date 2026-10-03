@@ -35,18 +35,14 @@ def _register_login(client, email: str) -> tuple[dict, str]:
         json={"name": email.split("@")[0], "email": email, "password": "password123"},
     )
     assert registered.status_code == 200, registered.text
-    login = client.post(
-        "/auth/login", json={"email": email, "password": "password123"}
-    )
+    login = client.post("/auth/login", json={"email": email, "password": "password123"})
     assert login.status_code == 200, login.text
     return registered.json(), login.json()["access_token"]
 
 
 def _workspace_project(client, token: str, suffix: str) -> tuple[dict, dict]:
     headers = {"Authorization": f"Bearer {token}"}
-    workspace = client.post(
-        "/workspaces", json={"name": f"Workspace {suffix}"}, headers=headers
-    )
+    workspace = client.post("/workspaces", json={"name": f"Workspace {suffix}"}, headers=headers)
     assert workspace.status_code == 200, workspace.text
     project = client.post(
         "/projects",
@@ -78,14 +74,117 @@ def test_every_data_route_requires_auth_and_hides_cross_tenant_ids(tenant_client
     assert client.get(f"/projects/{project_a['id']}/objects", headers=headers_b).status_code == 404
     assert client.post(f"/objects/{object_id}/accept", headers=headers_b).status_code == 404
     assert client.get(f"/objects/{object_id}/usage", headers=headers_b).status_code == 404
-    assert client.get(
-        f"/workspaces/{workspace_a['id']}/projects", headers=headers_b
-    ).status_code == 404
+    assert client.get(f"/workspaces/{workspace_a['id']}/projects", headers=headers_b).status_code == 404
 
     visible_a = client.get("/workspaces", headers=headers_a).json()
     visible_b = client.get("/workspaces", headers=headers_b).json()
     assert [row["id"] for row in visible_a] == [workspace_a["id"]]
     assert [row["id"] for row in visible_b] == [workspace_b["id"]]
+
+
+def test_manuscript_chat_context_and_edit_routes_enforce_tenant_and_role(tenant_client):
+    from workbench import db
+    from workbench.services import authoring, dialogue
+
+    client = tenant_client
+    _, token_a = _register_login(client, "writer@example.com")
+    user_b, token_b = _register_login(client, "outsider@example.com")
+    workspace, project = _workspace_project(client, token_a, "Writing")
+    _, project_b = _workspace_project(client, token_b, "Other")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+    with db.session_factory()() as session:
+        manuscript = authoring.create_manuscript(session, project["id"], title="Private paper")
+        section = authoring.add_section(session, manuscript.id, heading="Discussion", text="Private prose")
+        thread = dialogue.create_thread(
+            session,
+            project["id"],
+            title="Private conversation",
+            manuscript_id=manuscript.id,
+            section_id=section.id,
+        )
+        session.commit()
+    reply = client.post(
+        f"/threads/{thread.id}/turns", json={"content": "revise: Proposed prose"}, headers=headers_a
+    )
+    action = reply.json()["proposed_actions"][0]
+    assert client.get(f"/threads/{thread.id}/context", headers=headers_b).status_code == 404
+    assert client.get(f"/threads/{thread.id}/actions", headers=headers_b).status_code == 404
+    for operation in ("approve", "reject", "revise", "undo"):
+        response = client.post(
+            f"/actions/{action['id']}/{operation}",
+            json={"plan_hash": action["plan_hash"], "text": "Intrusion"},
+            headers=headers_b,
+        )
+        assert response.status_code == 404
+    injected = client.post(
+        f"/projects/{project_b['id']}/threads",
+        headers=headers_b,
+        json={"title": "Injection", "manuscript_id": manuscript.id, "section_id": section.id},
+    )
+    assert injected.status_code == 422
+    assert "Private" not in injected.text
+    client.post(
+        f"/workspaces/{workspace['id']}/members",
+        headers=headers_a,
+        json={"user_id": user_b["id"], "role": "member"},
+    )
+    client.post(
+        f"/projects/{project['id']}/members",
+        headers=headers_a,
+        json={"user_id": user_b["id"], "role": "reviewer"},
+    )
+    assert client.get(f"/threads/{thread.id}/context", headers=headers_b).status_code == 200
+    assert (
+        client.post(
+            f"/actions/{action['id']}/approve", headers=headers_b, json={"plan_hash": action["plan_hash"]}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"/threads/{thread.id}/brief", headers=headers_b, json={"summary": "Overwrite"}
+        ).status_code
+        == 403
+    )
+
+
+def test_proposal_routes_hide_cross_tenant_source_and_version_ids(tenant_client):
+    client = tenant_client
+    _, token_a = _register_login(client, "proposal-owner@example.com")
+    _, token_b = _register_login(client, "proposal-outsider@example.com")
+    _workspace_a, project_a = _workspace_project(client, token_a, "Proposal A")
+    _workspace_b, project_b = _workspace_project(client, token_b, "Proposal B")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+    source_a = client.post(
+        f"/projects/{project_a['id']}/sources",
+        json={"title": "A-only", "access": "metadata_only"},
+        headers=headers_a,
+    )
+    assert source_a.status_code == 200, source_a.text
+    proposal = client.post(
+        f"/projects/{project_a['id']}/proposals",
+        json={
+            "title": "Tenant A proposal",
+            "kind": "applied_client_pilot",
+            "brief": {"client_question": "Can the selected method help?"},
+        },
+        headers=headers_a,
+    )
+    assert proposal.status_code == 200, proposal.text
+    proposal_id = proposal.json()["id"]
+    assert client.get(f"/proposals/{proposal_id}", headers=headers_b).status_code == 404
+    assert (
+        client.post(
+            f"/proposals/{proposal_id}/sources",
+            json={"source_id": source_a.json()["id"], "collection": "author"},
+            headers=headers_b,
+        ).status_code
+        == 404
+    )
+    assert client.get(f"/projects/{project_a['id']}/proposals", headers=headers_b).status_code == 404
+    assert client.get(f"/projects/{project_b['id']}/proposals", headers=headers_b).status_code == 200
 
 
 def test_workspace_member_still_needs_project_membership(tenant_client):
@@ -108,13 +207,9 @@ def test_workspace_member_still_needs_project_membership(tenant_client):
     )
     assert project_b.status_code == 200, project_b.text
 
-    assert client.get(
-        f"/projects/{project_a['id']}/objects", headers=headers_b
-    ).status_code == 404
+    assert client.get(f"/projects/{project_a['id']}/objects", headers=headers_b).status_code == 404
     # The workspace owner is the tenant administrator and can recover/administer project B.
-    assert client.get(
-        f"/projects/{project_b.json()['id']}/objects", headers=headers_a
-    ).status_code == 200
+    assert client.get(f"/projects/{project_b.json()['id']}/objects", headers=headers_a).status_code == 200
     assert user_a["id"] != user_b["id"]
 
 
@@ -157,16 +252,12 @@ def test_scoped_api_key_is_hashed_bound_and_revocable(tenant_client):
         assert raw_key not in json.dumps(audit.detail)
 
     key_headers = {"Authorization": f"Bearer {raw_key}"}
-    assert client.get(
-        f"/projects/{project['id']}/objects", headers=key_headers
-    ).status_code == 200
+    assert client.get(f"/projects/{project['id']}/objects", headers=key_headers).status_code == 200
     other_workspace, other_project = _workspace_project(client, token, "Other tenant")
     key_workspaces = client.get("/workspaces", headers=key_headers).json()
     assert [row["id"] for row in key_workspaces] == [workspace["id"]]
     assert other_workspace["id"] != workspace["id"]
-    assert client.get(
-        f"/projects/{other_project['id']}/objects", headers=key_headers
-    ).status_code == 404
+    assert client.get(f"/projects/{other_project['id']}/objects", headers=key_headers).status_code == 404
     denied = client.post(
         f"/projects/{project['id']}/objects",
         json={"kind": "note", "title": "No write scope"},
@@ -176,14 +267,10 @@ def test_scoped_api_key_is_hashed_bound_and_revocable(tenant_client):
 
     revoked = client.post(f"/api-keys/{body['id']}/revoke", headers=headers)
     assert revoked.status_code == 200
-    assert client.get(
-        f"/projects/{project['id']}/objects", headers=key_headers
-    ).status_code == 401
+    assert client.get(f"/projects/{project['id']}/objects", headers=key_headers).status_code == 401
 
 
-def test_registration_is_fail_closed_when_not_explicitly_enabled(
-    tenant_client, monkeypatch
-):
+def test_registration_is_fail_closed_when_not_explicitly_enabled(tenant_client, monkeypatch):
     from workbench import config
 
     monkeypatch.setenv("WB_AUTH_ALLOW_REGISTRATION", "false")
@@ -195,9 +282,7 @@ def test_registration_is_fail_closed_when_not_explicitly_enabled(
     assert response.status_code == 403
 
 
-def test_first_user_bootstrap_requires_env_token_and_is_one_time(
-    tenant_client, monkeypatch
-):
+def test_first_user_bootstrap_requires_env_token_and_is_one_time(tenant_client, monkeypatch):
     from workbench import config
 
     bootstrap = "first-user-bootstrap-token-0123456789"
@@ -209,9 +294,7 @@ def test_first_user_bootstrap_requires_env_token_and_is_one_time(
         "email": "initial@example.com",
         "password": "password123",
     }
-    first = tenant_client.post(
-        "/auth/register", json=body, headers={"X-Workbench-Bootstrap": bootstrap}
-    )
+    first = tenant_client.post("/auth/register", json=body, headers={"X-Workbench-Bootstrap": bootstrap})
     assert first.status_code == 200
     second = tenant_client.post(
         "/auth/register",
@@ -240,12 +323,8 @@ def test_unverified_oidc_email_cannot_link_existing_account(session, monkeypatch
     from workbench import auth, config
 
     config.get_settings.cache_clear()
-    auth.register_local_user(
-        session, name="Existing", email="same@example.com", password="password123"
-    )
-    token = json.dumps(
-        {"sub": "foreign-sub", "email": "same@example.com", "email_verified": False}
-    )
+    auth.register_local_user(session, name="Existing", email="same@example.com", password="password123")
+    token = json.dumps({"sub": "foreign-sub", "email": "same@example.com", "email_verified": False})
     with pytest.raises(auth.AuthError, match="pre-link required"):
         auth.login_oidc(session, token)
     config.get_settings.cache_clear()
@@ -337,6 +416,7 @@ def test_live_oidc_configuration_rejects_insecure_urls_and_symmetric_algorithms(
 
 def test_live_oidc_verifier_checks_signature_issuer_audience_and_claim_types():
     import jwt
+
     rsa = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
 
     from workbench import auth
@@ -373,8 +453,6 @@ def test_live_oidc_verifier_checks_signature_issuer_audience_and_claim_types():
     assert claims.tenant_key == "42"
 
     payload["aud"] = "wrong-audience"
-    wrong_audience = jwt.encode(
-        payload, private_key, algorithm="RS256", headers={"kid": "test"}
-    )
+    wrong_audience = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test"})
     with pytest.raises(auth.AuthError, match="OIDC verification failed"):
         verifier.verify(wrong_audience)

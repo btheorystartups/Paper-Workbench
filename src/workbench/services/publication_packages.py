@@ -1,4 +1,4 @@
-"""Review-gated, local-only publication package assembly.
+"""Review-gated publication package assembly without external submission.
 
 Packages collect a human-reviewed cover letter, controlled declarations, manuscript
 exports, venue findings, and response-to-reviewers material into a checksummed ZIP. They
@@ -7,6 +7,7 @@ later manuscript, authorship, declaration, venue, or submission changes make it 
 """
 
 import hashlib
+import io
 import json
 import zipfile
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import storage
 from ..audit import record_audit
 from ..config import get_settings
 from ..models import PublicationPackage, ResearchObject, Submission, VenueProfile, stable_hash, utcnow
@@ -39,6 +41,36 @@ DECLARATION_TYPES = {
 
 class PackageError(ValueError):
     pass
+
+
+def checksummed_zip(
+    files: dict[str, bytes], metadata: dict, *, manifest_name: str = "package-manifest.json"
+) -> bytes:
+    """Assemble inert bytes with a checksum manifest; callers own their review gates."""
+    if manifest_name in files:
+        raise PackageError("manifest name collides with a package member")
+    members = dict(files)
+    for name in [*members, manifest_name]:
+        if (
+            not name or name.startswith("/") or "\\" in name or ":" in name
+            or any(part in {"", ".", ".."} for part in name.split("/"))
+        ):
+            raise PackageError("unsafe package member name")
+    manifest = {
+        **metadata,
+        "files": {
+            name: {"sha256": hashlib.sha256(blob).hexdigest(), "bytes": len(blob)}
+            for name, blob in sorted(members.items())
+        },
+    }
+    members[manifest_name] = json.dumps(manifest, indent=2, sort_keys=True).encode()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, blob in sorted(members.items()):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, blob)
+    return buffer.getvalue()
 
 
 def _submission(session: Session, submission_id: str) -> Submission:
@@ -281,6 +313,8 @@ def set_declaration(
 
 
 def _snapshot(session: Session, package: PublicationPackage) -> tuple[dict, str]:
+    session.flush()
+    session.expire_all()  # Recheck database state, including changes made by another session.
     submission = _submission(session, package.submission_id)
     manuscript, sections, claims, sources = export_service._collect(session, package.manuscript_id)
     venue = session.get(VenueProfile, submission.venue_id) if submission.venue_id else None
@@ -288,16 +322,21 @@ def _snapshot(session: Session, package: PublicationPackage) -> tuple[dict, str]
     venue_findings = (
         venues.audit_venue_compliance(session, package.manuscript_id, venue.id) if venue else []
     )
+    from . import evidence_basis
+
+    basis = evidence_basis.collect(session, package.manuscript_id)
     artifacts = list(
         session.scalars(
             select(ResearchObject).where(
                 ResearchObject.project_id == package.project_id,
                 ResearchObject.kind.in_([ObjectKind.FIGURE, ObjectKind.TABLE]),
+                ResearchObject.id.in_(evidence_basis.ids(basis, ResearchObject)),
                 ResearchObject.deleted_at.is_(None),
-            )
+            ).order_by(ResearchObject.id)
         )
     )
     snapshot = {
+        "evidence_basis": basis,
         "package": {
             "id": package.id,
             "version": package.version,
@@ -351,9 +390,10 @@ def _snapshot(session: Session, package: PublicationPackage) -> tuple[dict, str]
             for artifact in artifacts
         ],
         "authorship": authorship.export_credit(session, package.manuscript_id),
-        "audit_findings": findings,
-        "venue_findings": venue_findings,
+        "audit_findings": sorted(findings, key=lambda item: json.dumps(item, sort_keys=True)),
+        "venue_findings": sorted(venue_findings, key=lambda item: json.dumps(item, sort_keys=True)),
     }
+    snapshot = json.loads(json.dumps(snapshot, default=str))
     return snapshot, stable_hash(snapshot)
 
 
@@ -401,7 +441,7 @@ def readiness(session: Session, package_id: str) -> dict:
     )
     stale = package.basis_hash is not None and package.basis_hash != current_hash
     return {
-        "ready": not blockers,
+        "ready": not blockers and not stale,
         "blockers": blockers,
         "warnings": warnings,
         "current_basis_hash": current_hash,
@@ -544,10 +584,48 @@ def build_bundle(session: Session, package_id: str) -> dict:
     response = _responses_markdown(submission)
     if response:
         files["response-to-reviewers.md"] = response.encode()
-    for _format_name, path_text in export["files"].items():
-        path = Path(path_text)
-        files[f"manuscript/{path.name}"] = path.read_bytes()
+    from .evidence_basis import read_artifact
 
+    manifest_ref = export.get("artifact_refs", {}).get("manifest")
+    if not manifest_ref:
+        raise PackageError("export has no immutable manifest")
+    export_manifest_bytes = read_artifact(manifest_ref)
+    export_manifest = json.loads(export_manifest_bytes)
+    if (export_manifest.get("manuscript_id") != package.manuscript_id
+            or export_manifest.get("evidence_basis_hash") != stable_hash(snapshot["evidence_basis"])):
+        raise PackageError("export evidence does not match approval")
+    if set(export_manifest.get("files", {})) != set(package.included_formats):
+        raise PackageError("export formats do not match approval")
+    files["approval-snapshot.json"] = json.dumps(snapshot, sort_keys=True, default=str).encode()
+    for format_name, path_text in export["files"].items():
+        path = Path(path_text)
+        reference = export.get("artifact_refs", {}).get(format_name)
+        if not reference:
+            raise PackageError("export has no immutable artifact")
+        payload = read_artifact(reference)
+        if format_name == "manifest":
+            if payload != export_manifest_bytes:
+                raise PackageError("export manifest changed")
+        else:
+            expected = export_manifest["files"].get(format_name, {})
+            if (expected.get("sha256") != hashlib.sha256(payload).hexdigest()
+                    or expected.get("path") != path.name):
+                raise PackageError("export artifact substituted")
+        files[f"manuscript/{path.name}"] = payload
+
+    if set(export["files"]) != set(package.included_formats) | {"manifest"}:
+        raise PackageError("export artifact set differs from approval")
+    for supplement in export_manifest.get("supplements", []):
+        for name, reference in supplement.get("artifacts", {}).items():
+            if Path(name).name != name or "/" in name or "\\" in name:
+                raise PackageError("unsafe supplement filename")
+            if not reference.get("sha256"):
+                raise PackageError("supplement has no immutable identity")
+            files[f"manuscript/supplements/{name}"] = read_artifact(reference)
+    if _snapshot(session, package)[1] != package.basis_hash:
+        raise PackageError("package changed during export; package was not assembled")
+    if package.state != "approved":
+        raise PackageError("package approval changed during export")
     checksums = {name: hashlib.sha256(payload).hexdigest() for name, payload in files.items()}
     manifest = {
         "format_version": 1,
@@ -560,34 +638,44 @@ def build_bundle(session: Session, package_id: str) -> dict:
         "basis_hash": package.basis_hash,
         "review_state": package.state,
         "review_note": package.review_note,
-        "local_bundle_only": True,
+        "local_bundle_only": get_settings().artifact_storage_backend == "local",
+        "server_assembled_only": True,
         "external_submission_performed": False,
         "warnings": status["warnings"],
         "files": {name: {"sha256": checksum} for name, checksum in checksums.items()},
     }
-    manifest_bytes = json.dumps(manifest, indent=2).encode()
-    files["package-manifest.json"] = manifest_bytes
+    bundle_bytes = checksummed_zip(files, manifest)
+    manifest["files"] = {
+        name: {"sha256": checksum, "bytes": len(files[name])}
+        for name, checksum in checksums.items()
+    }
 
     out_dir = Path(get_settings().data_dir) / "exports" / "submissions" / submission.id
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = out_dir / f"publication-package-v{package.version}.zip"
-    with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in sorted(files):
-            archive.writestr(name, files[name])
+    bundle_path.write_bytes(bundle_bytes)
     bundle_sha = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    bundle_ref = storage.store_content(
+        bundle_path.read_bytes(),
+        filename=bundle_path.name,
+        namespace=f"exports/publication-packages/{package.id}",
+        content_type="application/zip",
+    )
     build = {
         "at": datetime.now(UTC).isoformat(),
         "filename": bundle_path.name,
         "sha256": bundle_sha,
         "basis_hash": package.basis_hash,
-        "file_count": len(files),
+        "file_count": len(files) + 1,
+        "artifact": bundle_ref,
     }
     package.builds = [*package.builds, build]
     _record(session, package, "build_publication_package", build)
     return {
         "path": str(bundle_path),
+        "artifact": bundle_ref,
         "sha256": bundle_sha,
-        "file_count": len(files),
+        "file_count": len(files) + 1,
         "manifest": manifest,
         "external_submission_performed": False,
     }

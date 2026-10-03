@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -155,6 +156,7 @@ def test_ingest_api_exposes_controlled_pdf_mode(tmp_path, monkeypatch):
     from workbench.main import app
 
     config.get_settings.cache_clear()
+
     db.reset_engine_for_tests()
     with TestClient(app) as client:
         workspace = client.post("/workspaces", json={"name": "WS"}).json()
@@ -180,3 +182,80 @@ def test_ingest_api_exposes_controlled_pdf_mode(tmp_path, monkeypatch):
         )
     db.reset_engine_for_tests()
     config.get_settings.cache_clear()
+
+
+def _fake_pages(monkeypatch, pages):
+    class Page:
+        def __init__(self, plain, layout):
+            self.plain, self.layout = plain, layout
+
+        def extract_text(self, **kwargs):
+            return self.layout if kwargs.get("extraction_mode") == "layout" else self.plain
+
+    monkeypatch.setattr("pypdf.PdfReader", lambda _: SimpleNamespace(
+        pages=[Page(*p) for p in pages]))
+
+
+def test_whitespace_fallback_preserves_later_pages_and_exact_offsets(tmp_path, monkeypatch):
+    first = "A selectable paragraph with enough characters for a real document page."
+    second = "Later page contains the topology theorem and its actual hypotheses."
+    _fake_pages(monkeypatch, [(first, first + " " * 6000), (second, second)])
+    monkeypatch.setattr(files, "MAX_EXTRACT_CHARS", 500)
+    result = extract_text(tmp_path / "report.pdf", pdf_mode="text")
+    assert second in result.text
+    assert not result.detail["truncated"]
+    assert result.detail["page_results"][0]["fallback_reason"] == "layout_whitespace_expansion"
+    assert result.detail["page_results"][0]["state"] == "plain_text"
+    for page, body in zip(result.detail["page_results"], [first, second], strict=True):
+        assert result.text[page["body_start"]:page["end"]] == body
+        assert result.text[page["start"]:].startswith(f"[page {page['page']} |")
+        assert page["retained_chars"] == page["end"] - page["start"]
+
+
+def test_auto_ocr_detects_broken_glyphs_even_with_abundant_text(tmp_path, monkeypatch):
+    damaged = "Mathematical definition with many readable words. " * 5 + "\x00\uf8ff\ufffd"
+    _fake_pages(monkeypatch, [(damaged, damaged)])
+    pdf = tmp_path / "damaged.pdf"
+    pdf.touch()
+    ocr = FakeOcr()
+    result = extract_text(pdf, ocr_engine=ocr)
+    page = result.detail["page_results"][0]
+    assert ocr.pages == [1]
+    assert page["text_layer_issues"] == ["control_glyphs", "private_use_glyphs", "replacement_glyphs"]
+    assert page["state"] == "ocr_unreviewed" and page["review_required"]
+    assert result.confidence == ExtractionConfidence.OCR_UNREVIEWED
+
+
+def test_plain_mode_retains_damage_and_never_guesses_symbols(tmp_path, monkeypatch):
+    damaged = "Definition of a directed metric with readable prose " * 2 + "\x00\uf8ff"
+    _fake_pages(monkeypatch, [(damaged, "wrong column order")])
+    ocr = FakeOcr()
+    result = extract_text(tmp_path / "columns.pdf", pdf_mode="plain", ocr_engine=ocr)
+    assert result.text.endswith(damaged)
+    assert not ocr.pages
+    page = result.detail["page_results"][0]
+    assert page["selected_extractor"] == "plain"
+    assert page["state"] == "damaged_text_unresolved"
+    assert page["quality_issues"] == ["control_glyphs", "private_use_glyphs"]
+    assert result.detail["review_required"]
+
+
+def test_damaged_auto_without_ocr_reports_unresolved(tmp_path, monkeypatch):
+    damaged = "Readable content " * 10 + "\x00"
+    _fake_pages(monkeypatch, [(damaged, damaged)])
+    monkeypatch.setattr(files, "default_ocr_engine", lambda: None)
+    result = extract_text(tmp_path / "damaged.pdf")
+    assert result.detail["ocr_status"] == "unavailable"
+    assert result.detail["page_results"][0]["state"] == "damaged_text_unresolved"
+
+
+def test_document_cap_reports_partial_and_omitted_pages(tmp_path, monkeypatch):
+    _fake_pages(monkeypatch, [("x" * 100, "x" * 100)] * 3)
+    monkeypatch.setattr(files, "MAX_EXTRACT_CHARS", 170)
+    result = extract_text(tmp_path / "large.pdf", pdf_mode="text")
+    assert len(result.text) == 170 and result.detail["truncated"]
+    assert result.detail["retained_pages"] == 2
+    pages = result.detail["page_results"]
+    assert not pages[0]["truncated"]
+    assert pages[1]["truncated"] and pages[1]["retained_chars"] > 0
+    assert pages[2]["truncated"] and pages[2]["retained_chars"] == 0

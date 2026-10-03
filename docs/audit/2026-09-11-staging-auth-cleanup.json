@@ -1,0 +1,35 @@
+{
+  "run_id": "a60effb173bc42b5b17aa6ad18ec909e",
+  "deployment_id": "dpl_EnHFGu3GHJSfB791FYtQ98wumwQv",
+  "project_id": "prj_a4tgpf6rsmYp7H3JroXUH4x6ERk3",
+  "started_at": "2026-09-11T04:25:12.170220+00:00",
+  "fixture_ids": {
+    "users": [
+      "c2c3ab13542258a4902c5acf8d4bd066",
+      "35620ec3ab3252fd92881a3dfea3b17d"
+    ],
+    "workspaces": [
+      "d4d970816bfc5f5ca7636b8af60286e6",
+      "427ca29e628f58abae55c4af56b95a1e"
+    ],
+    "memberships": [
+      "3608dfd5cbae5523bfe8e87a4c679abf",
+      "cfd973a4830b51aa8c266a9aad642f4f"
+    ]
+  },
+  "checks": [],
+  "session_replay_after_logout": [],
+  "status": "passed",
+  "alembic_revision": "f3a1c7e9b420",
+  "cleanup": {
+    "deleted": {
+      "audit_events": 0,
+      "workspace_members": 0,
+      "workspaces": 0,
+      "users": 0
+    },
+    "remaining": 0
+  },
+  "finished_at": "2026-09-11T04:25:37.928036+00:00",
+  "findings": []
+}

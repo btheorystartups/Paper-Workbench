@@ -32,6 +32,13 @@ def test_upgrade_to_head_builds_full_schema(tmp_path, monkeypatch):
         "federated_identities",
         "oidc_workspace_bindings",
         "api_credentials",
+        "revoked_access_tokens",
+        "proposals",
+        "proposal_sources",
+        "proposal_passages",
+        "proposal_fit_rows",
+        "proposal_versions",
+        "proposal_generations",
         "alembic_version",
     } <= tables
     # the credential columns that the legacy create_all DB was missing
@@ -39,6 +46,7 @@ def test_upgrade_to_head_builds_full_schema(tmp_path, monkeypatch):
     assert {"email", "password_hash", "oidc_subject", "email_verified"} <= user_cols
     api_key_column = next(c for c in insp.get_columns("users") if c["name"] == "api_key")
     assert api_key_column["nullable"] is True
+    assert {"manuscript_id", "section_id"} <= {c["name"] for c in insp.get_columns("threads")}
 
     db.reset_engine_for_tests()
     config.get_settings.cache_clear()
@@ -128,10 +136,7 @@ def test_tenant_migration_lifts_existing_project_owner(tmp_path, monkeypatch):
     assert tuple(row) == ("workspace1", "user1", "owner")
     with db.get_engine().connect() as connection:
         second = connection.execute(
-            text(
-                "SELECT role FROM workspace_members "
-                "WHERE workspace_id='workspace1' AND user_id='user2'"
-            )
+            text("SELECT role FROM workspace_members WHERE workspace_id='workspace1' AND user_id='user2'")
         ).scalar_one()
     assert second == "member"
 
@@ -154,5 +159,62 @@ def test_legacy_unmanaged_db_is_not_clobbered(tmp_path, monkeypatch):
     assert which == "create_all (legacy unmanaged DB)"
     assert "alembic_version" not in set(inspect(db.get_engine()).get_table_names())
 
+    db.reset_engine_for_tests()
+    config.get_settings.cache_clear()
+
+
+def test_chat_migration_preserves_existing_turns_and_can_downgrade(tmp_path, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from workbench import config, db
+
+    monkeypatch.setenv("WB_DATABASE_URL", f"sqlite:///{tmp_path / 'conversation-upgrade.sqlite3'}")
+    config.get_settings.cache_clear()
+    db.reset_engine_for_tests()
+    alembic = Config(str(db._repo_root() / "alembic.ini"))
+    alembic.set_main_option("script_location", str(db._repo_root() / "migrations"))
+    command.upgrade(alembic, "f3a1c7e9b420")
+    with db.get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO workspaces (id, name, created_at) VALUES ('ws', 'Synthetic', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO projects (id, workspace_id, name, description, created_at) "
+                "VALUES ('project', 'ws', 'Synthetic', '', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO threads "
+                "(id, project_id, title, goal, summary, pinned_object_ids, "
+                "pinned_source_ids, mode, created_at) VALUES "
+                "('thread', 'project', 'Existing discussion', '', "
+                "'Keep this brief', '[]', '[]', "
+                "'explore', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO turns (id, thread_id, role, content, provenance, created_at) "
+                "VALUES ('turn', 'thread', 'user', 'Keep this turn', '{}', "
+                "CURRENT_TIMESTAMP)"
+            )
+        )
+    command.upgrade(alembic, "head")
+    with db.get_engine().connect() as connection:
+        assert connection.scalar(text("SELECT content FROM turns WHERE id='turn'")) == "Keep this turn"
+        row = connection.execute(
+            text("SELECT summary, manuscript_id, section_id FROM threads WHERE id='thread'")
+        ).one()
+        assert tuple(row) == ("Keep this brief", None, None)
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    command.downgrade(alembic, "f3a1c7e9b420")
+    with db.get_engine().connect() as connection:
+        assert connection.scalar(text("SELECT content FROM turns WHERE id='turn'")) == "Keep this turn"
     db.reset_engine_for_tests()
     config.get_settings.cache_clear()

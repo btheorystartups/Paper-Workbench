@@ -124,12 +124,46 @@ const SUBMISSION_TRANSITIONS = {
 
 const state = {
   workspaceId: null,
+  authConfig: null,
   projectNames: {},        // pid -> name
   pickedExcerpts: new Map(), // excerpt id -> label (claim form, survives re-render)
   pickedProject: null,       // pid the picked excerpts belong to
   citationSources: [],       // current project's source choices for graph resolution
   citationRoot: null,
 };
+
+// Kept outside persisted application state. Never included in bodies, URLs, or storage.
+let codexLocalGate = "";
+let codexLocalSelected = false;
+
+async function initializeCodexLocalAccess() {
+  try {
+    const config = await api("/providers/codex-local/config");
+    codexLocalSelected = config.selected;
+    document.getElementById("codex-local-access").hidden = !config.selected;
+  } catch (_e) { return; }
+  const input = document.getElementById("codex-local-gate");
+  const status = document.getElementById("codex-local-status");
+  document.getElementById("codex-local-connect").addEventListener("click", async () => {
+    codexLocalGate = input.value;
+    input.value = "";
+    status.textContent = "Verifying the locally authenticated account…";
+    try {
+      const account = await api("/providers/codex-local/account");
+      status.textContent = "Account: " + account.account_email + " · " + account.plan_type +
+        " · " + account.authentication_mode + " · " + account.model + " / " + account.reasoning_effort +
+        ". Text limits do not cap account usage. Access clears on reload.";
+    } catch (e) {
+      codexLocalGate = "";
+      status.textContent = e.message;
+    }
+  });
+  document.getElementById("codex-local-clear").addEventListener("click", () => {
+    codexLocalGate = "";
+    input.value = "";
+    status.textContent = "Local Codex access cleared.";
+  });
+}
 
 /* ===================== helpers ===================== */
 
@@ -139,17 +173,32 @@ function esc(v) {
   }[c]));
 }
 
+function authHeaders(method) {
+  const headers = {};
+  if (codexLocalSelected && codexLocalGate) headers["X-Workbench-Codex-Gate"] = codexLocalGate;
+  const cookieMode = state.authConfig && state.authConfig.cookie_sessions_enabled;
+  if (!cookieMode) {
+    let token = null;
+    try { token = localStorage.getItem("wb_token"); } catch (_e) { token = null; }
+    if (token) headers["Authorization"] = "Bearer " + token;
+  } else if (["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
+    const name = state.authConfig.csrf_cookie_name;
+    const csrf = document.cookie.split(";").map((part) => part.trim()).find(
+      (part) => part.startsWith(encodeURIComponent(name) + "="));
+    if (csrf) headers["X-CSRF-Token"] = decodeURIComponent(csrf.split("=").slice(1).join("="));
+  }
+  return headers;
+}
+
 async function api(path, method = "GET", body) {
   let res;
-  const headers = {};
+  const headers = authHeaders(method);
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  let token = null;
-  try { token = localStorage.getItem("wb_token"); } catch (_e) { token = null; }
-  if (token) headers["Authorization"] = "Bearer " + token;
   try {
     res = await fetch(path, {
       method,
       headers,
+      credentials: "same-origin",
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (_e) {
@@ -168,6 +217,68 @@ async function api(path, method = "GET", body) {
     throw err;
   }
   return data;
+}
+
+async function uploadApi(path, formData) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: authHeaders("POST"),
+      credentials: "same-origin",
+      body: formData,
+    });
+  } catch (_e) {
+    throw new Error("Network error: could not reach the API.");
+  }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_e) { data = null; }
+  if (!res.ok) {
+    const detail = data && data.detail !== undefined
+      ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
+      : res.status + " " + res.statusText;
+    throw new Error(detail);
+  }
+  return data;
+}
+
+async function downloadApi(path, body, fallbackName) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: Object.assign(authHeaders("POST"), { "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body || {}),
+    });
+  } catch (_e) {
+    throw new Error("Network error: could not reach the API.");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_e) { data = null; }
+    const detail = data && data.detail !== undefined
+      ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
+      : res.status + " " + res.statusText;
+    throw new Error(detail);
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const matchedName = disposition.match(/filename="([^"\\/]+)"/i);
+  const filename = matchedName ? matchedName[1] : fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  return filename;
 }
 
 function toast(msg, kind) {
@@ -246,7 +357,10 @@ async function loadHealth() {
   try {
     const h = await api("/health");
     const mode = h && h.provider_mode ? String(h.provider_mode) : "unknown";
-    if (mode === "live") {
+    if (h.chat_provider === "codex_local") {
+      el.className = "mode-badge live";
+      el.textContent = "Local ChatGPT account";
+    } else if (mode === "live") {
       el.className = "mode-badge live";
       el.textContent = "live providers";
     } else {
@@ -260,6 +374,20 @@ async function loadHealth() {
 }
 
 /* ===================== auth ===================== */
+
+async function loadAuthConfig() {
+  try {
+    state.authConfig = await api("/auth/config");
+  } catch (_e) {
+    state.authConfig = null;
+  }
+}
+
+function startOidcLogin() {
+  const config = state.authConfig || {};
+  const startPath = config.oidc_start_path || "/auth/oidc/start";
+  location.assign(startPath + "?return_to=" + encodeURIComponent("/ui/"));
+}
 
 async function loadAuth() {
   const area = document.getElementById("auth-area");
@@ -280,6 +408,11 @@ async function loadAuth() {
 function openAuthModal(mode) {
   const modal = document.getElementById("auth-modal");
   if (!modal) return;
+  const config = state.authConfig || {};
+  if (mode === "login" && config.oidc_browser_enabled && !config.password_login_enabled) {
+    startOidcLogin();
+    return;
+  }
   const isReg = mode === "register";
   modal.innerHTML =
     '<div class="modal">' +
@@ -298,10 +431,16 @@ function openAuthModal(mode) {
     '<button type="submit" class="primary">' + (isReg ? "Register" : "Sign in") + "</button>" +
     '<button type="button" class="small" data-action="auth-cancel">Cancel</button>' +
     "</div>" +
+    (!isReg && config.oidc_browser_enabled
+      ? '<p><button type="button" class="small" data-action="auth-oidc-start">' +
+        "Sign in with organization</button></p>"
+      : "") +
     '<p class="small-text dim">' +
     (isReg
       ? 'Already have an account? <a href="#" data-action="auth-show-login">Sign in</a>'
-      : 'No account? <a href="#" data-action="auth-show-register">Register</a>') +
+      : (config.registration_enabled
+        ? 'No account? <a href="#" data-action="auth-show-register">Register</a>'
+        : "Accounts are provisioned by an administrator.")) +
     "</p>" +
     "</form></div>";
   modal.hidden = false;
@@ -318,7 +457,7 @@ function closeAuthModal() {
 
 /* ===================== router ===================== */
 
-const TABS = ["objects", "sources", "claims", "literature", "dialogue", "manuscripts", "submissions", "compute", "figures"];
+const TABS = ["objects", "sources", "claims", "research", "literature", "dialogue", "proposals", "manuscripts", "submissions", "compute", "figures"];
 
 function route() {
   const view = document.getElementById("view");
@@ -440,8 +579,8 @@ function renderProject(view, pid, tab, sub) {
   const el = document.getElementById("tab-content");
   const fns = {
     objects: tabObjects, sources: tabSources, claims: tabClaims,
-    literature: tabLiterature, dialogue: tabDialogue, manuscripts: tabManuscripts,
-    submissions: tabSubmissions, compute: tabCompute, figures: tabFigures,
+    literature: tabLiterature, dialogue: tabDialogue, proposals: tabProposals, manuscripts: tabManuscripts,
+    submissions: tabSubmissions, compute: tabCompute, figures: tabFigures, research: tabResearch,
   };
   guarded(el, (c) => fns[tab](c, pid, sub || []));
   loadUsageLine(pid);
@@ -452,7 +591,11 @@ async function loadUsageLine(pid) {
   if (!el) return;
   try {
     const u = await api("/projects/" + encodeURIComponent(pid) + "/usage");
-    let text = "LLM this month: " + u.live_total_tokens.toLocaleString() + " live tokens";
+    let text = "API this month: " + u.live_total_tokens.toLocaleString() + " live tokens";
+    if (u.codex_local && u.codex_local.calls) {
+      text += " · Local ChatGPT: " + u.codex_local.reported_total_tokens.toLocaleString() +
+        " reported tokens (separate account usage; some figures may be incomplete)";
+    }
     if (u.monthly_token_ceiling) {
       text += " / " + u.monthly_token_ceiling.toLocaleString() + " ceiling";
     }
@@ -594,6 +737,44 @@ async function tabSources(el, pid, sub) {
       "</form></section>";
   }
 
+  const hosted = state.authConfig && state.authConfig.deployment_mode === "vercel";
+  const ingestPanel = hosted
+    ? '<section class="panel" aria-labelledby="ing-h"><h3 id="ing-h">Upload and ingest file</h3>' +
+      '<p class="dim small-text">The original is stored as a private, content-addressed artifact. ' +
+      'Extraction remains unreviewed until you review it.</p>' +
+      '<form class="stack" data-form="ingest-upload" data-pid="' + esc(pid) + '" enctype="multipart/form-data">' +
+      '<div class="field"><label for="ing-file">File</label>' +
+      '<input id="ing-file" name="file" type="file" required></div>' +
+      '<div class="field"><label for="ing-title">Title (optional)</label>' +
+      '<input id="ing-title" name="title" type="text"></div>' +
+      '<div class="field"><label for="ing-license">License</label>' +
+      '<input id="ing-license" name="license" type="text" value="author-owned"></div>' +
+      '<div class="field"><label for="ing-pdf-mode">PDF extraction mode</label>' +
+      '<select id="ing-pdf-mode" name="pdf_mode">' +
+      '<option value="auto">Auto: layout text; hosted OCR is unavailable</option>' +
+      '<option value="text">Layout text only</option>' +
+      '<option value="plain">Plain text reading order</option></select></div>' +
+      '<div><button type="submit" class="primary">Upload and ingest</button></div>' +
+      '</form></section>'
+    : '<section class="panel" aria-labelledby="ing-h"><h3 id="ing-h">Ingest local file</h3>' +
+      '<p class="dim small-text">Registers a file you already have on disk as a full-text (user-supplied) source.</p>' +
+      '<form class="stack" data-form="ingest-file" data-pid="' + esc(pid) + '">' +
+      '<div class="field"><label for="ing-path">Absolute file path</label>' +
+      '<input id="ing-path" name="path" type="text" required placeholder="C:\\papers\\smith2024.pdf"></div>' +
+      '<div class="field"><label for="ing-title">Title (optional)</label>' +
+      '<input id="ing-title" name="title" type="text"></div>' +
+      '<div class="field"><label for="ing-license">License (optional)</label>' +
+      '<input id="ing-license" name="license" type="text"></div>' +
+      '<div class="field"><label for="ing-pdf-mode">PDF extraction mode</label>' +
+      '<select id="ing-pdf-mode" name="pdf_mode">' +
+      '<option value="auto">Auto: text extraction, OCR damaged pages when available</option>' +
+      '<option value="text">Layout text only</option>' +
+      '<option value="plain">Plain text reading order</option>' +
+      '<option value="ocr">Require local OCR for every page</option></select>' +
+      '<p class="dim small-text">OCR output is always marked unreviewed and never becomes evidence automatically.</p></div>' +
+      '<div><button type="submit" class="primary">Ingest file</button></div>' +
+      '</form></section>';
+
   el.innerHTML =
     '<section class="panel" aria-labelledby="src-h"><h2 id="src-h">Sources</h2>' +
     '<p class="dim small-text">Click a source title to view and capture excerpts.</p>' +
@@ -628,25 +809,7 @@ async function tabSources(el, pid, sub) {
     '<input id="src-license" name="license" type="text"></div>' +
     "</div>" +
     '<div><button type="submit" class="primary">Register source</button></div>' +
-    "</form></section>" +
-    '<section class="panel" aria-labelledby="ing-h"><h3 id="ing-h">Ingest local file</h3>' +
-    '<p class="dim small-text">Registers a file you already have on disk as a full-text (user-supplied) source.</p>' +
-    '<form class="stack" data-form="ingest-file" data-pid="' + esc(pid) + '">' +
-    '<div class="field"><label for="ing-path">Absolute file path</label>' +
-    '<input id="ing-path" name="path" type="text" required ' +
-    'placeholder="C:\\papers\\smith2024.pdf"></div>' +
-    '<div class="field"><label for="ing-title">Title (optional)</label>' +
-    '<input id="ing-title" name="title" type="text"></div>' +
-    '<div class="field"><label for="ing-license">License (optional)</label>' +
-    '<input id="ing-license" name="license" type="text"></div>' +
-    '<div class="field"><label for="ing-pdf-mode">PDF extraction mode</label>' +
-    '<select id="ing-pdf-mode" name="pdf_mode">' +
-    '<option value="auto">Auto: layout text, OCR low-text pages when available</option>' +
-    '<option value="text">Layout text only</option>' +
-    '<option value="ocr">Require local OCR for every page</option></select>' +
-    '<p class="dim small-text">OCR output is always marked unreviewed and never becomes evidence automatically.</p></div>' +
-    '<div><button type="submit" class="primary">Ingest file</button></div>' +
-    "</form></section></div>";
+    "</form></section>" + ingestPanel + "</div>";
 
   if (selectedSid) loadExcerpts(selectedSid);
 }
@@ -706,6 +869,90 @@ function renderSourceDuplicates(candidates, pid) {
         '<div class="small-text">Signals: ' + signals + (blockers ? '<br>Blockers: ' + blockers : "") +
         "</div>" + actions + "</li>";
     }).join("") + "</ul></div>";
+}
+
+/* ===================== proposals tab ===================== */
+
+function proposalKey() {
+  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() :
+    "proposal-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+}
+
+function proposalCreateForm(pid) {
+  return '<section class="panel"><h2>New evidence-grounded proposal</h2>' +
+    '<p class="dim small-text">A proposal is not a client commitment. Unknown budget, schedule, and commitments stay unspecified.</p>' +
+    '<form class="stack" data-form="create-proposal" data-pid="' + esc(pid) + '">' +
+    '<div class="field"><label>Title<input name="title" required maxlength="500"></label></div>' +
+    '<div class="field"><label>Type<select name="kind"><option value="applied_client_pilot">Applied/client pilot</option><option value="research_collaboration">Research collaboration</option></select></label></div>' +
+    '<div class="field"><label>Client question<input name="client_question" required></label></div>' +
+    '<div class="field"><label>Audience<input name="audience"></label></div>' +
+    '<div class="field"><label>Aims, one per line<textarea name="aims"></textarea></label></div>' +
+    '<div class="field"><label>Success criteria<textarea name="success_criteria"></textarea></label></div>' +
+    '<div class="field"><label>Constraints<textarea name="constraints"></textarea></label></div>' +
+    '<div class="field"><label>Known resources<textarea name="known_resources"></textarea></label></div>' +
+    '<div class="field"><label>Unanswered questions<textarea name="unanswered_questions"></textarea></label></div>' +
+    '<button type="submit" class="primary">Create proposal</button></form></section>';
+}
+
+function proposalCoverage(items) {
+  if (!items.length) return emptyHTML("No selected materials yet.");
+  return '<ul class="plain">' + items.map((item) => '<li>' + badge(item.collection, "b-blue") + " " +
+    esc(item.title || item.source_id) + ": " + esc(item.status) + ", " + esc(item.passage_count || 0) +
+    ' retrievable passage(s); ' + (item.examined ? "examined" : "not yet examined") +
+    (item.limitation ? '<br><span class="unverified">' + esc(item.limitation) + '</span>' : '') + '</li>').join("") + '</ul>';
+}
+
+function proposalFit(rows) {
+  if (!rows.length) return emptyHTML("No fit matrix yet.");
+  return '<div class="card-list">' + rows.map((row) => '<article class="card"><strong>' + esc(row.client_need) +
+    '</strong> ' + badge(row.fit_status, row.fit_status === "no_fit" ? "b-red" : row.fit_status === "tentative" ? "b-amber" : "b-blue") +
+    '<p>' + esc(trunc(row.relevant_method, 380)) + '</p><p><span class="dim">Transfer:</span> ' +
+    esc(row.why_it_might_transfer) + '</p><p><span class="dim">Limitations:</span> ' + esc(row.limitations) +
+    '</p><p><span class="dim">Validation:</span> ' + esc(row.validation_step) + '</p></article>').join("") + '</div>';
+}
+
+function proposalSections(pid, proposal) {
+  if (!proposal.sections.length) return emptyHTML("Generate and review an outline, then draft sections.");
+  return proposal.sections.map((section) => '<section class="panel"><h3>' + esc(section.heading) + " " +
+    badge(section.state, section.state === "approved" ? "b-green" : section.state === "rejected" ? "b-red" : "b-amber") +
+    '</h3><p class="small-text dim">' + esc(section.purpose) + '</p>' +
+    '<form class="stack" data-form="proposal-update-section" data-pid="' + esc(pid) + '" data-sid="' + esc(section.id) + '" data-revision="' + esc(section.revision) + '">' +
+    '<div class="field"><label>Draft text<textarea name="text" maxlength="30000">' + esc(section.text) + '</textarea></label></div>' +
+    '<div class="field"><label>Citation passage IDs, comma-separated<input name="citation_ids" value="' + esc(section.citation_ids.join(",")) + '"></label></div>' +
+    '<button type="submit" class="small">Save revised proposal</button></form><div class="row-actions">' +
+    '<form data-form="proposal-review-section" data-pid="' + esc(pid) + '" data-sid="' + esc(section.id) + '" data-revision="' + esc(section.revision) + '"><input type="hidden" name="decision" value="approved"><button type="submit" class="small approve">Approve</button></form>' +
+    '<form data-form="proposal-review-section" data-pid="' + esc(pid) + '" data-sid="' + esc(section.id) + '" data-revision="' + esc(section.revision) + '"><input type="hidden" name="decision" value="rejected"><button type="submit" class="small reject">Reject</button></form>' +
+    '<form data-form="proposal-undo-section" data-pid="' + esc(pid) + '" data-sid="' + esc(section.id) + '" data-revision="' + esc(section.revision) + '"><button type="submit" class="small">Undo current edit</button></form></div></section>').join("");
+}
+
+async function tabProposals(el, pid, sub) {
+  const entries = await api("/projects/" + encodeURIComponent(pid) + "/proposals");
+  const selected = sub[0] || "";
+  if (!selected) {
+    el.innerHTML = '<section class="panel"><h2>Proposals</h2>' + (entries.length ? '<div class="card-list">' + entries.map((entry) =>
+      '<a class="card" href="#/project/' + esc(pid) + '/proposals/' + esc(entry.id) + '"><span class="card-title">' +
+      esc(entry.title) + '</span><br><span class="small-text dim">' + esc(entry.kind) + '</span></a>').join("") + '</div>' : emptyHTML("No proposals yet.")) +
+      '</section>' + proposalCreateForm(pid);
+    return;
+  }
+  const proposal = await api("/proposals/" + encodeURIComponent(selected));
+  const sources = await api("/projects/" + encodeURIComponent(pid) + "/sources");
+  const options = sources.map((source) => '<option value="' + esc(source.id) + '">' + esc(source.title) + '</option>').join("");
+  const versions = proposal.versions || [];
+  el.innerHTML = '<nav class="crumbs"><a href="#/project/' + esc(pid) + '/proposals">All proposals</a> / ' + esc(proposal.title) + '</nav>' +
+    '<section class="panel"><h2>' + esc(proposal.title) + '</h2><p>' + badge(proposal.kind, "b-purple") + " " +
+    (proposal.simulation_notice ? badge("SIMULATED / NETWORK-FREE", "b-amber") : badge("LIVE CONFIGURATION", "b-red")) +
+    '</p><p class="small-text dim">Effective model: ' + esc(proposal.effective_model) + '. Generated text remains proposed until approved.</p><p><strong>Question:</strong> ' + esc(proposal.brief.client_question) + '</p></section>' +
+    '<section class="panel"><h3>Evidence collections and coverage</h3>' + proposalCoverage(proposal.sources || []) +
+    '<div class="panel-row"><form class="stack" data-form="proposal-add-source" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><div class="field"><label>Existing source<select name="source_id">' + options + '</select></label></div><div class="field"><label>Collection<select name="collection"><option value="author">Author material</option><option value="client">Client material</option><option value="background">Background</option></select></label></div><button type="submit" class="small">Add source</button></form>' +
+    '<form class="stack" data-form="proposal-url" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><div class="field"><label>Bounded public URL<input name="url" type="url" required></label></div><div class="field"><label>Collection<select name="collection"><option value="author">Author material</option><option value="client">Client material</option><option value="background">Background</option></select></label></div><button type="submit" class="small">Fetch URL</button></form></div><form data-form="proposal-index" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><button type="submit" class="small">Index current extraction</button></form><form data-form="proposal-inspect-evidence" data-proposal="' + esc(proposal.id) + '"><button type="submit" class="small">Inspect bounded evidence pack</button></form><div id="proposal-evidence-pack"></div><p class="small-text dim"><a href="#/project/' + esc(pid) + '/dialogue">Discuss fit in Dialogue</a> after pinning the selected project sources; a chat reply remains a reviewable proposal input.</p><form class="stack" data-form="proposal-correct-excerpt" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><p class="small-text dim">Add a reviewer correction without replacing the original extraction.</p><div class="field"><label>Corrected source<select name="source_id">' + options + '</select></label></div><div class="field"><label>Corrected excerpt<textarea name="text" required maxlength="1400"></textarea></label></div><div class="field"><label>Durable locator<input name="locator" required placeholder="page, section, or reviewer note"></label></div><button type="submit" class="small">Add corrected excerpt</button></form></section>' +
+    '<section class="panel"><h3>Retrieval and fit matrix</h3><form class="stack" data-form="proposal-retrieve" data-proposal="' + esc(proposal.id) + '"><div class="field"><label>Find passages<input name="query" required></label></div><button type="submit" class="small">Retrieve</button></form><div id="proposal-retrieval"></div><form class="stack" data-form="proposal-generate-fit" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><div class="field"><label>Needs, optional one per line<textarea name="needs"></textarea></label></div><button type="submit" class="primary">Generate reviewable fit matrix</button></form>' + proposalFit(proposal.fit_matrix || []) + '</section>' +
+    '<section class="panel"><h3>Outline and draft</h3><div class="row-actions"><form data-form="proposal-generate-outline" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><button type="submit" class="small">Generate outline</button></form><form data-form="proposal-generate-draft" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '"><button type="submit" class="primary">Generate proposed draft</button></form></div></section>' +
+    proposalSections(pid, proposal) +
+    '<section class="panel"><h3>Immutable named versions</h3><p class="small-text dim">Version approval is distinct from scientific verification.</p><form class="stack" data-form="proposal-save-version" data-pid="' + esc(pid) + '" data-proposal="' + esc(proposal.id) + '" data-revision="' + esc(proposal.draft_revision) + '"><div class="field"><label>Version name<input name="name" placeholder="v' + esc(versions.length + 1) + '"></label></div><div class="field"><label>Human review note<textarea name="review_note" required></textarea></label></div><label><input type="checkbox" name="approve_all" checked> Approve all current sections atomically</label><button type="submit" class="primary">Save version</button></form>' +
+    (versions.length ? '<ul class="plain">' + versions.map((version) => '<li><strong>' + esc(version.name) + '</strong> ' + badge(version.state, "b-green") +
+      (version.warnings.length ? '<br><span class="unverified">' + esc(version.warnings.join(" ")) + '</span>' : '') +
+      '<form data-form="proposal-export" data-version="' + esc(version.id) + '"><button type="submit" class="small">Export MD, HTML, DOCX</button></form></li>').join("") + '</ul>' : emptyHTML("No saved versions yet.")) + '</section>';
 }
 
 /* ===================== claims tab ===================== */
@@ -1119,6 +1366,7 @@ async function tabDialogue(el, pid, sub) {
       '<hr class="soft"><h3>Proposed actions</h3>' +
       '<p class="dim small-text">AI-proposed actions run only after your explicit approval.</p>' +
       '<div id="action-list">' + loadingHTML() + "</div>" +
+      contextPanelHTML(th) +
       "</section>";
   }
 
@@ -1152,7 +1400,66 @@ async function tabDialogue(el, pid, sub) {
   if (selectedTid) {
     loadTurns(selectedTid);
     loadActions(selectedTid);
+    loadThreadContext(selectedTid);
   }
+}
+
+function contextPanelHTML(thread) {
+  if (!thread) return "";
+  return '<details class="context-panel"><summary>Context for the next reply</summary>' +
+    '<p class="dim small-text">The current section and linked evidence are refreshed for each reply. ' +
+    'The latest 12 messages and your research brief provide continuity.</p>' +
+    '<div id="chat-context">' + loadingHTML() + '</div></details>' +
+    '<details><summary>Research brief</summary>' +
+    '<form class="stack" data-form="thread-brief" data-tid="' + esc(thread.id) + '">' +
+    '<label for="thread-brief">Question, contribution, audience, decisions, and open issues</label>' +
+    '<textarea id="thread-brief" name="summary" maxlength="12000">' + esc(thread.summary || "") +
+    '</textarea><div><button type="submit">Save brief</button></div></form></details>';
+}
+
+async function loadThreadContext(tid) {
+  const box = document.getElementById("chat-context");
+  if (!box) return;
+  try {
+    const data = await api("/threads/" + encodeURIComponent(tid) + "/context");
+    if (!box.isConnected) return;
+    box.innerHTML = (data.warnings || []).map((w) => '<p class="notice">' + esc(w) + '</p>').join("") +
+      (data.items || []).map((item) => '<details><summary>' + esc(pretty(item.kind)) + ': ' +
+        esc(item.title) + '</summary>' + jsonPre(item.data) + '</details>').join("") +
+      '<details><summary>Exact instructions and research context sent to the assistant</summary>' +
+      '<pre class="context-text">' + esc(data.system_prompt) + '</pre></details>';
+    const text = document.getElementById("chat-section-text");
+    const section = (data.items || []).find((item) => item.id === data.section_id);
+    if (text && section) text.textContent = section.data.body.text || "This section is empty.";
+  } catch (e) { box.innerHTML = errorHTML(e.message); }
+}
+
+function manuscriptChatHTML(pid, mid, threads, selectedTid) {
+  const thread = threads.find((t) => t.id === selectedTid && t.manuscript_id === mid);
+  let html = '<aside class="panel manuscript-chat" aria-label="Manuscript conversation">' +
+    '<h2>Section conversation</h2><p class="dim">Choose “Discuss section” beside a section to start. ' +
+    'Proposed edits change prose only after your review.</p>';
+  const matching = threads.filter((t) => t.manuscript_id === mid);
+  if (matching.length) html += '<nav aria-label="Section conversations">' + matching.map((t) =>
+    '<a class="chip" href="#/project/' + esc(pid) + '/manuscripts/' + esc(mid) + '/' + esc(t.id) +
+    '"' + (thread && t.id === thread.id ? ' aria-current="page"' : '') + '>' + esc(t.title) +
+    '</a>').join(" ") + '</nav>';
+  if (!thread) return html + '</aside>';
+  html += '<h3>' + esc(thread.title) + '</h3>' +
+    '<label for="th-mode">Conversation mode</label><select id="th-mode" data-change="th-mode" ' +
+    'data-tid="' + esc(thread.id) + '">' +
+    ["explore", "explain", "challenge", "compare", "plan", "act"].map((m) =>
+      '<option value="' + m + '"' + (m === thread.mode ? ' selected' : '') + '>' + m + '</option>').join("") +
+    '</select><details open><summary>Current section text</summary>' +
+    '<div id="chat-section-text" class="section-prose"></div></details>' +
+    '<div id="chat-log" class="chat-log" aria-live="polite">' + loadingHTML() + '</div>' +
+    '<form class="stack" data-form="send-turn" data-tid="' + esc(thread.id) + '">' +
+    '<label for="turn-input">Discuss or request an edit</label>' +
+    '<textarea id="turn-input" name="content" required placeholder="Shorten this section while preserving the caveats."></textarea>' +
+    '<div><button type="submit" class="primary">Send</button></div></form>' +
+    '<h3>Proposed edits and history</h3><div id="action-list">' + loadingHTML() + '</div>' +
+    contextPanelHTML(thread);
+  return html + '</aside>';
 }
 
 async function loadTurns(tid) {
@@ -1200,15 +1507,28 @@ async function loadActions(tid) {
         "<strong>" + esc(pretty(a.kind)) + "</strong> " +
         badge(a.risk, RISK_COLOR[a.risk] || "b-gray") + " " +
         badge(a.status, STATE_COLOR[a.status] || "b-gray");
-      html += jsonPre(a.payload);
+      const edit = a.kind === "revise_section" && a.risk !== "unexecutable";
+      if (edit) {
+        html += '<div class="edit-comparison"><div><h4>Before</h4><pre class="section-prose">' +
+          esc(a.payload.before_text) + '</pre></div><div><h4>Proposed text</h4><pre class="section-prose">' +
+          esc(a.payload.text) + '</pre></div></div>';
+        if (pending) html += '<details><summary>Revise this proposal</summary>' +
+          '<form class="stack" data-form="revise-edit" data-aid="' + esc(a.id) + '" data-tid="' + esc(tid) +
+          '" data-hash="' + esc(a.plan_hash) + '"><label for="edit-' + esc(a.id) + '">Replacement text</label>' +
+          '<textarea id="edit-' + esc(a.id) + '" name="text" maxlength="30000" data-edit-proposal="' + esc(a.id) + '">' +
+          esc(a.payload.text) + '</textarea><div><button type="submit">Save revised proposal</button></div></form></details>';
+        if (a.status === "executed") html += '<button type="button" data-action="edit-undo" data-aid="' +
+          esc(a.id) + '" data-tid="' + esc(tid) + '" data-hash="' + esc(a.plan_hash) + '">Propose undo</button>';
+      } else html += jsonPre(a.payload);
       if (a.result && Object.keys(a.result).length) {
-        html += '<div class="small-text dim" style="margin-top:0.3rem">result:</div>' + jsonPre(a.result);
+        html += '<details><summary>Provenance and result</summary>' + jsonPre(a.result) + '</details>';
       }
       if (pending) {
         html += '<div style="margin-top:0.5rem;display:flex;gap:0.4rem">' +
           '<button type="button" class="small approve" data-action="action-approve" data-tid="' +
           esc(tid) + '" data-aid="' + esc(a.id) + '" data-hash="' + esc(a.plan_hash) +
-          '">Approve</button>' +
+          '"' + (a.risk === "unexecutable" ? ' disabled' : '') + '>' +
+          (edit ? 'Apply shown edit' : 'Approve') + '</button>' +
           '<button type="button" class="small danger" data-action="action-reject" data-tid="' +
           esc(tid) + '" data-aid="' + esc(a.id) + '">Reject</button></div>';
       }
@@ -1223,9 +1543,11 @@ async function loadActions(tid) {
 
 async function tabManuscripts(el, pid, sub) {
   const selectedMid = sub[0] || null;
-  const [objects, claims] = await Promise.all([
+  const selectedTid = sub[1] || null;
+  const [objects, claims, threads] = await Promise.all([
     api("/projects/" + encodeURIComponent(pid) + "/objects"),
     api("/projects/" + encodeURIComponent(pid) + "/claims"),
+    api("/projects/" + encodeURIComponent(pid) + "/threads"),
   ]);
   const manuscripts = objects.filter((o) => o.kind === "manuscript");
   const candidates = objects.filter((o) => o.kind === "paper_candidate");
@@ -1263,7 +1585,9 @@ async function tabManuscripts(el, pid, sub) {
           '<div class="dim small-text">' +
           esc((b.claim_ids || []).length) + " linked claims" +
           (b.word_budget ? " · budget " + esc(b.word_budget) + " words" : "") +
-          "</div></li>";
+          '</div><button type="button" data-action="chat-section" data-pid="' + esc(pid) +
+          '" data-mid="' + esc(selectedMid) + '" data-sid="' + esc(s.id) +
+          '" data-title="' + esc(s.title) + '">Discuss section</button></li>';
       }).join("") + "</ul>";
     }
     msView =
@@ -1375,7 +1699,8 @@ async function tabManuscripts(el, pid, sub) {
   el.innerHTML =
     '<section class="panel" aria-labelledby="msl-h"><h2 id="msl-h">Manuscripts</h2>' +
     list + "</section>" +
-    msView +
+    (selectedMid ? '<div class="manuscript-studio">' + msView +
+      manuscriptChatHTML(pid, selectedMid, threads, selectedTid) + '</div>' : msView) +
     generatePanel +
     candSection +
     '<div class="panel-row">' +
@@ -1420,6 +1745,11 @@ async function tabManuscripts(el, pid, sub) {
   if (selectedMid) {
     loadChecklists(selectedMid);
     loadCredit(pid, selectedMid);
+    if (threads.some((t) => t.id === selectedTid && t.manuscript_id === selectedMid)) {
+      loadTurns(selectedTid);
+      loadActions(selectedTid);
+      loadThreadContext(selectedTid);
+    }
   }
 }
 
@@ -1924,7 +2254,7 @@ function renderPublicationPackages(submission, packages) {
         '" data-decision="rejected">Reject</button>';
     } else if (p.state === "approved") {
       actions = '<button type="button" class="primary" data-action="package-build" data-package="' +
-        esc(p.id) + '">Build local ZIP</button>';
+        esc(p.id) + '" data-build-count="' + esc((p.builds || []).length) + '">Build ZIP</button>';
     }
     const builds = (p.builds || []).length
       ? '<div class="dim small-text">Last build: ' + esc(p.builds[p.builds.length - 1].filename) +
@@ -2354,6 +2684,14 @@ const clickActions = {
 
   "export-project": (t) => withBusy(t, async () => {
     try {
+      if (state.authConfig && state.authConfig.deployment_mode === "vercel") {
+        const filename = await downloadApi(
+          "/projects/" + encodeURIComponent(t.dataset.pid) + "/export/download",
+          {},
+          "paper-workbench-project.zip");
+        toast("Downloaded " + filename + ".");
+        return;
+      }
       const r = await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/export", "POST", {});
       toast("Bundle written: " + r.path);
     } catch (e) { toast(e.message, "err"); }
@@ -2362,6 +2700,24 @@ const clickActions = {
   "open-claim": (t) => { location.hash = "#/project/" + t.dataset.pid + "/claims/" + t.dataset.cid; },
   "open-thread": (t) => { location.hash = "#/project/" + t.dataset.pid + "/dialogue/" + t.dataset.tid; },
   "open-manuscript": (t) => { location.hash = "#/project/" + t.dataset.pid + "/manuscripts/" + t.dataset.mid; },
+  "chat-section": (t) => withBusy(t, async () => {
+    try {
+      const threads = await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/threads");
+      let thread = threads.find((item) => item.manuscript_id === t.dataset.mid && item.section_id === t.dataset.sid);
+      if (!thread) thread = await api("/projects/" + encodeURIComponent(t.dataset.pid) + "/threads", "POST", {
+        title: t.dataset.title, manuscript_id: t.dataset.mid, section_id: t.dataset.sid, mode: "act",
+        goal: "Develop this section using its linked claims and evidence. Preserve uncertainty.",
+      });
+      location.hash = "#/project/" + t.dataset.pid + "/manuscripts/" + t.dataset.mid + "/" + thread.id;
+    } catch (e) { toast(e.message, "err"); }
+  }),
+  "edit-undo": (t) => withBusy(t, async () => {
+    try {
+      await api("/actions/" + encodeURIComponent(t.dataset.aid) + "/undo", "POST", { plan_hash: t.dataset.hash });
+      toast("Undo proposed. Review it before applying.");
+      loadActions(t.dataset.tid);
+    } catch (e) { toast(e.message, "err"); }
+  }),
 
   "submission-transition": (t) => withBusy(t, async () => {
     const noteInput = document.getElementById("sub-note-" + t.dataset.sid);
@@ -2459,10 +2815,12 @@ const clickActions = {
     try {
       const result = await api("/publication-packages/" + encodeURIComponent(t.dataset.package) +
         "/build", "POST", {});
-      if (box) box.innerHTML = '<p class="finding">Local bundle: <span class="mono">' +
-        esc(result.path) + '</span><br><span class="dim mono small-text">sha256 ' +
+      const buildIndex = Number(t.dataset.buildCount || 0);
+      if (box) box.innerHTML = '<p class="finding">Bundle: <a href="/publication-packages/' +
+        encodeURIComponent(t.dataset.package) + "/builds/" + buildIndex +
+        '/download">download ZIP</a><br><span class="dim mono small-text">sha256 ' +
         esc(result.sha256) + "</span></p>";
-      toast("Local publication ZIP built; nothing was submitted externally.");
+      toast("Publication ZIP built; nothing was submitted externally.");
     } catch (e) {
       if (box) box.innerHTML = errorHTML(e.message);
       toast(e.message, "err");
@@ -2470,10 +2828,14 @@ const clickActions = {
   }),
 
   "sign-in": () => openAuthModal("login"),
-  "sign-out": () => {
+  "sign-out": async () => {
+    if (state.authConfig && state.authConfig.cookie_sessions_enabled) {
+      try { await api("/auth/logout", "POST", {}); } catch (_e) { /* clear local state too */ }
+    }
     try { localStorage.removeItem("wb_token"); } catch (_e) { /* ignore */ }
     location.reload();
   },
+  "auth-oidc-start": () => startOidcLogin(),
   "auth-cancel": () => closeAuthModal(),
   "auth-show-login": () => openAuthModal("login"),
   "auth-show-register": () => openAuthModal("register"),
@@ -2582,6 +2944,8 @@ const clickActions = {
     }
     loadActions(t.dataset.tid);
     loadTurns(t.dataset.tid);
+    loadThreadContext(t.dataset.tid);
+    if (location.hash.includes("/manuscripts/")) route();
   }),
 
   "action-reject": (t) => withBusy(t, async () => {
@@ -2797,6 +3161,147 @@ const formActions = {
     route();
   },
 
+  "create-proposal": async (form) => {
+    const body = fd(form);
+    const proposal = await api("/projects/" + encodeURIComponent(form.dataset.pid) + "/proposals", "POST", {
+      title: body.title,
+      kind: body.kind,
+      brief: {
+        client_question: body.client_question,
+        audience: body.audience || "",
+        aims: body.aims || "",
+        success_criteria: body.success_criteria || "",
+        constraints: body.constraints || "",
+        known_resources: body.known_resources || "",
+        unanswered_questions: body.unanswered_questions || "",
+      },
+    });
+    toast("Proposal created. Add selected materials before drawing a fit conclusion.");
+    location.hash = "#/project/" + form.dataset.pid + "/proposals/" + proposal.id;
+  },
+
+  "proposal-add-source": async (form) => {
+    const body = fd(form);
+    await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/sources", "POST", body);
+    toast("Source added to the proposal collection; index its extraction next.");
+    route();
+  },
+
+  "proposal-url": async (form) => {
+    const body = fd(form);
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/sources/url", "POST", body);
+    toast(result.fetch_ok ? "URL snapshot added and indexed." : "URL fetch failed; an honest limitation record was retained.");
+    route();
+  },
+
+  "proposal-index": async (form) => {
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/passages/index", "POST", {});
+    toast("Indexed " + result.indexed + " new passage(s). Review listed limitations before generating.");
+    route();
+  },
+
+  "proposal-inspect-evidence": async (form) => {
+    const box = document.getElementById("proposal-evidence-pack");
+    if (box) box.innerHTML = loadingHTML("Loading the bounded proposal context…");
+    const pack = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/evidence-pack");
+    if (box) box.innerHTML = '<details open><summary>Evidence pack — ' + esc(pack.included_passages.length) +
+      ' included passage(s)</summary>' + jsonPre(pack) + '</details>';
+  },
+
+  "proposal-correct-excerpt": async (form) => {
+    const body = fd(form);
+    await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/passages/correct", "POST", body);
+    toast("Reviewer correction added as a new, provenance-preserving passage.");
+    route();
+  },
+
+  "proposal-retrieve": async (form) => {
+    const body = fd(form);
+    const box = document.getElementById("proposal-retrieval");
+    if (box) box.innerHTML = loadingHTML("Retrieving bounded passages…");
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/retrieve", "POST", {
+      query: body.query, top_k: 8,
+    });
+    if (box) {
+      box.innerHTML = result.results.length
+        ? '<ul class="plain">' + result.results.map((hit) => '<li><strong>' + esc(hit.source_title) + '</strong> · ' + esc(hit.locator) +
+          '<blockquote>' + esc(hit.text) + '</blockquote><span class="small-text dim">' + esc(hit.retrieval_reason) + '</span></li>').join("") + '</ul>'
+        : emptyHTML("No current passage matched. This is insufficient evidence, not a negative scientific result.");
+    }
+  },
+
+  "proposal-generate-fit": async (form) => {
+    const body = fd(form);
+    const needs = (body.needs || "").split("\n").map((value) => value.trim()).filter(Boolean);
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/fit-matrix/generate", "POST", {
+      idempotency_key: proposalKey(), needs,
+    });
+    toast("Fit matrix generated" + (result.generation.simulated ? " in simulated mode" : "") + "; review every tentative or no-fit outcome.");
+    route();
+  },
+
+  "proposal-generate-outline": async (form) => {
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/outline/generate", "POST", {
+      idempotency_key: proposalKey(),
+    });
+    toast("Outline proposed" + (result.generation.simulated ? " in simulated mode" : "") + ".");
+    route();
+  },
+
+  "proposal-generate-draft": async (form) => {
+    const result = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/draft/generate", "POST", {
+      idempotency_key: proposalKey(),
+    });
+    toast("Multi-section draft proposed" + (result.generation.simulated ? " in simulated mode" : "") + "; approve or reject each section.");
+    route();
+  },
+
+  "proposal-update-section": async (form) => {
+    const body = fd(form);
+    const citationIds = (body.citation_ids || "").split(",").map((value) => value.trim()).filter(Boolean);
+    await api("/proposal-sections/" + encodeURIComponent(form.dataset.sid), "PUT", {
+      text: body.text || "", expected_revision: parseInt(form.dataset.revision, 10), citation_ids: citationIds,
+    });
+    toast("Revised proposal saved as a pending review edit.");
+    route();
+  },
+
+  "proposal-review-section": async (form) => {
+    const body = fd(form);
+    await api("/proposal-sections/" + encodeURIComponent(form.dataset.sid) + "/review", "POST", {
+      decision: body.decision, expected_revision: parseInt(form.dataset.revision, 10),
+    });
+    toast("Section " + body.decision + ".");
+    route();
+  },
+
+  "proposal-undo-section": async (form) => {
+    await api("/proposal-sections/" + encodeURIComponent(form.dataset.sid) + "/undo", "POST", {
+      expected_revision: parseInt(form.dataset.revision, 10),
+    });
+    toast("Current proposal edit undone.");
+    route();
+  },
+
+  "proposal-save-version": async (form) => {
+    const body = fd(form);
+    const version = await api("/proposals/" + encodeURIComponent(form.dataset.proposal) + "/versions", "POST", {
+      name: body.name || null,
+      review_note: body.review_note,
+      expected_draft_revision: parseInt(form.dataset.revision, 10),
+      approve_all: body.approve_all === "on",
+    });
+    toast("Saved immutable " + version.name + ". Future edits continue as a new draft.");
+    route();
+  },
+
+  "proposal-export": async (form) => {
+    const filename = await downloadApi("/proposal-versions/" + encodeURIComponent(form.dataset.version) + "/export/download", {
+      formats: ["md", "html", "docx"],
+    }, "proposal-export.zip");
+    toast("Downloaded " + filename + ".");
+  },
+
   "ingest-file": async (form) => {
     const body = fd(form);
     const payload = { path: body.path, pdf_mode: body.pdf_mode || "auto" };
@@ -2808,6 +3313,24 @@ const formActions = {
     const extraction = pretty(r.ingest.extraction_confidence);
     const ocr = detail.ocr_status ? ", OCR " + pretty(detail.ocr_status) : "";
     toast('Ingested "' + trunc(r.title, 50) + '" (' + extraction + ocr + ").");
+    route();
+  },
+
+  "ingest-upload": async (form) => {
+    const input = form.querySelector('input[name="file"]');
+    if (!input || !input.files || !input.files.length) throw new Error("Choose a file.");
+    const data = new FormData();
+    data.append("file", input.files[0], input.files[0].name);
+    const body = fd(form);
+    if (body.title) data.append("title", body.title);
+    data.append("license", body.license || "author-owned");
+    data.append("pdf_mode", body.pdf_mode || "auto");
+    const r = await uploadApi(
+      "/projects/" + encodeURIComponent(form.dataset.pid) + "/ingest/upload", data);
+    const detail = r.ingest.extraction_detail || {};
+    const ocr = detail.ocr_status ? ", OCR " + pretty(detail.ocr_status) : "";
+    toast('Ingested "' + trunc(r.title, 50) + '" (' +
+      pretty(r.ingest.extraction_confidence) + ocr + ").");
     route();
   },
 
@@ -2922,6 +3445,20 @@ const formActions = {
     toast(n ? "Reply received; " + n + " action(s) proposed." : "Reply received.");
     loadTurns(tid);
     loadActions(tid);
+    loadThreadContext(tid);
+  },
+
+  "thread-brief": async (form) => {
+    await api("/threads/" + encodeURIComponent(form.dataset.tid) + "/brief", "PUT", fd(form));
+    toast("Research brief saved.");
+    loadThreadContext(form.dataset.tid);
+  },
+
+  "revise-edit": async (form) => {
+    await api("/actions/" + encodeURIComponent(form.dataset.aid) + "/revise", "POST",
+      { plan_hash: form.dataset.hash, text: fd(form).text });
+    toast("Revised proposal saved. Review it before applying.");
+    loadActions(form.dataset.tid);
   },
 
   "create-candidate": async (form) => {
@@ -3197,8 +3734,11 @@ const formActions = {
     const pwEl = form.querySelector('[name="password"]');
     const password = pwEl ? pwEl.value : "";
     const r = await api("/auth/login", "POST", { email: body.email, password });
-    if (!r || !r.access_token) throw new Error("Login failed: no access token returned.");
-    try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    if (!r || !r.authenticated) throw new Error("Login failed.");
+    if (!(state.authConfig && state.authConfig.cookie_sessions_enabled)) {
+      if (!r.access_token) throw new Error("Login failed: no access token returned.");
+      try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    }
     toast("Signed in.");
     location.reload();
   },
@@ -3209,8 +3749,11 @@ const formActions = {
     const password = pwEl ? pwEl.value : "";
     await api("/auth/register", "POST", { name: body.name, email: body.email, password });
     const r = await api("/auth/login", "POST", { email: body.email, password });
-    if (!r || !r.access_token) throw new Error("Registered, but auto-login failed.");
-    try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    if (!r || !r.authenticated) throw new Error("Registered, but auto-login failed.");
+    if (!(state.authConfig && state.authConfig.cookie_sessions_enabled)) {
+      if (!r.access_token) throw new Error("Registered, but auto-login failed.");
+      try { localStorage.setItem("wb_token", r.access_token); } catch (_e) { /* ignore */ }
+    }
     toast("Registered and signed in.");
     location.reload();
   },
@@ -3222,6 +3765,16 @@ const formActions = {
     const box = document.getElementById("ms-results");
     if (box) box.innerHTML = loadingHTML("Exporting…");
     try {
+      if (state.authConfig && state.authConfig.deployment_mode === "vercel") {
+        const filename = await downloadApi(
+          "/manuscripts/" + encodeURIComponent(form.dataset.mid) + "/export/download",
+          { formats },
+          "manuscript-export.zip");
+        if (box) box.innerHTML = "<h3>Export complete</h3><p>Downloaded " +
+          esc(filename) + ".</p>";
+        toast("Downloaded " + filename + ".");
+        return;
+      }
       const data = await api("/manuscripts/" + encodeURIComponent(form.dataset.mid) + "/export",
         "POST", { formats });
       renderExport(data);
@@ -3306,6 +3859,16 @@ document.addEventListener("change", (e) => {
   if (fn) fn(t);
 });
 
+document.addEventListener("input", (e) => {
+  const aid = e.target.dataset.editProposal;
+  if (!aid) return;
+  const button = document.querySelector('[data-action="action-approve"][data-aid="' + CSS.escape(aid) + '"]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Save revised proposal first";
+  }
+});
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   const modal = document.getElementById("auth-modal");
@@ -3313,5 +3876,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("hashchange", route);
-loadHealth().then(loadAuth);
-route();
+loadAuthConfig().then(() => Promise.all([loadHealth(), loadAuth()])).then(route);
+initializeCodexLocalAccess();

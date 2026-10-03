@@ -1,6 +1,19 @@
 /* Paper-Workbench UI — dependency-free stylesheet.
    Light/dark via prefers-color-scheme; system font stack; calm, professional. */
 
+.manuscript-studio { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.2rem; align-items: start; }
+.manuscript-chat { min-width: 0; }
+.manuscript-chat nav { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.manuscript-chat details, .context-panel { margin: 0.8rem 0; }
+.section-prose, .context-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.context-text { max-height: 28rem; overflow: auto; }
+.edit-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.8rem; }
+.edit-comparison > div { min-width: 0; padding: 0.6rem; border: 1px solid var(--border); border-radius: 4px; }
+.edit-comparison pre { max-height: 22rem; overflow: auto; }
+.manuscript-chat textarea { min-height: 8rem; }
+@media (max-width: 1000px) { .manuscript-studio { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .edit-comparison { grid-template-columns: minmax(0, 1fr); } }
+
 :root {
   --bg: #f7f7f5;
   --panel: #ffffff;
@@ -645,6 +658,11 @@ ul.timeline { gap: 0; }
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+}
+
+@media (max-width: 600px) {
+  .app-header { flex-wrap: wrap; }
+  .auth-area { flex-wrap: wrap; }
 }
 
 .modal-backdrop {

@@ -6,12 +6,13 @@ from sqlalchemy import engine_from_config, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from workbench.config import get_settings  # noqa: E402
+from workbench.db import migration_database_url  # noqa: E402
 from workbench.models import Base  # noqa: E402
 
 config = context.config
-# WB_DATABASE_URL wins over alembic.ini so migrations follow app configuration.
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# A direct WB_MIGRATION_DATABASE_URL may be used for Alembic while the application uses
+# a pooled WB_DATABASE_URL. Both common Postgres URL spellings are normalized to psycopg 3.
+config.set_main_option("sqlalchemy.url", migration_database_url())
 target_metadata = Base.metadata
 
 

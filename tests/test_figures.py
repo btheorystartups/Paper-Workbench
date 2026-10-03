@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from workbench.services import authoring, export_service, figures, research
+from workbench.services import authoring, export_service, figures
 from workbench.vocab import ObjectKind
 
 mpl = pytest.importorskip("matplotlib")  # render tests skip if the [figures] extra is absent
@@ -85,8 +85,8 @@ def test_staleness_detection(session, project, dataset):
 
 
 def test_orphan_and_no_caption_findings(session, project, dataset):
-    fig = figures.render_figure(session, project.id, title="F", dataset_id=dataset.id,
-                                spec={"kind": "bar", "x": "n", "series": ["cm_ms"]})
+    figures.render_figure(session, project.id, title="F", dataset_id=dataset.id,
+                          spec={"kind": "bar", "x": "n", "series": ["cm_ms"]})
     codes = {f["code"] for f in figures.audit_artifacts(session, project.id)}
     assert "artifact-no-caption" in codes
     # soft-delete the dataset → orphan
@@ -113,6 +113,7 @@ def test_export_includes_supplements_with_provenance(session, project, dataset):
                                 spec={"kind": "bar", "x": "n", "series": ["cm_ms"]})
     tbl = figures.build_table(session, project.id, title="T", dataset_id=dataset.id)
     ms = authoring.create_manuscript(session, project.id, title="M")
+    ms.body = {**ms.body, "artifact_ids": [fig.id, tbl.id]}
     authoring.add_section(session, ms.id, heading="Results", text="see figures")
     result = export_service.export_manuscript(session, ms.id, formats=["md"])
     import json

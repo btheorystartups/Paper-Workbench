@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 
@@ -16,15 +17,42 @@ _engine = None
 _SessionLocal: sessionmaker | None = None
 
 
+def normalize_database_url(url: str) -> str:
+    """Select psycopg 3 explicitly for common provider URL spellings."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgres://")
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    return url
+
+
+def runtime_database_url() -> str:
+    return normalize_database_url(get_settings().database_url)
+
+
+def migration_database_url() -> str:
+    settings = get_settings()
+    return normalize_database_url(settings.migration_database_url or settings.database_url)
+
+
 def get_engine():
     global _engine, _SessionLocal
     if _engine is None:
-        url = get_settings().database_url
+        settings = get_settings()
+        url = runtime_database_url()
         if url.startswith("sqlite:///"):
             db_path = Path(url.removeprefix("sqlite:///"))
             if db_path.parent and str(db_path.parent) not in (".", ""):
                 db_path.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(url, future=True)
+        engine_kwargs = {"future": True}
+        pool_mode = settings.db_pool_mode.strip().lower()
+        if pool_mode not in {"default", "null"}:
+            raise ValueError("WB_DB_POOL_MODE must be default or null")
+        if pool_mode == "null":
+            engine_kwargs["poolclass"] = NullPool
+        if url.startswith("postgresql"):
+            engine_kwargs["pool_pre_ping"] = True
+        _engine = create_engine(url, **engine_kwargs)
         if url.startswith("sqlite"):
             @event.listens_for(_engine, "connect")
             def _fk_on(dbapi_conn, _record):  # SQLite FKs are off by default
@@ -98,7 +126,7 @@ def upgrade_to_head() -> str:
 
     cfg = Config(str(ini))
     cfg.set_main_option("script_location", str(root / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", get_settings().database_url)
+    cfg.set_main_option("sqlalchemy.url", migration_database_url())
     command.upgrade(cfg, "head")
     return "alembic upgrade head"
 

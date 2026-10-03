@@ -13,18 +13,21 @@ from sqlalchemy.orm import Session
 
 from ..models import CitationEdge, Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
 from ..vocab import ClaimSupport, ObjectKind, SourceAccess
-from . import authoring, research, source_dedup
+from . import authoring, evidence_basis, research, source_dedup
 
 _NUM_RE = re.compile(r"\d+(\.\d+)?\s*(%|x|×)|\b\d+\.\d+\b")
 
 
-def audit_claims(session: Session, project_id: str) -> list[dict]:
+def audit_claims(session: Session, project_id: str, *, claim_ids: set[str] | None = None) -> list[dict]:
     """Claim-ledger checks: evidence coverage, verification debt, metadata-only quoting."""
     findings: list[dict] = []
     claims = list(session.scalars(select(Claim).where(Claim.project_id == project_id)))
     for claim in claims:
+        if claim.deleted_at or (claim_ids is not None and claim.id not in claim_ids):
+            continue
         evidence = list(
-            session.scalars(select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id))
+            session.scalars(select(ClaimEvidence).where(
+                ClaimEvidence.claim_id == claim.id, ClaimEvidence.deleted_at.is_(None)))
         )
         needs_source = claim.support in {ClaimSupport.EXTERNAL_SOURCE, ClaimSupport.BOTH}
         needs_result = claim.support in {ClaimSupport.RESEARCH_RESULT, ClaimSupport.BOTH}
@@ -69,11 +72,13 @@ def audit_claims(session: Session, project_id: str) -> list[dict]:
     return findings
 
 
-def audit_sources(session: Session, project_id: str) -> list[dict]:
+def audit_sources(session: Session, project_id: str, *, source_ids: set[str] | None = None) -> list[dict]:
     findings: list[dict] = []
     for src in session.scalars(
         select(Source).where(Source.project_id == project_id, Source.deleted_at.is_(None))
     ):
+        if source_ids is not None and src.id not in source_ids:
+            continue
         if src.integrity_note:
             findings.append(
                 {"severity": "error", "code": "source-integrity-flag",
@@ -89,6 +94,8 @@ def audit_sources(session: Session, project_id: str) -> list[dict]:
     for candidate in source_dedup.find_duplicate_candidates(session, project_id):
         source_a = candidate["source_a"]
         source_b = candidate["source_b"]
+        if source_ids is not None and not {source_a["id"], source_b["id"]} <= source_ids:
+            continue
         findings.append(
             {
                 "severity": "warning" if candidate["merge_allowed"] else "info",
@@ -108,6 +115,8 @@ def audit_sources(session: Session, project_id: str) -> list[dict]:
             CitationEdge.review_state != "rejected",
         )
     ):
+        if source_ids is not None:
+            continue  # Discovery relations are not manuscript evidence.
         if edge.resolution_state != "resolved":
             findings.append(
                 {
@@ -176,13 +185,36 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
                  "message": f"section '{section.title}' exceeds word budget ({len(text.split())}/{budget})",
                  "object_id": section.id}
             )
-    findings.extend(audit_claims(session, manuscript.project_id))
-    findings.extend(audit_sources(session, manuscript.project_id))
+    basis = evidence_basis.collect(session, manuscript_id)
+    findings.extend({"severity": "error", "code": "evidence-unavailable", "message": problem,
+                     "object_id": manuscript_id} for problem in basis["problems"])
+    findings.extend(audit_claims(session, manuscript.project_id, claim_ids=evidence_basis.ids(basis, Claim)))
+    findings.extend(audit_sources(session, manuscript.project_id,
+                                  source_ids=evidence_basis.ids(basis, Source)))
     from .authorship import audit_authorship
     from .figures import audit_artifacts
     from .guidelines import audit_checklists
 
-    findings.extend(audit_artifacts(session, manuscript.project_id))
+    findings.extend(audit_artifacts(session, manuscript.project_id,
+                                    artifact_ids=evidence_basis.ids(basis, ResearchObject)))
+    from . import revision_review
+
+    for identifier in evidence_basis.ids(basis, ResearchObject):
+        review = session.get(ResearchObject, identifier)
+        if review:
+            for check_id in review.body.get("required_check_ids", []):
+                check = session.get(ResearchObject, check_id)
+                if (not check or check.deleted_at or check.body.get("verification_status") != "passed"
+                        or not check.body.get("verification_evidence")):
+                    findings.append({"severity": "error", "code": "required-check-unverified",
+                                     "message": "required check lacks a passing evidence record",
+                                     "object_id": check_id})
+        if review and review.body.get("revision_review"):
+            for comment_id, disposition in revision_review.dispositions(session, review).items():
+                if disposition not in {"resolved", "justified_rejection"}:
+                    findings.append({"severity": "error", "code": "revision-unresolved",
+                                     "message": f"review comment {comment_id}: {disposition}",
+                                     "object_id": review.id})
     findings.extend(audit_checklists(session, manuscript_id))
     findings.extend(audit_authorship(session, manuscript_id))
     return findings

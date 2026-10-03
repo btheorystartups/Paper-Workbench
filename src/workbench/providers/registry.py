@@ -38,6 +38,12 @@ def get_extraction_provider() -> ExtractionProvider:
 
 def get_chat_provider() -> ChatProvider:
     settings = get_settings()
+    if settings.llm_provider == "codex_local":
+        from .codex_access import require_access
+        from .codex_local import CodexLocalChatAdapter
+
+        require_access(settings)
+        return CodexLocalChatAdapter(settings)
     if provider_mode() == "live":
         if settings.llm_provider == "anthropic" and anthropic_api_key():
             from .llm import AnthropicChatAdapter
@@ -62,6 +68,8 @@ def get_integrity_provider():
 
 def chat_model_name() -> str:
     settings = get_settings()
+    if settings.llm_provider == "codex_local":
+        return settings.codex_local_model
     if provider_mode() != "live":
         return "fake"
     if settings.llm_provider == "anthropic":

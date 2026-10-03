@@ -25,6 +25,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import storage
 from ..audit import record_audit
 from ..config import get_settings
 from ..models import (
@@ -41,9 +42,22 @@ from ..models import (
     Excerpt,
     LiteratureEntry,
     Project,
+    Proposal,
+    ProposalFitEvidence,
+    ProposalFitRow,
+    ProposalGeneration,
+    ProposalPassage,
+    ProposalSection,
+    ProposalSectionCitation,
+    ProposalSectionRevision,
+    ProposalSource,
+    ProposalVersion,
+    ProposalVersionExport,
     ProposedAction,
     PublicationPackage,
+    ResearchAgent,
     ResearchObject,
+    ResearchTask,
     SavedSearch,
     Source,
     Submission,
@@ -66,12 +80,25 @@ _TABLES = [
     ("credit_assignments", CreditAssignment, "project"),
     ("authorship_proposals", AuthorshipProposal, "project"),
     ("sources", Source, "project"),
+    ("proposals", Proposal, "project"),
+    ("proposal_sources", ProposalSource, "proposal"),
+    ("proposal_passages", ProposalPassage, "proposal"),
+    ("proposal_fit_rows", ProposalFitRow, "proposal"),
+    ("proposal_fit_evidence", ProposalFitEvidence, "fit_row"),
+    ("proposal_sections", ProposalSection, "proposal"),
+    ("proposal_section_citations", ProposalSectionCitation, "proposal_section"),
+    ("proposal_section_revisions", ProposalSectionRevision, "proposal_section"),
+    ("proposal_versions", ProposalVersion, "proposal"),
+    ("proposal_version_exports", ProposalVersionExport, "proposal_version"),
+    ("proposal_generations", ProposalGeneration, "proposal"),
     ("compute_runs", ComputeRun, "project"),
     ("citation_edges", CitationEdge, "project"),
     ("excerpts", Excerpt, "source"),
     ("claims", Claim, "project"),
     ("claim_evidence", ClaimEvidence, "claim"),
     ("threads", Thread, "project"),
+    ("research_tasks", ResearchTask, "project"),
+    ("research_agents", ResearchAgent, "research_task"),
     ("turns", Turn, "thread"),
     ("proposed_actions", ProposedAction, "thread"),
     ("saved_searches", SavedSearch, "project"),
@@ -106,14 +133,22 @@ def _tokenize(value: Any, root: Path) -> Any:
     return value
 
 
-def _detokenize(value: Any, root: Path) -> Any:
+def _detokenize(value: Any, root: Path, imported_refs: dict[str, dict] | None = None) -> Any:
     if isinstance(value, str) and value.startswith(_ARTIFACT_TOKEN + "/"):
         rel = value[len(_ARTIFACT_TOKEN) + 1 :]
+        reference = (imported_refs or {}).get(rel)
+        if reference:
+            return storage.local_path(reference) or f"artifact://{reference['storage_key']}"
         return str(root / Path(rel))
     if isinstance(value, dict):
-        return {k: _detokenize(v, root) for k, v in value.items()}
+        key = value.get("storage_key")
+        if isinstance(key, str) and key.startswith("artifacts/"):
+            rel = key.removeprefix("artifacts/")
+            if rel in (imported_refs or {}):
+                return imported_refs[rel]
+        return {k: _detokenize(v, root, imported_refs) for k, v in value.items()}
     if isinstance(value, list):
-        return [_detokenize(v, root) for v in value]
+        return [_detokenize(v, root, imported_refs) for v in value]
     return value
 
 
@@ -129,7 +164,7 @@ def _serialize_row(obj, root: Path) -> dict:
     return out
 
 
-def _deserialize_row(model, data: dict, root: Path):
+def _deserialize_row(model, data: dict, root: Path, imported_refs: dict[str, dict] | None = None):
     kwargs = {}
     for col in sa_inspect(model).columns:
         if col.key not in data:
@@ -138,33 +173,46 @@ def _deserialize_row(model, data: dict, root: Path):
         if isinstance(value, dict) and set(value) == {"__dt__"}:
             value = datetime.fromisoformat(value["__dt__"])
         else:
-            value = _detokenize(value, root)
+            value = _detokenize(value, root, imported_refs)
         kwargs[col.key] = value
     return model(**kwargs)
 
 
 def _select_rows(session: Session, model, mode: str, ids: dict[str, list[str]]):
     if mode == "project":
-        return list(
-            session.scalars(select(model).where(model.project_id == ids["project"][0]))
-        )
+        return list(session.scalars(select(model).where(model.project_id == ids["project"][0])))
     parent_ids = ids[mode]
     if not parent_ids:
         return []
-    fk = {"source": "source_id", "claim": "claim_id", "thread": "thread_id"}[mode]
-    return list(session.scalars(select(model).where(getattr(model, fk).in_(parent_ids))))
+    fk = {
+        "source": "source_id",
+        "claim": "claim_id",
+        "thread": "thread_id",
+        "proposal": "proposal_id",
+        "fit_row": "fit_row_id",
+        "proposal_section": "section_id",
+        "proposal_version": "version_id",
+        "research_task": "task_id",
+    }[mode]
+    statement = select(model).where(getattr(model, fk).in_(parent_ids))
+    if mode == "research_task":
+        statement = statement.order_by(model.created_at, model.id)  # parent precedes child on restore
+    return list(session.scalars(statement))
 
 
-def _collect_artifact_files(rows_by_table: dict[str, list[dict]], root: Path) -> list[str]:
+def _collect_artifact_files(rows_by_table: dict[str, list[dict]], root: Path) -> dict[str, dict | None]:
     """Every tokenized path referenced anywhere in the export, deduped, existing only."""
-    found: set[str] = set()
+    found: dict[str, dict | None] = {}
 
     def walk(value: Any) -> None:
         if isinstance(value, str) and value.startswith(_ARTIFACT_TOKEN + "/"):
             rel = value[len(_ARTIFACT_TOKEN) + 1 :]
             if (root / Path(rel)).is_file():
-                found.add(rel)
+                found.setdefault(rel, None)
         elif isinstance(value, dict):
+            key = value.get("storage_key")
+            if isinstance(key, str) and key.startswith("artifacts/"):
+                found[key.removeprefix("artifacts/")] = value
             for v in value.values():
                 walk(v)
         elif isinstance(value, list):
@@ -172,12 +220,11 @@ def _collect_artifact_files(rows_by_table: dict[str, list[dict]], root: Path) ->
                 walk(v)
 
     walk(rows_by_table)
-    return sorted(found)
+    return dict(sorted(found.items()))
 
 
 def export_project(session: Session, project_id: str, *, out_path: str | None = None) -> dict:
-    """Write `<data_dir>/exports/projects/<project_id>.zip` (or out_path). Returns a
-    summary dict with the bundle path, row counts, and the bundle's overall sha256."""
+    """Assemble and durably store a project ZIP; the local path is scratch in hosted mode."""
     project = session.get(Project, project_id)
     if project is None or project.deleted_at is not None:
         raise research.IntegrityError("project not found")
@@ -195,6 +242,16 @@ def export_project(session: Session, project_id: str, *, out_path: str | None = 
             ids["claim"] = [r.id for r in rows]
         elif key == "threads":
             ids["thread"] = [r.id for r in rows]
+        elif key == "research_tasks":
+            ids["research_task"] = [r.id for r in rows]
+        elif key == "proposals":
+            ids["proposal"] = [r.id for r in rows]
+        elif key == "proposal_fit_rows":
+            ids["fit_row"] = [r.id for r in rows]
+        elif key == "proposal_sections":
+            ids["proposal_section"] = [r.id for r in rows]
+        elif key == "proposal_versions":
+            ids["proposal_version"] = [r.id for r in rows]
 
     artifact_files = _collect_artifact_files(rows_by_table, root)
 
@@ -207,8 +264,8 @@ def export_project(session: Session, project_id: str, *, out_path: str | None = 
     checksums: dict[str, str] = {"project.json": hashlib.sha256(data_blob).hexdigest()}
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("project.json", data_blob)
-        for rel in artifact_files:
-            payload = (root / Path(rel)).read_bytes()
+        for rel, reference in artifact_files.items():
+            payload = storage.read_bytes(reference) if reference else (root / Path(rel)).read_bytes()
             checksums[f"artifacts/{rel}"] = hashlib.sha256(payload).hexdigest()
             zf.writestr(f"artifacts/{rel}", payload)
         manifest = {
@@ -225,22 +282,34 @@ def export_project(session: Session, project_id: str, *, out_path: str | None = 
         }
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
 
-    record_audit(
-        session, workspace_id=project.workspace_id, actor="user", action="export_project",
-        object_type="project", object_id=project_id,
-        detail={"path": out_path, "row_counts": manifest["row_counts"]},
+    bundle_payload = Path(out_path).read_bytes()
+    bundle_ref = storage.store_content(
+        bundle_payload,
+        filename=Path(out_path).name,
+        namespace=f"exports/projects/{project_id}",
+        content_type="application/zip",
     )
-    bundle_sha = hashlib.sha256(Path(out_path).read_bytes()).hexdigest()
-    return {"path": out_path, "sha256": bundle_sha, "row_counts": manifest["row_counts"],
-            "artifact_file_count": len(artifact_files)}
+    record_audit(
+        session,
+        workspace_id=project.workspace_id,
+        actor="user",
+        action="export_project",
+        object_type="project",
+        object_id=project_id,
+        detail={"path": out_path, "artifact": bundle_ref, "row_counts": manifest["row_counts"]},
+    )
+    bundle_sha = hashlib.sha256(bundle_payload).hexdigest()
+    return {
+        "path": out_path,
+        "artifact": bundle_ref,
+        "sha256": bundle_sha,
+        "row_counts": manifest["row_counts"],
+        "artifact_file_count": len(artifact_files),
+    }
 
 
-def import_project(
-    session: Session, zip_path: str | Path, *, workspace_id: str | None = None
-) -> dict:
-    """Restore a project bundle. Refuses if the project id already exists. Verifies every
-    checksum before writing anything. Artifacts land in the local content-addressed store;
-    row payload paths are rewritten to the local data_dir."""
+def import_project(session: Session, zip_path: str | Path, *, workspace_id: str | None = None) -> dict:
+    """Restore a project bundle into the configured artifact store after checksum checks."""
     zip_path = Path(zip_path)
     if not zip_path.is_file():
         raise research.IntegrityError(f"bundle not found: {zip_path}")
@@ -268,37 +337,40 @@ def import_project(
             )
 
         if workspace_id is None:
-            ws = research.create_workspace(
-                session, manifest.get("workspace_name") or "Imported"
-            )
+            ws = research.create_workspace(session, manifest.get("workspace_name") or "Imported")
             workspace_id = ws.id
         elif session.get(Workspace, workspace_id) is None:
             raise research.IntegrityError("target workspace not found")
         project_row["workspace_id"] = workspace_id
 
         # Artifacts first (content-addressed: identical files simply already exist).
+        imported_refs: dict[str, dict] = {}
         for member in manifest["checksums"]:
             if not member.startswith("artifacts/"):
                 continue
-            dest = root / Path(member[len("artifacts/") :])
-            if not dest.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(zf.read(member))
+            rel = member[len("artifacts/") :]
+            imported_refs[rel] = storage.put_bytes(f"artifacts/{rel}", zf.read(member))
 
     counts: dict[str, int] = {}
     for key, model, _mode in _TABLES:
         for data in rows_by_table.get(key, []):
-            session.add(_deserialize_row(model, data, root))
+            session.add(_deserialize_row(model, data, root, imported_refs))
         counts[key] = len(rows_by_table.get(key, []))
         # flush per table: _TABLES is FK-parent-first, and without relationship()s
         # the unit of work won't order inserts across models on its own
         session.flush()
 
     record_audit(
-        session, workspace_id=workspace_id, actor="user", action="import_project",
-        object_type="project", object_id=project_row["id"],
-        detail={"bundle": str(zip_path), "row_counts": counts,
-                "source_manifest_exported_at": manifest.get("exported_at")},
+        session,
+        workspace_id=workspace_id,
+        actor="user",
+        action="import_project",
+        object_type="project",
+        object_id=project_row["id"],
+        detail={
+            "bundle": str(zip_path),
+            "row_counts": counts,
+            "source_manifest_exported_at": manifest.get("exported_at"),
+        },
     )
-    return {"project_id": project_row["id"], "workspace_id": workspace_id,
-            "row_counts": counts}
+    return {"project_id": project_row["id"], "workspace_id": workspace_id, "row_counts": counts}

@@ -1,0 +1,144 @@
+[
+  {
+    "id": "00-intro",
+    "title": "From evidence to a reviewed manuscript",
+    "card": true,
+    "lines": [
+      "ORGANIZE EVIDENCE",
+      "DISCUSS A SECTION",
+      "REVIEW EVERY CHANGE"
+    ],
+    "speech": [
+      "Welcome to Paper Workbench. This tour follows a small research project from evidence to a reviewed manuscript.",
+      "You will see the real interface, with invented data and simulated AI. No live model or real research is used in this demonstration."
+    ]
+  },
+  {
+    "id": "01-sources",
+    "title": "1. Start with traceable sources",
+    "speech": [
+      "Start in a workspace and create a project for your research question. Our synthetic pilot project is already prepared.",
+      "In Sources, register the material you actually have, or ingest a supported local file. Record its access level and acquisition details.",
+      "Open the source to inspect captured excerpts and their locators. Here, an invented excerpt reports twelve percent improvement across ten runs.",
+      "A source title or abstract is not a substitute for evidence you have actually examined."
+    ]
+  },
+  {
+    "id": "02-claims",
+    "title": "2. Connect claims to evidence",
+    "speech": [
+      "In Claims, write the specific assertion you want to use and link the supporting excerpt or research object.",
+      "The support state stays visible. Opening this claim reveals the evidence link and the source excerpt behind it.",
+      "Keep observations, assumptions, and unsupported statements distinct. Accepting an AI wording change never verifies a source or upgrades a claim's support."
+    ]
+  },
+  {
+    "id": "03-manuscript",
+    "title": "3. Give each section a purpose",
+    "speech": [
+      "In Manuscripts, create your manuscript and add sections with a heading, purpose, word budget, and linked claims.",
+      "Our Discussion section interprets the pilot and preserves its limitations. Choose Discuss section to open or resume its conversation.",
+      "The current section appears beside the conversation, so you can work on the prose while retaining its research context."
+    ]
+  },
+  {
+    "id": "04-brief",
+    "title": "4. Save the brief and inspect context",
+    "speech": [
+      "Use Research brief to record your question, intended contribution, audience, decisions, and open issues. Save it before continuing.",
+      "Here we explicitly preserve the ten-run limitation and prohibit invented citations.",
+      "Open Context for the next reply to inspect the manuscript outline, selected section, linked claims, and available evidence.",
+      "Each reply uses current context, your saved brief, and the latest twelve messages. The brief is your continuity tool for longer work."
+    ]
+  },
+  {
+    "id": "05-dialogue",
+    "title": "5. Have a focused back-and-forth",
+    "speech": [
+      "Use conversation modes to frame the task: explore possibilities, explain a passage, challenge assumptions, compare approaches, plan work, or act.",
+      "A useful prompt is: What would a skeptical reviewer challenge? Separate supported observations from assumptions.",
+      "Follow up with more precise constraints, and use Branch on a turn to explore another direction.",
+      "This response is visibly simulated. Live conversational writing quality has not yet been verified for this deployment."
+    ]
+  },
+  {
+    "id": "06-proposal",
+    "title": "6. Request an edit, then inspect it",
+    "speech": [
+      "With a live provider configured, you would ask naturally for a revision, such as: Shorten this section while preserving every limitation.",
+      "For this offline demonstration, the special revise command supplies complete replacement text and creates a deterministic proposal.",
+      "The Before and Proposed text panels make the change reviewable. The manuscript remains unchanged while approval is pending.",
+      "Read both versions. Reject any edit that adds a claim the evidence cannot support."
+    ]
+  },
+  {
+    "id": "07-revise",
+    "title": "7. Make the proposal your own",
+    "speech": [
+      "You can edit a proposal before accepting it. Open Revise this proposal and write the replacement text you actually want.",
+      "Notice that approval is disabled while your revision is unsaved. Save revised proposal creates a new reviewable proposal.",
+      "The original remains in the history. Here, our revision explicitly says the small sample limits generalizability and calls for independent replication."
+    ]
+  },
+  {
+    "id": "08-apply",
+    "title": "8. Apply only what you reviewed",
+    "speech": [
+      "Choose Apply shown edit after reviewing the final wording. The section now contains the exact revision we approved.",
+      "Approval changes this section's prose. It does not change the research evidence or claim support states.",
+      "If the section or included evidence changes before approval, the proposal becomes stale. Request a fresh proposal instead of overwriting newer work."
+    ]
+  },
+  {
+    "id": "09-undo",
+    "title": "9. Undo through another review",
+    "speech": [
+      "Propose undo creates another pending edit. It does not immediately restore the old text.",
+      "Review that proposal and apply it to restore the original paragraph, as shown here.",
+      "Undo is guarded too: it is refused if the section has changed since the accepted edit. The conversation retains the action history and provenance."
+    ]
+  },
+  {
+    "id": "10-audit",
+    "title": "10. Check the manuscript before export",
+    "speech": [
+      "Run audit to inspect issues such as verification debt, source status, claim coverage, and unsupported numbers.",
+      "Treat the findings as work to resolve. A clean-looking paragraph does not establish sound evidence.",
+      "Skeptical review is a separate AI-assisted check. In this offline configuration its output is simulated, so it cannot replace a real methodological review."
+    ]
+  },
+  {
+    "id": "11-export",
+    "title": "11. Export a reviewable draft",
+    "speech": [
+      "Choose your export formats. This demonstration writes Markdown, HTML, Word, and bibliography files into the disposable demo folder.",
+      "The interface also offers LaTeX, PDF, and JATS. Exports include a provenance manifest and the audit findings at export time.",
+      "Inspect your exported manuscript before sharing it. Exporting a file does not submit a paper or establish that it is publication-ready."
+    ]
+  },
+  {
+    "id": "12-toolbox",
+    "title": "12. Expand the workflow as needed",
+    "speech": [
+      "Beyond writing, Literature supports discovery and screening. Review imports carefully: discovering a paper does not automatically create evidence.",
+      "Compute provides reviewed execution plans and recorded outputs. Figures tracks source data and reviewed captions.",
+      "Manuscripts also offers reporting checklists and authorship contribution records. Submissions tracks review rounds and publication packages.",
+      "These screens are an orientation to the broader tools; their full workflows are not exercised in this short tour."
+    ]
+  },
+  {
+    "id": "13-next",
+    "title": "Your next writing session",
+    "card": true,
+    "lines": [
+      "ONE QUESTION  /  ONE SECTION",
+      "LINK EVIDENCE  /  SAVE THE BRIEF",
+      "ASK  /  REVIEW  /  APPLY  /  AUDIT"
+    ],
+    "speech": [
+      "For your first writing session, choose one question and one section. Link the evidence, save a brief, discuss the passage, and review each edit.",
+      "Natural-language chat is built into the application. A dedicated command-line or M C P assistant is still future work; HTTP endpoints are available to API clients.",
+      "Use the isolated demo to practice now. Staging still uses fake providers, has closed registration, and is not approved for real research. Live-provider setup and writing-quality checks come next."
+    ]
+  }
+]

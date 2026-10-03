@@ -22,6 +22,10 @@ from ..models import (
     CreditAssignment,
     Project,
     ProjectMember,
+    Proposal,
+    ProposalGeneration,
+    ProposalSection,
+    ProposalVersion,
     ProposedAction,
     PublicationPackage,
     ResearchObject,
@@ -76,21 +80,15 @@ def resolve_principal(session: Session, api_key: str | None) -> User:
     """Compatibility helper for local-mode callers; production uses ``workbench.auth``."""
     if not api_key:
         return default_user(session)
-    user = session.scalars(
-        select(User).where(User.api_key == api_key, User.deleted_at.is_(None))
-    ).first()
+    user = session.scalars(select(User).where(User.api_key == api_key, User.deleted_at.is_(None))).first()
     if user is None:
         raise Forbidden("unknown API key")
     return user
 
 
-def add_workspace_member(
-    session: Session, workspace_id: str, user_id: str, role: str
-) -> WorkspaceMember:
+def add_workspace_member(session: Session, workspace_id: str, user_id: str, role: str) -> WorkspaceMember:
     if role not in WORKSPACE_ROLE_RANK:
-        raise research.IntegrityError(
-            f"workspace role must be one of {sorted(WORKSPACE_ROLE_RANK)}"
-        )
+        raise research.IntegrityError(f"workspace role must be one of {sorted(WORKSPACE_ROLE_RANK)}")
     if session.get(Workspace, workspace_id) is None:
         raise research.IntegrityError("workspace not found")
     if session.get(User, user_id) is None:
@@ -156,9 +154,7 @@ def add_member(session: Session, project_id: str, user_id: str, role: str) -> Pr
     if workspace_role_of(session, project.workspace_id, user_id) is None:
         add_workspace_member(session, project.workspace_id, user_id, "member")
     existing = session.scalars(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id, ProjectMember.user_id == user_id
-        )
+        select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
     ).first()
     if existing:
         existing.role = role
@@ -245,12 +241,16 @@ _DIRECT_PROJECT_MODELS = {
     "compute-runs": ComputeRun,
     "submissions": Submission,
     "publication-packages": PublicationPackage,
+    "proposals": Proposal,
+    "proposal-generations": ProposalGeneration,
+    "proposal-sections": ProposalSection,
+    "proposal-versions": ProposalVersion,
 }
 
 
 def request_resource_scope(session: Session, path: str) -> ResourceScope | None:
     """Resolve a routed API path to its tenant/project without trusting caller input."""
-    if path == "/projects/import":
+    if path in {"/projects/import", "/projects/import/upload"}:
         return None
     parts = [part for part in path.split("/") if part]
     if len(parts) < 2:
@@ -319,9 +319,7 @@ def minimum_project_role(path: str, method: str) -> str:
 
 
 def required_api_scope(path: str, method: str) -> str:
-    if method in {"GET", "HEAD"} or any(
-        pattern.match(path) for pattern in _READ_ONLY_POST_PATHS
-    ):
+    if method in {"GET", "HEAD"} or any(pattern.match(path) for pattern in _READ_ONLY_POST_PATHS):
         return "read"
     if (
         path.startswith("/venues")
@@ -364,9 +362,7 @@ def authorize_request_scope(
         )
         return
     minimum = "viewer"
-    if method not in {"GET", "HEAD"} and re.match(
-        r"^/workspaces/[^/]+/(members|oidc-bindings)$", path
-    ):
+    if method not in {"GET", "HEAD"} and re.match(r"^/workspaces/[^/]+/(members|oidc-bindings)$", path):
         minimum = "owner"
     require_workspace_role(
         session,

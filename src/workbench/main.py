@@ -3,30 +3,40 @@
 Run: uvicorn workbench.main:app --reload
 """
 
+import io
+import secrets
+import tempfile
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Literal
+from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import auth, db
+from . import auth, db, deployment, research_api, storage
 from .audit import record_audit
+from .codex_boundary import CodexLocalBoundary
 from .config import get_settings
 from .models import (
     AuthorshipProposal,
     Claim,
     CreditAssignment,
     Project,
+    Proposal,
+    ProposalSection,
+    ProposalVersion,
     ProposedAction,
     ResearchObject,
     Source,
     Thread,
     Turn,
 )
+from .providers.codex_access import LOCAL_NOTICE, CodexLocalError, validate_configuration
 from .services import (
     audits,
     authoring,
@@ -37,9 +47,11 @@ from .services import (
     export_service,
     figures,
     literature,
+    manuscript_chat,
     outputs,
     paper_design,
     portfolio,
+    proposals,
     publication_packages,
     research,
     security,
@@ -56,13 +68,55 @@ async def lifespan(_app: FastAPI):
     # Alembic is the schema source of truth; this builds a fresh DB or migrates a managed
     # one. (Tests call db.create_all() directly for speed.)
     auth.validate_auth_configuration()
-    db.upgrade_to_head()
-    yield
+    deployment.validate_deployment_configuration()
+    if get_settings().llm_provider == "codex_local":
+        validate_configuration()
+        from .providers import codex_access
+
+        if not codex_access._loopback_listener_verified:
+            raise CodexLocalError("codex_local requires the dedicated loopback launcher")
+    if deployment.should_run_startup_migrations():
+        db.upgrade_to_head()
+    try:
+        yield
+    finally:
+        from .services import research_runner
+
+        research_runner.shutdown()
 
 
 app = FastAPI(title="Paper-Workbench", version="0.1.0", lifespan=lifespan)
 
-_PUBLIC_PATHS = {"/health", "/auth/register", "/auth/login", "/auth/oidc/login"}
+
+@app.exception_handler(CodexLocalError)
+async def _codex_local_error(_request: Request, exc: CodexLocalError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
+@app.get("/providers/codex-local/config")
+def codex_local_configuration():
+    settings = get_settings()
+    return {"selected": settings.llm_provider == "codex_local", "enabled": settings.codex_local_enabled,
+            "local_only": True, "notice": LOCAL_NOTICE}
+
+
+@app.get("/providers/codex-local/account")
+def codex_local_account():
+    from .providers.registry import get_chat_provider
+
+    if get_settings().llm_provider != "codex_local":
+        raise CodexLocalError("codex_local is not selected")
+    return get_chat_provider().account_status()
+
+_PUBLIC_PATHS = {
+    "/health",
+    "/auth/config",
+    "/auth/register",
+    "/auth/login",
+    "/auth/oidc/login",
+    "/auth/oidc/start",
+    "/auth/oidc/callback",
+}
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -86,9 +140,17 @@ async def _production_auth_boundary(request: Request, call_next):
     ):
         return await call_next(request)
 
-    token = _bearer_token(request.headers.get("authorization"))
+    bearer_token = _bearer_token(request.headers.get("authorization"))
+    cookie_token = request.cookies.get(settings.auth_cookie_name)
+    token = bearer_token or cookie_token
     session = db.session_factory()()
     try:
+        if cookie_token and not bearer_token and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            auth.verify_csrf(
+                cookie_token,
+                request.cookies.get(settings.auth_csrf_cookie_name),
+                request.headers.get("x-csrf-token"),
+            )
         principal = auth.principal_from_bearer(session, token)
         required_scope = security.required_api_scope(path, request.method)
         auth.require_api_scope(principal, required_scope)
@@ -115,9 +177,11 @@ async def _production_auth_boundary(request: Request, call_next):
         session.close()
     return await call_next(request)
 
+
+app.add_middleware(CodexLocalBoundary)
+
 _STATIC_DIR = __import__("pathlib").Path(__file__).parent / "web" / "static"
 if _STATIC_DIR.is_dir():
-    from fastapi.responses import RedirectResponse
     from fastapi.staticfiles import StaticFiles
 
     app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
@@ -129,6 +193,35 @@ if _STATIC_DIR.is_dir():
 
 def _session():
     yield from db.get_session()
+
+
+async def _bounded_upload(file: UploadFile) -> bytes:
+    """Read one request upload without exceeding the configured serverless body budget."""
+    maximum = get_settings().upload_max_bytes
+    payload = bytearray()
+    try:
+        while True:
+            chunk = await file.read(min(1 << 20, maximum + 1))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > maximum:
+                raise HTTPException(413, "upload exceeds WB_UPLOAD_MAX_BYTES")
+    finally:
+        await file.close()
+    return bytes(payload)
+
+
+def _download_response(payload: bytes, filename: str, media_type: str) -> Response:
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{Path(filename).name}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _principal(
@@ -201,9 +294,7 @@ def auth_register(
 ):
     try:
         auth.authorize_registration(session, x_workbench_bootstrap)
-        user = auth.register_local_user(
-            session, name=body.name, email=body.email, password=body.password
-        )
+        user = auth.register_local_user(session, name=body.name, email=body.email, password=body.password)
     except auth.AuthError as exc:
         status = 403 if "registration is disabled" in str(exc) else 409
         raise HTTPException(status, str(exc)) from exc
@@ -217,26 +308,68 @@ class LoginIn(BaseModel):
     workspace_id: str | None = None
 
 
+def _set_auth_cookies(response: Response, token: str, csrf_token: str) -> None:
+    settings = get_settings()
+    max_age = settings.auth_ttl_minutes * 60
+    common = {
+        "secure": settings.auth_cookie_secure,
+        "samesite": "lax",
+        "path": "/",
+        "max_age": max_age,
+    }
+    response.set_cookie(
+        settings.auth_cookie_name,
+        token,
+        httponly=True,
+        **common,
+    )
+    response.set_cookie(
+        settings.auth_csrf_cookie_name,
+        csrf_token,
+        httponly=False,
+        **common,
+    )
+
+
+def _delete_auth_cookies(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie(settings.auth_cookie_name, path="/")
+    response.delete_cookie(settings.auth_csrf_cookie_name, path="/")
+
+
+def _login_result(user, token: str, response: Response, csrf_token: str | None) -> dict:
+    settings = get_settings()
+    result = {
+        "authenticated": True,
+        "token_type": "cookie" if settings.auth_cookie_sessions_enabled else "bearer",
+        "user_id": user.id,
+        "workspace_id": auth.decode_access_token(token).get("wid"),
+    }
+    if settings.auth_cookie_sessions_enabled:
+        assert csrf_token is not None
+        _set_auth_cookies(response, token, csrf_token)
+    else:
+        result["access_token"] = token
+    return result
+
+
 @app.post("/auth/login")
-def auth_login(body: LoginIn, session: Session = Depends(_session)):
+def auth_login(body: LoginIn, response: Response, session: Session = Depends(_session)):
     if get_settings().auth_required and not get_settings().auth_password_login_enabled:
         raise HTTPException(403, "password login is disabled")
+    csrf_token = secrets.token_urlsafe(32) if get_settings().auth_cookie_sessions_enabled else None
     try:
         user, token = auth.login_password(
             session,
             email=body.email,
             password=body.password,
             workspace_id=body.workspace_id,
+            csrf_token=csrf_token,
         )
     except auth.AuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     session.commit()
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": user.id,
-        "workspace_id": auth.decode_access_token(token).get("wid"),
-    }
+    return _login_result(user, token, response, csrf_token)
 
 
 class OidcLoginIn(BaseModel):
@@ -245,20 +378,113 @@ class OidcLoginIn(BaseModel):
 
 
 @app.post("/auth/oidc/login")
-def auth_oidc_login(body: OidcLoginIn, session: Session = Depends(_session)):
+def auth_oidc_login(body: OidcLoginIn, response: Response, session: Session = Depends(_session)):
+    csrf_token = secrets.token_urlsafe(32) if get_settings().auth_cookie_sessions_enabled else None
     try:
         user, token = auth.login_oidc(
-            session, body.id_token, workspace_id=body.workspace_id
+            session,
+            body.id_token,
+            workspace_id=body.workspace_id,
+            csrf_token=csrf_token,
         )
     except auth.AuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     session.commit()
+    return _login_result(user, token, response, csrf_token)
+
+
+@app.get("/auth/config")
+def auth_config():
+    settings = get_settings()
     return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": user.id,
-        "workspace_id": auth.decode_access_token(token).get("wid"),
+        "auth_required": settings.auth_required,
+        "password_login_enabled": settings.auth_password_login_enabled,
+        "registration_enabled": settings.auth_allow_registration,
+        "cookie_sessions_enabled": settings.auth_cookie_sessions_enabled,
+        "csrf_cookie_name": settings.auth_csrf_cookie_name,
+        "oidc_browser_enabled": settings.oidc_browser_enabled,
+        "oidc_start_path": "/auth/oidc/start",
+        "deployment_mode": settings.deployment_mode,
+        "upload_max_bytes": settings.upload_max_bytes,
     }
+
+
+@app.get("/auth/oidc/start", include_in_schema=False)
+def auth_oidc_start(return_to: str = "/ui/"):
+    settings = get_settings()
+    try:
+        authorization_url, flow_cookie = auth.start_oidc_browser_flow(return_to)
+    except auth.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    response = RedirectResponse(authorization_url, status_code=302)
+    response.set_cookie(
+        settings.oidc_flow_cookie_name,
+        flow_cookie,
+        max_age=settings.oidc_flow_ttl_minutes * 60,
+        secure=settings.auth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+        path="/auth/oidc/callback",
+    )
+    return response
+
+
+@app.get("/auth/oidc/callback", include_in_schema=False)
+def auth_oidc_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    session: Session = Depends(_session),
+):
+    settings = get_settings()
+    if error:
+        raise HTTPException(401, "identity provider denied authorization")
+    if not code or not state:
+        raise HTTPException(400, "OIDC callback is missing required parameters")
+    flow_cookie = request.cookies.get(settings.oidc_flow_cookie_name)
+    if not flow_cookie:
+        raise HTTPException(400, "OIDC flow cookie is missing or expired")
+    try:
+        flow = auth.decode_oidc_browser_flow(flow_cookie, state)
+        id_token = auth.exchange_oidc_authorization_code(code, flow.code_verifier)
+        csrf_token = secrets.token_urlsafe(32)
+        user, token = auth.login_oidc(
+            session,
+            id_token,
+            csrf_token=csrf_token,
+            expected_nonce=flow.nonce,
+        )
+    except auth.AuthError as exc:
+        session.rollback()
+        raise HTTPException(401, str(exc)) from exc
+    session.commit()
+    response = RedirectResponse(flow.return_to, status_code=303)
+    _set_auth_cookies(response, token, csrf_token)
+    response.delete_cookie(settings.oidc_flow_cookie_name, path="/auth/oidc/callback")
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request, response: Response, session: Session = Depends(_session)):
+    settings = get_settings()
+    bearer = _bearer_token(request.headers.get("authorization"))
+    cookie = request.cookies.get(settings.auth_cookie_name)
+    token = bearer or cookie
+    if token:
+        try:
+            if cookie and not bearer:
+                auth.verify_csrf(
+                    cookie,
+                    request.cookies.get(settings.auth_csrf_cookie_name),
+                    request.headers.get("x-csrf-token"),
+                )
+            auth.revoke_access_token(session, token)
+        except auth.AuthError as exc:
+            raise HTTPException(401, "logout requires a valid session token") from exc
+        session.commit()
+    _delete_auth_cookies(response)
+    return {"authenticated": False}
 
 
 @app.get("/auth/me")
@@ -287,15 +513,15 @@ def health():
     return {
         "status": "ok",
         "provider_mode": settings.provider_mode,
+        "chat_provider": "codex_local" if settings.llm_provider == "codex_local" else settings.provider_mode,
         "auth_required": settings.auth_required,
         "oidc_mode": settings.oidc_mode,
+        "deployment_mode": settings.deployment_mode,
     }
 
 
 @app.get("/workspaces")
-def list_workspaces(
-    session: Session = Depends(_session), user=Depends(_principal)
-):
+def list_workspaces(session: Session = Depends(_session), user=Depends(_principal)):
     from .models import Workspace, WorkspaceMember
 
     query = select(Workspace).where(Workspace.deleted_at.is_(None))
@@ -310,10 +536,7 @@ def list_workspaces(
         )
         if user.workspace_id:
             query = query.where(Workspace.id == user.workspace_id)
-    return [
-        {"id": w.id, "name": w.name}
-        for w in session.scalars(query)
-    ]
+    return [{"id": w.id, "name": w.name} for w in session.scalars(query)]
 
 
 @app.get("/workspaces/{workspace_id}/projects")
@@ -328,23 +551,26 @@ def list_projects(
     return [
         {"id": p.id, "name": p.name, "description": p.description}
         for p in session.scalars(
-            select(Project).where(
-                Project.workspace_id == workspace_id, Project.deleted_at.is_(None)
-            )
+            select(Project).where(Project.workspace_id == workspace_id, Project.deleted_at.is_(None))
         )
     ]
 
 
 @app.get("/projects/{project_id}/sources")
 def list_sources(project_id: str, session: Session = Depends(_session)):
-    rows = session.scalars(
-        select(Source).where(Source.project_id == project_id, Source.deleted_at.is_(None))
-    )
+    rows = session.scalars(select(Source).where(Source.project_id == project_id, Source.deleted_at.is_(None)))
     return [
         {
-            "id": s.id, "title": s.title, "authors": s.authors, "year": s.year,
-            "venue": s.venue, "doi": s.doi, "url": s.url, "access": str(s.access),
-            "license": s.license, "human_verified": s.human_verified,
+            "id": s.id,
+            "title": s.title,
+            "authors": s.authors,
+            "year": s.year,
+            "venue": s.venue,
+            "doi": s.doi,
+            "url": s.url,
+            "access": str(s.access),
+            "license": s.license,
+            "human_verified": s.human_verified,
             "integrity_note": s.integrity_note,
             "ingest": (s.provider_metadata or {}).get("ingest"),
         }
@@ -376,9 +602,7 @@ def merge_duplicate_sources(
 ):
     _require(session, project_id, user, "editor")
     try:
-        result = source_dedup.merge_duplicate_sources(
-            session, project_id, **body.model_dump()
-        )
+        result = source_dedup.merge_duplicate_sources(session, project_id, **body.model_dump())
     except research.IntegrityError as exc:
         status = 409 if "plan changed" in str(exc) else 422
         raise HTTPException(status, str(exc)) from exc
@@ -399,13 +623,14 @@ def list_excerpts(source_id: str, session: Session = Depends(_session)):
 @app.get("/projects/{project_id}/claims")
 def list_claims(project_id: str, session: Session = Depends(_session)):
     out = []
-    for c in session.scalars(
-        select(Claim).where(Claim.project_id == project_id, Claim.deleted_at.is_(None))
-    ):
+    for c in session.scalars(select(Claim).where(Claim.project_id == project_id, Claim.deleted_at.is_(None))):
         evidence = research.claim_evidence(session, c.id)
         out.append(
             {
-                "id": c.id, "text": c.text, "support": str(c.support), "notes": c.notes,
+                "id": c.id,
+                "text": c.text,
+                "support": str(c.support),
+                "notes": c.notes,
                 "evidence_count": len(evidence),
             }
         )
@@ -414,26 +639,38 @@ def list_claims(project_id: str, session: Session = Depends(_session)):
 
 @app.get("/projects/{project_id}/threads")
 def list_threads(project_id: str, session: Session = Depends(_session)):
-    rows = session.scalars(
-        select(Thread).where(Thread.project_id == project_id, Thread.deleted_at.is_(None))
-    )
+    rows = session.scalars(select(Thread).where(Thread.project_id == project_id, Thread.deleted_at.is_(None)))
     return [
-        {"id": t.id, "title": t.title, "goal": t.goal, "mode": t.mode,
-         "parent_thread_id": t.parent_thread_id,
-         "branched_from_turn_id": t.branched_from_turn_id,
-         "pinned_object_ids": t.pinned_object_ids, "pinned_source_ids": t.pinned_source_ids}
+        {
+            "id": t.id,
+            "title": t.title,
+            "goal": t.goal,
+            "mode": t.mode,
+            "summary": t.summary,
+            "manuscript_id": t.manuscript_id,
+            "section_id": t.section_id,
+            "parent_thread_id": t.parent_thread_id,
+            "branched_from_turn_id": t.branched_from_turn_id,
+            "pinned_object_ids": t.pinned_object_ids,
+            "pinned_source_ids": t.pinned_source_ids,
+        }
         for t in rows
     ]
 
 
 @app.get("/threads/{thread_id}/actions")
 def list_actions(thread_id: str, session: Session = Depends(_session)):
-    rows = session.scalars(
-        select(ProposedAction).where(ProposedAction.thread_id == thread_id)
-    )
+    rows = session.scalars(select(ProposedAction).where(ProposedAction.thread_id == thread_id))
     return [
-        {"id": a.id, "kind": a.kind, "risk": a.risk, "payload": a.payload,
-         "plan_hash": a.plan_hash, "status": str(a.status), "result": a.result}
+        {
+            "id": a.id,
+            "kind": a.kind,
+            "risk": a.risk,
+            "payload": a.payload,
+            "plan_hash": a.plan_hash,
+            "status": str(a.status),
+            "result": a.result,
+        }
         for a in rows
     ]
 
@@ -493,7 +730,9 @@ def create_project(
 
 @app.post("/projects/{project_id}/export")
 def export_project_bundle(
-    project_id: str, session: Session = Depends(_session), user=Depends(_principal),
+    project_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     """Export the whole project (rows + referenced artifacts) as a checksummed ZIP."""
     from .services import transfer
@@ -505,6 +744,22 @@ def export_project_bundle(
         raise HTTPException(422, str(exc)) from exc
     session.commit()
     return result
+
+
+@app.post("/projects/{project_id}/export/download")
+def download_project_bundle(
+    project_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    """Assemble and return an authorized project-transfer ZIP."""
+    from .services import transfer
+
+    _require(session, project_id, user, "reviewer")
+    result = transfer.export_project(session, project_id)
+    session.commit()
+    payload = storage.read_bytes(result["artifact"])
+    return _download_response(payload, f"paper-workbench-{project_id}.zip", "application/zip")
 
 
 class ImportIn(BaseModel):
@@ -526,15 +781,42 @@ def import_project_bundle(
     elif user.workspace_id:
         raise HTTPException(403, "workspace-bound credentials cannot create tenants")
     try:
-        result = transfer.import_project(
-            session, body.path, workspace_id=body.workspace_id
-        )
+        result = transfer.import_project(session, body.path, workspace_id=body.workspace_id)
         if body.workspace_id is None:
-            security.add_workspace_member(
-                session, result["workspace_id"], user.id, "owner"
-            )
+            security.add_workspace_member(session, result["workspace_id"], user.id, "owner")
         security.add_member(session, result["project_id"], user.id, "owner")
     except research.IntegrityError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return result
+
+
+@app.post("/projects/import/upload")
+async def import_uploaded_project_bundle(
+    file: Annotated[UploadFile, File()],
+    workspace_id: Annotated[str | None, Form()] = None,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    """Restore a bounded browser-uploaded project ZIP without trusting a server path."""
+    from .services import transfer
+
+    if workspace_id:
+        _require_workspace(session, workspace_id, user, "member")
+    elif user.workspace_id:
+        raise HTTPException(403, "workspace-bound credentials cannot create tenants")
+    payload = await _bounded_upload(file)
+    scratch_root = Path(get_settings().data_dir)
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="wb-import-", dir=scratch_root) as temp_dir:
+            bundle_path = Path(temp_dir) / "project.zip"
+            bundle_path.write_bytes(payload)
+            result = transfer.import_project(session, bundle_path, workspace_id=workspace_id)
+            if workspace_id is None:
+                security.add_workspace_member(session, result["workspace_id"], user.id, "owner")
+            security.add_member(session, result["project_id"], user.id, "owner")
+    except (OSError, zipfile.BadZipFile, research.IntegrityError) as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
     return result
@@ -545,7 +827,9 @@ def import_project_bundle(
 
 @app.post("/projects/{project_id}/integrity/check")
 def integrity_check(
-    project_id: str, session: Session = Depends(_session), user=Depends(_principal),
+    project_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     """Run the retraction/correction watch over the project's DOI-bearing sources."""
     from .services import integrity
@@ -575,7 +859,9 @@ class ChecklistIn(BaseModel):
 
 @app.post("/manuscripts/{manuscript_id}/checklists")
 def attach_checklist(
-    manuscript_id: str, body: ChecklistIn, session: Session = Depends(_session),
+    manuscript_id: str,
+    body: ChecklistIn,
+    session: Session = Depends(_session),
 ):
     from .services import guidelines
 
@@ -592,8 +878,13 @@ def get_checklists(manuscript_id: str, session: Session = Depends(_session)):
     from .services import guidelines
 
     return [
-        {"id": o.id, "pack_id": o.body["pack_id"], "pack_name": o.body["pack_name"],
-         "pack_source": o.body["pack_source"], "items": o.body["items"]}
+        {
+            "id": o.id,
+            "pack_id": o.body["pack_id"],
+            "pack_name": o.body["pack_name"],
+            "pack_source": o.body["pack_source"],
+            "items": o.body["items"],
+        }
         for o in guidelines.checklists_for(session, manuscript_id)
     ]
 
@@ -606,15 +897,21 @@ class ChecklistItemIn(BaseModel):
 
 @app.post("/checklists/{checklist_id}/items/{item_id}")
 def update_checklist_item(
-    checklist_id: str, item_id: str, body: ChecklistItemIn,
+    checklist_id: str,
+    item_id: str,
+    body: ChecklistItemIn,
     session: Session = Depends(_session),
 ):
     from .services import guidelines
 
     try:
         obj = guidelines.update_item(
-            session, checklist_id, item_id,
-            status=body.status, location=body.location, note=body.note,
+            session,
+            checklist_id,
+            item_id,
+            status=body.status,
+            location=body.location,
+            note=body.note,
         )
     except guidelines.GuidelineError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -623,6 +920,11 @@ def update_checklist_item(
 
 
 # --- usage & cost budgets ---
+
+
+@app.exception_handler(storage.ArtifactStorageError)
+async def _artifact_storage_handler(_request: Request, exc: storage.ArtifactStorageError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)
@@ -653,22 +955,29 @@ class BudgetIn(BaseModel):
 
 @app.post("/projects/{project_id}/budget")
 def set_project_budget(
-    project_id: str, body: BudgetIn,
-    session: Session = Depends(_session), user=Depends(_principal),
+    project_id: str,
+    body: BudgetIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     from .services import usage as usage_service
 
     _require(session, project_id, user, "owner")
     try:
         budget = usage_service.set_budget(
-            session, project_id,
-            monthly_token_ceiling=body.monthly_token_ceiling, note=body.note,
+            session,
+            project_id,
+            monthly_token_ceiling=body.monthly_token_ceiling,
+            note=body.note,
         )
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
-    return {"project_id": project_id,
-            "monthly_token_ceiling": budget.monthly_token_ceiling, "note": budget.note}
+    return {
+        "project_id": project_id,
+        "monthly_token_ceiling": budget.monthly_token_ceiling,
+        "note": budget.note,
+    }
 
 
 # --- research objects ---
@@ -683,14 +992,20 @@ class ObjectIn(BaseModel):
 
 @app.post("/projects/{project_id}/objects")
 def create_object(
-    project_id: str, body: ObjectIn,
-    session: Session = Depends(_session), user=Depends(_principal),
+    project_id: str,
+    body: ObjectIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     _require(session, project_id, user, "coauthor")
     try:
         obj = research.create_object(
-            session, project_id, kind=body.kind, title=body.title,
-            body=body.body, strength=body.strength,
+            session,
+            project_id,
+            kind=body.kind,
+            title=body.title,
+            body=body.body,
+            strength=body.strength,
         )
     except (research.IntegrityError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -710,8 +1025,12 @@ def list_objects(project_id: str, session: Session = Depends(_session)):
 
 def _object_out(o: ResearchObject) -> dict:
     return {
-        "id": o.id, "kind": str(o.kind), "title": o.title, "body": o.body,
-        "strength": o.strength, "ai_suggested": o.ai_suggested,
+        "id": o.id,
+        "kind": str(o.kind),
+        "title": o.title,
+        "body": o.body,
+        "strength": o.strength,
+        "ai_suggested": o.ai_suggested,
         "accepted_by_user": o.accepted_by_user,
     }
 
@@ -741,11 +1060,38 @@ def register_source(project_id: str, body: SourceIn, session: Session = Depends(
     return {"id": source.id, "title": source.title, "access": str(source.access)}
 
 
+@app.get("/projects/{project_id}/sources/{source_id}/original")
+def source_original_pdf(
+    project_id: str, source_id: str, session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    """Serve only the preserved, checksum-verified PDF within its project."""
+    from . import storage
+
+    _require(session, project_id, user, "viewer")
+    source = session.get(Source, source_id)
+    if source is None or source.project_id != project_id or source.deleted_at is not None:
+        raise HTTPException(404, "source not found")
+    reference = (source.provider_metadata or {}).get("ingest", {}).get("artifact")
+    if not isinstance(reference, dict):
+        raise HTTPException(404, "preserved original unavailable")
+    try:
+        payload = storage.read_bytes(reference)
+    except storage.ArtifactStorageError as exc:
+        raise HTTPException(404, "preserved original unavailable or corrupt") from exc
+    if not payload.startswith(b"%PDF-"):
+        raise HTTPException(415, "preserved original is not a PDF")
+    return Response(content=payload, media_type="application/pdf", headers={
+        "Content-Disposition": 'inline; filename="original.pdf"',
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
 class IngestIn(BaseModel):
     path: str
     title: str | None = None
     license: str = "author-owned"
-    pdf_mode: Literal["auto", "text", "ocr"] = "auto"
+    pdf_mode: Literal["auto", "text", "plain", "ocr"] = "auto"
 
 
 @app.post("/projects/{project_id}/ingest")
@@ -773,6 +1119,54 @@ def ingest_local_file(project_id: str, body: IngestIn, session: Session = Depend
     }
 
 
+@app.post("/projects/{project_id}/ingest/upload")
+async def ingest_uploaded_file(
+    project_id: str,
+    file: Annotated[UploadFile, File()],
+    title: Annotated[str | None, Form()] = None,
+    license: Annotated[str, Form()] = "author-owned",
+    pdf_mode: Annotated[Literal["auto", "text", "plain", "ocr"], Form()] = "auto",
+    session: Session = Depends(_session),
+):
+    """Ingest a bounded browser upload; originals become private durable artifacts."""
+    from .ingest.files import IngestError, ingest_file
+
+    settings = get_settings()
+    filename = Path(file.filename or "upload.bin").name
+    if not filename or filename in {".", ".."}:
+        raise HTTPException(422, "uploaded filename is invalid")
+    payload = await _bounded_upload(file)
+    scratch_root = Path(settings.data_dir)
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename).suffix[:16]
+    try:
+        with tempfile.TemporaryDirectory(prefix="wb-upload-", dir=scratch_root) as temp_dir:
+            temp_path = Path(temp_dir) / f"upload{suffix}"
+            temp_path.write_bytes(payload)
+            source = ingest_file(
+                session,
+                project_id,
+                temp_path,
+                title=title,
+                license=license,
+                pdf_mode=pdf_mode,
+                original_name=filename,
+                acquisition=(
+                    f"user file uploaded through Paper-Workbench as {filename} "
+                    f"at {datetime.now(UTC).isoformat()}"
+                ),
+            )
+    except (IngestError, research.IntegrityError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.commit()
+    return {
+        "id": source.id,
+        "title": source.title,
+        "access": str(source.access),
+        "ingest": source.provider_metadata["ingest"],
+    }
+
+
 class ExcerptIn(BaseModel):
     text: str = Field(min_length=1)
     locator: str = Field(min_length=1)
@@ -781,13 +1175,519 @@ class ExcerptIn(BaseModel):
 @app.post("/sources/{source_id}/excerpts")
 def capture_excerpt(source_id: str, body: ExcerptIn, session: Session = Depends(_session)):
     try:
-        excerpt = research.capture_excerpt(
-            session, source_id, text=body.text, locator=body.locator
-        )
+        excerpt = research.capture_excerpt(session, source_id, text=body.text, locator=body.locator)
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
     return {"id": excerpt.id, "locator": excerpt.locator, "checksum": excerpt.checksum}
+
+
+# --- evidence-grounded proposals ---
+
+
+class ProposalBriefIn(BaseModel):
+    client_question: str = Field(min_length=1, max_length=20_000)
+    audience: str = Field(default="", max_length=10_000)
+    aims: str = Field(default="", max_length=20_000)
+    success_criteria: str = Field(default="", max_length=20_000)
+    constraints: str = Field(default="", max_length=20_000)
+    known_resources: str = Field(default="", max_length=20_000)
+    unanswered_questions: str = Field(default="", max_length=20_000)
+
+
+class ProposalIn(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    kind: Literal["research_collaboration", "applied_client_pilot"]
+    brief: ProposalBriefIn
+
+
+class ProposalBriefUpdateIn(ProposalBriefIn):
+    expected_revision: int = Field(ge=0)
+
+
+class ProposalSourceIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=32)
+    collection: Literal["author", "client", "background"]
+
+
+class ProposalUrlIn(BaseModel):
+    url: str = Field(min_length=1, max_length=2_000)
+    collection: Literal["author", "client", "background"]
+    title: str | None = Field(default=None, max_length=600)
+
+
+class ProposalPassageCorrectionIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=32)
+    text: str = Field(min_length=1, max_length=1_400)
+    locator: str = Field(min_length=1, max_length=300)
+
+
+class ProposalRetrieveIn(BaseModel):
+    query: str = Field(min_length=1, max_length=10_000)
+    collections: list[Literal["author", "client", "background"]] = Field(default_factory=list)
+    top_k: int = Field(default=8, ge=1, le=24)
+
+
+class ProposalGenerationIn(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=100)
+    # This is a deliberate per-request authorization boundary for future live use.  It
+    # defaults off, so a configured provider cannot be invoked accidentally.
+    use_live: bool = False
+    needs: list[str] = Field(default_factory=list, max_length=50)
+
+
+class ProposalSectionUpdateIn(BaseModel):
+    text: str = Field(max_length=30_000)
+    expected_revision: int = Field(ge=0)
+    citation_ids: list[str] | None = Field(default=None, max_length=24)
+
+
+class ProposalSectionReviewIn(BaseModel):
+    decision: Literal["approved", "rejected"]
+    expected_revision: int = Field(ge=0)
+
+
+class ProposalUndoIn(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+class ProposalVersionIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    review_note: str = Field(min_length=1, max_length=10_000)
+    expected_draft_revision: int = Field(ge=0)
+    approve_all: bool = False
+
+
+class ProposalCompareIn(BaseModel):
+    left_version_id: str = Field(min_length=1, max_length=32)
+    right_version_id: str = Field(min_length=1, max_length=32)
+
+
+class ProposalExportIn(BaseModel):
+    formats: list[Literal["md", "html", "docx", "pdf"]] = Field(
+        default_factory=lambda: ["md", "html", "docx"]
+    )
+
+
+def _proposal_http(exc: Exception) -> HTTPException:
+    detail = str(exc)
+    status = 409 if any(token in detail for token in ("changed", "stale", "idempotency")) else 422
+    return HTTPException(status, detail)
+
+
+@app.get("/projects/{project_id}/proposals")
+def list_proposals(project_id: str, session: Session = Depends(_session), user=Depends(_principal)):
+    _require(session, project_id, user, "reviewer")
+    return [
+        proposals.proposal_out(session, proposal)
+        for proposal in session.scalars(
+            select(Proposal)
+            .where(Proposal.project_id == project_id, Proposal.deleted_at.is_(None))
+            .order_by(Proposal.created_at, Proposal.id)
+        )
+    ]
+
+
+@app.post("/projects/{project_id}/proposals")
+def create_proposal(
+    project_id: str, body: ProposalIn, session: Session = Depends(_session), user=Depends(_principal)
+):
+    _require(session, project_id, user, "editor")
+    try:
+        proposal = proposals.create_proposal(
+            session, project_id, title=body.title, kind=body.kind, brief=body.brief.model_dump()
+        )
+    except (proposals.ProposalError, ValueError) as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return proposals.proposal_out(session, proposal, include_detail=True)
+
+
+@app.get("/proposals/{proposal_id}")
+def get_proposal(proposal_id: str, session: Session = Depends(_session), user=Depends(_principal)):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+    except proposals.ProposalError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    _require(session, proposal.project_id, user, "reviewer")
+    return proposals.proposal_out(session, proposal, include_detail=True)
+
+
+@app.put("/proposals/{proposal_id}/brief")
+def update_proposal_brief(
+    proposal_id: str,
+    body: ProposalBriefUpdateIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        proposal = proposals.update_brief(
+            session,
+            proposal_id,
+            brief=body.model_dump(exclude={"expected_revision"}),
+            expected_revision=body.expected_revision,
+        )
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return proposals.proposal_out(session, proposal)
+
+
+@app.post("/proposals/{proposal_id}/sources")
+def add_proposal_source(
+    proposal_id: str,
+    body: ProposalSourceIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        member = proposals.add_source(session, proposal_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return {"id": member.id, "source_id": member.source_id, "collection": member.collection}
+
+
+@app.post("/proposals/{proposal_id}/sources/url")
+def add_proposal_url(
+    proposal_id: str,
+    body: ProposalUrlIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        result = proposals.ingest_url(session, proposal_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposals/{proposal_id}/passages/index")
+def index_proposal_passages(
+    proposal_id: str,
+    source_id: str | None = None,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        result = proposals.index_passages(session, proposal_id, source_id=source_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposals/{proposal_id}/passages/correct")
+def correct_proposal_passage(
+    proposal_id: str,
+    body: ProposalPassageCorrectionIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        passage = proposals.correct_excerpt(session, proposal_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return {
+        "id": passage.id,
+        "locator": passage.locator,
+        "checksum": passage.checksum,
+        "manual_correction": passage.manual_correction,
+    }
+
+
+@app.delete("/proposals/{proposal_id}/passages/{passage_id}")
+def remove_proposal_passage(
+    proposal_id: str,
+    passage_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        proposals.delete_passage(session, proposal_id, passage_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return {"deleted": passage_id}
+
+
+@app.post("/proposals/{proposal_id}/retrieve")
+def retrieve_proposal_passages(
+    proposal_id: str,
+    body: ProposalRetrieveIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "reviewer")
+        return proposals.retrieve(
+            session, proposal_id, body.query, collections=set(body.collections) or None, top_k=body.top_k
+        )
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+
+
+@app.get("/proposals/{proposal_id}/evidence-pack")
+def proposal_evidence_pack(
+    proposal_id: str,
+    selected_section_id: str | None = None,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "reviewer")
+        return proposals.evidence_pack(session, proposal_id, selected_section_id=selected_section_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+
+
+@app.post("/proposals/{proposal_id}/fit-matrix/generate")
+def generate_proposal_fit_matrix(
+    proposal_id: str,
+    body: ProposalGenerationIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        result = proposals.generate_fit_matrix(
+            session,
+            proposal_id,
+            idempotency_key=body.idempotency_key,
+            needs=body.needs or None,
+            use_live=body.use_live,
+        )
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposals/{proposal_id}/outline/generate")
+def generate_proposal_outline(
+    proposal_id: str,
+    body: ProposalGenerationIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        result = proposals.generate_outline(
+            session, proposal_id, idempotency_key=body.idempotency_key, use_live=body.use_live
+        )
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposals/{proposal_id}/draft/generate")
+def generate_proposal_draft(
+    proposal_id: str,
+    body: ProposalGenerationIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        result = proposals.generate_draft(
+            session, proposal_id, idempotency_key=body.idempotency_key, use_live=body.use_live
+        )
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposals/{proposal_id}/generations/{generation_id}/cancel")
+def cancel_proposal_generation(
+    proposal_id: str,
+    generation_id: str,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        generation = proposals.cancel_generation(session, proposal_id, generation_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return proposals.generation_out(generation)
+
+
+@app.put("/proposal-sections/{section_id}")
+def update_proposal_section(
+    section_id: str,
+    body: ProposalSectionUpdateIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    section = session.get(ProposalSection, section_id)
+    if section is None:
+        raise HTTPException(404, "proposal section not found")
+    try:
+        proposal = proposals._proposal(session, section.proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        section = proposals.update_section(session, section_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return next(item for item in proposals.sections(session, proposal.id) if item["id"] == section.id)
+
+
+@app.post("/proposal-sections/{section_id}/review")
+def review_proposal_section(
+    section_id: str,
+    body: ProposalSectionReviewIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    section = session.get(ProposalSection, section_id)
+    if section is None:
+        raise HTTPException(404, "proposal section not found")
+    try:
+        proposal = proposals._proposal(session, section.proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        section = proposals.review_section(session, section_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return next(item for item in proposals.sections(session, proposal.id) if item["id"] == section.id)
+
+
+@app.post("/proposal-sections/{section_id}/undo")
+def undo_proposal_section(
+    section_id: str,
+    body: ProposalUndoIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    section = session.get(ProposalSection, section_id)
+    if section is None:
+        raise HTTPException(404, "proposal section not found")
+    try:
+        proposal = proposals._proposal(session, section.proposal_id)
+        _require(session, proposal.project_id, user, "editor")
+        section = proposals.undo_section(session, section_id, expected_revision=body.expected_revision)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return next(item for item in proposals.sections(session, proposal.id) if item["id"] == section.id)
+
+
+@app.post("/proposals/{proposal_id}/versions")
+def save_proposal_version(
+    proposal_id: str,
+    body: ProposalVersionIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "coauthor")
+        version = proposals.save_version(session, proposal_id, **body.model_dump())
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return proposals.version_out(session, version, include_snapshot=True)
+
+
+@app.get("/proposals/{proposal_id}/versions")
+def list_proposal_versions(proposal_id: str, session: Session = Depends(_session), user=Depends(_principal)):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "reviewer")
+        return proposals.versions(session, proposal_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+
+
+@app.post("/proposals/{proposal_id}/versions/compare")
+def compare_proposal_versions(
+    proposal_id: str,
+    body: ProposalCompareIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    try:
+        proposal = proposals._proposal(session, proposal_id)
+        _require(session, proposal.project_id, user, "reviewer")
+        return proposals.compare_versions(session, proposal_id, body.left_version_id, body.right_version_id)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+
+
+@app.get("/proposal-versions/{version_id}")
+def get_proposal_version(version_id: str, session: Session = Depends(_session), user=Depends(_principal)):
+    version = session.get(ProposalVersion, version_id)
+    if version is None:
+        raise HTTPException(404, "proposal version not found")
+    try:
+        proposal = proposals._proposal(session, version.proposal_id)
+        _require(session, proposal.project_id, user, "reviewer")
+        return proposals.version_out(session, version, include_snapshot=True)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+
+
+@app.post("/proposal-versions/{version_id}/export")
+def export_proposal_version(
+    version_id: str,
+    body: ProposalExportIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    version = session.get(ProposalVersion, version_id)
+    if version is None:
+        raise HTTPException(404, "proposal version not found")
+    try:
+        proposal = proposals._proposal(session, version.proposal_id)
+        _require(session, proposal.project_id, user, "coauthor")
+        result = proposals.export_version(session, version_id, formats=body.formats)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return result
+
+
+@app.post("/proposal-versions/{version_id}/export/download")
+def download_proposal_version_export(
+    version_id: str,
+    body: ProposalExportIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
+):
+    version = session.get(ProposalVersion, version_id)
+    if version is None:
+        raise HTTPException(404, "proposal version not found")
+    try:
+        proposal = proposals._proposal(session, version.proposal_id)
+        _require(session, proposal.project_id, user, "coauthor")
+        payload, filename = proposals.export_download(session, version_id, formats=body.formats)
+    except proposals.ProposalError as exc:
+        raise _proposal_http(exc) from exc
+    session.commit()
+    return _download_response(payload, filename, "application/zip")
 
 
 class ClaimIn(BaseModel):
@@ -814,8 +1714,10 @@ def claim_evidence(claim_id: str, session: Session = Depends(_session)):
         raise HTTPException(404, "claim not found")
     return [
         {
-            "id": ev.id, "excerpt_id": ev.excerpt_id,
-            "research_object_id": ev.research_object_id, "entailment": ev.entailment,
+            "id": ev.id,
+            "excerpt_id": ev.excerpt_id,
+            "research_object_id": ev.research_object_id,
+            "entailment": ev.entailment,
         }
         for ev in research.claim_evidence(session, claim_id)
     ]
@@ -830,6 +1732,8 @@ class ThreadIn(BaseModel):
     pinned_object_ids: list[str] = Field(default_factory=list)
     pinned_source_ids: list[str] = Field(default_factory=list)
     mode: str = "explore"
+    manuscript_id: str | None = None
+    section_id: str | None = None
 
 
 @app.post("/projects/{project_id}/threads")
@@ -842,6 +1746,49 @@ def create_thread(project_id: str, body: ThreadIn, session: Session = Depends(_s
     return {"id": thread.id, "title": thread.title, "mode": thread.mode}
 
 
+@app.get("/threads/{thread_id}/context")
+def thread_context(thread_id: str, session: Session = Depends(_session)):
+    thread = session.get(Thread, thread_id)
+    if thread is None or thread.deleted_at is not None:
+        raise HTTPException(404, "thread not found")
+    try:
+        snapshot = manuscript_chat.context(session, thread)
+        prompt = dialogue.assemble_system_prompt(session, thread, snapshot=snapshot)
+    except (manuscript_chat.ManuscriptChatError, dialogue.DialogueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {
+        **snapshot,
+        "goal": thread.goal,
+        "summary": thread.summary,
+        "system_prompt": prompt,
+        "recent_turn_limit": dialogue.RECENT_TURNS,
+    }
+
+
+class ThreadBriefIn(BaseModel):
+    summary: str = Field(max_length=12_000)
+
+
+@app.put("/threads/{thread_id}/brief")
+def update_thread_brief(thread_id: str, body: ThreadBriefIn, session: Session = Depends(_session)):
+    thread = session.get(Thread, thread_id)
+    if thread is None or thread.deleted_at is not None:
+        raise HTTPException(404, "thread not found")
+    thread.summary = body.summary
+    project = research._project(session, thread.project_id)
+    record_audit(
+        session,
+        workspace_id=project.workspace_id,
+        actor="user",
+        action="update_brief",
+        object_type="thread",
+        object_id=thread.id,
+        detail={"summary": body.summary},
+    )
+    session.commit()
+    return {"id": thread.id, "summary": thread.summary}
+
+
 class BranchIn(BaseModel):
     turn_id: str
     title: str | None = None
@@ -850,15 +1797,17 @@ class BranchIn(BaseModel):
 @app.post("/threads/{thread_id}/branch")
 def branch_thread(thread_id: str, body: BranchIn, session: Session = Depends(_session)):
     try:
-        branch = dialogue.branch_thread(
-            session, thread_id, body.turn_id, title=body.title
-        )
+        branch = dialogue.branch_thread(session, thread_id, body.turn_id, title=body.title)
     except dialogue.DialogueError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
-    return {"id": branch.id, "title": branch.title, "mode": branch.mode,
-            "parent_thread_id": branch.parent_thread_id,
-            "branched_from_turn_id": branch.branched_from_turn_id}
+    return {
+        "id": branch.id,
+        "title": branch.title,
+        "mode": branch.mode,
+        "parent_thread_id": branch.parent_thread_id,
+        "branched_from_turn_id": branch.branched_from_turn_id,
+    }
 
 
 class ModeIn(BaseModel):
@@ -898,12 +1847,12 @@ def post_turn(thread_id: str, body: TurnIn, session: Session = Depends(_session)
     )
     return {
         "assistant": {
-            "id": assistant.id, "content": assistant.content,
+            "id": assistant.id,
+            "content": assistant.content,
             "provenance": assistant.provenance,
         },
         "proposed_actions": [
-            {"id": a.id, "kind": a.kind, "risk": a.risk, "payload": a.payload,
-             "plan_hash": a.plan_hash}
+            {"id": a.id, "kind": a.kind, "risk": a.risk, "payload": a.payload, "plan_hash": a.plan_hash}
             for a in actions
         ],
     }
@@ -913,13 +1862,8 @@ def post_turn(thread_id: str, body: TurnIn, session: Session = Depends(_session)
 def list_turns(thread_id: str, session: Session = Depends(_session)):
     if session.get(Thread, thread_id) is None:
         raise HTTPException(404, "thread not found")
-    rows = session.scalars(
-        select(Turn).where(Turn.thread_id == thread_id).order_by(Turn.created_at, Turn.id)
-    )
-    return [
-        {"id": t.id, "role": t.role, "content": t.content, "provenance": t.provenance}
-        for t in rows
-    ]
+    rows = session.scalars(select(Turn).where(Turn.thread_id == thread_id).order_by(Turn.created_at, Turn.id))
+    return [{"id": t.id, "role": t.role, "content": t.content, "provenance": t.provenance} for t in rows]
 
 
 # --- literature (P3) ---
@@ -944,9 +1888,15 @@ def literature_search(project_id: str, body: LitSearchIn, session: Session = Dep
         "saved_search_id": saved.id,
         "works": [
             {
-                "title": w.title, "authors": w.authors, "year": w.year, "venue": w.venue,
-                "doi": w.doi, "url": w.url, "cited_by_count": w.cited_by_count,
-                "has_abstract": bool(w.abstract), "provider": w.provider,
+                "title": w.title,
+                "authors": w.authors,
+                "year": w.year,
+                "venue": w.venue,
+                "doi": w.doi,
+                "url": w.url,
+                "cited_by_count": w.cited_by_count,
+                "has_abstract": bool(w.abstract),
+                "provider": w.provider,
                 "provider_id": w.provider_id,
             }
             for w in works
@@ -1020,9 +1970,7 @@ def discover_source_citations(
 ):
     _require(session, project_id, user, "editor")
     try:
-        result = citation_graph.discover_citations(
-            session, project_id, source_id, **body.model_dump()
-        )
+        result = citation_graph.discover_citations(session, project_id, source_id, **body.model_dump())
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -1067,9 +2015,7 @@ def resolve_citation_endpoint(
 ):
     _require(session, project_id, user, "editor")
     try:
-        edge = citation_graph.resolve_edge(
-            session, project_id, edge_id, **body.model_dump()
-        )
+        edge = citation_graph.resolve_edge(session, project_id, edge_id, **body.model_dump())
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -1091,9 +2037,7 @@ def review_citation_edge(
 ):
     _require(session, project_id, user, "editor")
     try:
-        edge = citation_graph.review_edge(
-            session, project_id, edge_id, **body.model_dump()
-        )
+        edge = citation_graph.review_edge(session, project_id, edge_id, **body.model_dump())
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -1161,8 +2105,13 @@ class DesignIn(BaseModel):
 def generate_candidates(project_id: str, body: DesignIn, session: Session = Depends(_session)):
     try:
         cands = paper_design.generate_candidates(
-            session, project_id, object_ids=body.object_ids, audience=body.audience,
-            venue_class=body.venue_class, constraints=body.constraints, n=body.n,
+            session,
+            project_id,
+            object_ids=body.object_ids,
+            audience=body.audience,
+            venue_class=body.venue_class,
+            constraints=body.constraints,
+            n=body.n,
         )
     except paper_design.DesignError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1372,8 +2321,10 @@ class SectionIn(BaseModel):
 
 @app.post("/manuscripts/{manuscript_id}/sections")
 def add_section(
-    manuscript_id: str, body: SectionIn,
-    session: Session = Depends(_session), user=Depends(_principal),
+    manuscript_id: str,
+    body: SectionIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     manuscript = session.get(ResearchObject, manuscript_id)
     if manuscript is None:
@@ -1433,9 +2384,14 @@ def generate_output(manuscript_id: str, body: OutputIn, session: Session = Depen
 @app.get("/manuscripts/{manuscript_id}/outputs")
 def list_outputs(manuscript_id: str, session: Session = Depends(_session)):
     return [
-        {"id": o.id, "output_kind": o.body.get("output_kind"),
-         "content": o.body.get("content"), "word_count": o.body.get("word_count"),
-         "simulated": o.body.get("simulated"), "accepted_by_user": o.accepted_by_user}
+        {
+            "id": o.id,
+            "output_kind": o.body.get("output_kind"),
+            "content": o.body.get("content"),
+            "word_count": o.body.get("word_count"),
+            "simulated": o.body.get("simulated"),
+            "accepted_by_user": o.accepted_by_user,
+        }
         for o in outputs.list_outputs(session, manuscript_id)
     ]
 
@@ -1447,13 +2403,27 @@ class ExportIn(BaseModel):
 @app.post("/manuscripts/{manuscript_id}/export")
 def export_manuscript(manuscript_id: str, body: ExportIn, session: Session = Depends(_session)):
     try:
-        result = export_service.export_manuscript(
-            session, manuscript_id, formats=body.formats
-        )
+        result = export_service.export_manuscript(session, manuscript_id, formats=body.formats)
     except research.IntegrityError as exc:
         raise HTTPException(404, str(exc)) from exc
     session.commit()
     return result
+
+
+@app.post("/manuscripts/{manuscript_id}/export/download")
+def download_manuscript_export(manuscript_id: str, body: ExportIn, session: Session = Depends(_session)):
+    """Build and return the requested manuscript formats as an authorized ZIP."""
+    try:
+        result = export_service.export_manuscript(session, manuscript_id, formats=body.formats)
+    except research.IntegrityError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, reference in sorted(result["artifact_refs"].items()):
+            filename = Path(result["files"][name]).name
+            archive.writestr(filename, storage.read_bytes(reference))
+    return _download_response(archive_bytes.getvalue(), f"manuscript-{manuscript_id}.zip", "application/zip")
 
 
 # --- figures & tables (canonical data provenance) ---
@@ -1468,9 +2438,7 @@ class DatasetIn(BaseModel):
 @app.post("/projects/{project_id}/datasets")
 def create_dataset(project_id: str, body: DatasetIn, session: Session = Depends(_session)):
     try:
-        ds = figures.create_dataset(
-            session, project_id, name=body.name, columns=body.columns, rows=body.rows
-        )
+        ds = figures.create_dataset(session, project_id, name=body.name, columns=body.columns, rows=body.rows)
     except (figures.FigureError, research.IntegrityError) as exc:
         raise HTTPException(422, str(exc)) from exc
     session.commit()
@@ -1488,8 +2456,12 @@ class FigureIn(BaseModel):
 def render_figure(project_id: str, body: FigureIn, session: Session = Depends(_session)):
     try:
         fig = figures.render_figure(
-            session, project_id, title=body.title, dataset_id=body.dataset_id,
-            spec=body.spec, grayscale=body.grayscale,
+            session,
+            project_id,
+            title=body.title,
+            dataset_id=body.dataset_id,
+            spec=body.spec,
+            grayscale=body.grayscale,
         )
     except (figures.FigureError, research.IntegrityError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1507,7 +2479,10 @@ class TableIn(BaseModel):
 def build_table(project_id: str, body: TableIn, session: Session = Depends(_session)):
     try:
         tbl = figures.build_table(
-            session, project_id, title=body.title, dataset_id=body.dataset_id,
+            session,
+            project_id,
+            title=body.title,
+            dataset_id=body.dataset_id,
             columns=body.columns,
         )
     except (figures.FigureError, research.IntegrityError) as exc:
@@ -1523,8 +2498,12 @@ def generate_caption(artifact_id: str, session: Session = Depends(_session)):
     except figures.FigureError as exc:
         raise HTTPException(404, str(exc)) from exc
     session.commit()
-    return {"id": art.id, "caption": art.body.get("caption"),
-            "alt_text": art.body.get("alt_text"), "accepted_by_user": art.accepted_by_user}
+    return {
+        "id": art.id,
+        "caption": art.body.get("caption"),
+        "alt_text": art.body.get("alt_text"),
+        "accepted_by_user": art.accepted_by_user,
+    }
 
 
 @app.get("/figures/{figure_id}/image")
@@ -1537,9 +2516,29 @@ def figure_image(figure_id: str, session: Session = Depends(_session)):
     fig = session.get(_RO, figure_id)
     if fig is None or fig.kind != _OK.FIGURE:
         raise HTTPException(404, "figure not found")
+    reference = fig.body.get("png_artifact")
+    if isinstance(reference, dict):
+        try:
+            payload = storage.read_bytes(reference)
+        except storage.ArtifactStorageError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return Response(
+            content=payload,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+        )
     path = fig.body.get("png_path")
     if not path:
         raise HTTPException(404, "no rendered image")
+    if str(path).startswith("artifact://"):
+        try:
+            return Response(
+                content=storage.read_legacy_location(str(path)),
+                media_type="image/png",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        except storage.ArtifactStorageError as exc:
+            raise HTTPException(404, str(exc)) from exc
     return FileResponse(path, media_type="image/png")
 
 
@@ -1609,9 +2608,7 @@ def get_compute_log(run_id: str, stream: Literal["stdout", "stderr"], session: S
 
 
 @app.get("/compute-runs/{run_id}/outputs/{output_index}")
-def get_compute_output(
-    run_id: str, output_index: int, session: Session = Depends(_session)
-):
+def get_compute_output(run_id: str, output_index: int, session: Session = Depends(_session)):
     from fastapi.responses import FileResponse
 
     try:
@@ -1766,7 +2763,10 @@ def create_venue(
     _require_workspace(session, body.workspace_id, user, "admin")
     try:
         venue = venues.create_venue(
-            session, body.workspace_id, name=body.name, rules=body.rules,
+            session,
+            body.workspace_id,
+            name=body.name,
+            rules=body.rules,
             rules_source=body.rules_source,
         )
     except research.IntegrityError as exc:
@@ -1840,8 +2840,10 @@ class MemberIn(BaseModel):
 
 @app.post("/projects/{project_id}/members")
 def add_member(
-    project_id: str, body: MemberIn,
-    session: Session = Depends(_session), user=Depends(_principal),
+    project_id: str,
+    body: MemberIn,
+    session: Session = Depends(_session),
+    user=Depends(_principal),
 ):
     _require(session, project_id, user, "owner")
     try:
@@ -1894,9 +2896,7 @@ def add_workspace_member(
 ):
     _require_workspace(session, workspace_id, user, "owner")
     try:
-        member = security.add_workspace_member(
-            session, workspace_id, body.user_id, body.role
-        )
+        member = security.add_workspace_member(session, workspace_id, body.user_id, body.role)
     except research.IntegrityError as exc:
         raise HTTPException(422, str(exc)) from exc
     record_audit(
@@ -2136,8 +3136,12 @@ def create_submission(project_id: str, body: SubmissionIn, session: Session = De
 
 def _submission_out(sub) -> dict:
     return {
-        "id": sub.id, "manuscript_id": sub.manuscript_id, "venue_name": sub.venue_name,
-        "status": sub.status, "deadline": sub.deadline, "history": sub.history,
+        "id": sub.id,
+        "manuscript_id": sub.manuscript_id,
+        "venue_name": sub.venue_name,
+        "status": sub.status,
+        "deadline": sub.deadline,
+        "history": sub.history,
         "revisions": sub.revisions,
     }
 
@@ -2340,6 +3344,35 @@ def review_publication_package(
         raise HTTPException(409, str(exc)) from exc
 
 
+@app.get("/publication-packages/{package_id}/builds/{build_index}/download")
+def download_publication_package(
+    package_id: str,
+    build_index: int,
+    session: Session = Depends(_session),
+):
+    try:
+        package = publication_packages.get_package(session, package_id)
+    except publication_packages.PackageError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    builds = list(package.builds)
+    if build_index < 0 or build_index >= len(builds):
+        raise HTTPException(404, "publication package build not found")
+    build = builds[build_index]
+    reference = build.get("artifact")
+    if not isinstance(reference, dict):
+        path = Path(str(build.get("path") or ""))
+        if not path.is_file():
+            raise HTTPException(404, "publication package artifact not found")
+        payload = path.read_bytes()
+    else:
+        try:
+            payload = storage.read_bytes(reference)
+        except storage.ArtifactStorageError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    filename = Path(str(build.get("filename") or "publication-package.zip")).name
+    return _download_response(payload, filename, "application/zip")
+
+
 @app.post("/publication-packages/{package_id}/build")
 def build_publication_package(
     package_id: str,
@@ -2395,6 +3428,30 @@ class ApproveIn(BaseModel):
     plan_hash: str
 
 
+class ReviseEditIn(ApproveIn):
+    text: str = Field(max_length=manuscript_chat.MAX_SECTION_CHARS)
+
+
+@app.post("/actions/{action_id}/revise")
+def revise_edit(action_id: str, body: ReviseEditIn, session: Session = Depends(_session)):
+    try:
+        action = dialogue.revise_proposal(session, action_id, **body.model_dump())
+    except dialogue.DialogueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"id": action.id, "plan_hash": action.plan_hash}
+
+
+@app.post("/actions/{action_id}/undo")
+def undo_edit(action_id: str, body: ApproveIn, session: Session = Depends(_session)):
+    try:
+        action = dialogue.revise_proposal(session, action_id, plan_hash=body.plan_hash, undo=True)
+    except dialogue.DialogueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"id": action.id, "plan_hash": action.plan_hash}
+
+
 @app.post("/actions/{action_id}/approve")
 def approve_action(action_id: str, body: ApproveIn, session: Session = Depends(_session)):
     try:
@@ -2414,3 +3471,6 @@ def reject_action(action_id: str, session: Session = Depends(_session)):
         raise HTTPException(409, str(exc)) from exc
     session.commit()
     return {"id": action.id, "status": str(action.status)}
+
+
+research_api.install(app, _session, _principal, _require, _bounded_upload, _download_response)

@@ -66,6 +66,38 @@ class Project(_Stamped, Base):
     description: Mapped[str] = mapped_column(Text, default="")
 
 
+class ResearchTask(_Stamped, Base):
+    """An immutable research brief, with checkpointed execution and human review."""
+
+    __tablename__ = "research_tasks"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id"))
+    state: Mapped[str] = mapped_column(String(40), default="draft")
+    contract: Mapped[dict] = mapped_column(JSON, default=dict)
+    sources: Mapped[list] = mapped_column(JSON, default=list)
+    ledger: Mapped[dict] = mapped_column(JSON, default=dict)
+    synthesis: Mapped[dict] = mapped_column(JSON, default=dict)
+    reviews: Mapped[dict] = mapped_column(JSON, default=dict)
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    revision: Mapped[int] = mapped_column(default=0)
+
+
+class ResearchAgent(_Stamped, Base):
+    """Executor identity and original reports; never claim evidence until reviewed."""
+
+    __tablename__ = "research_agents"
+    task_id: Mapped[str] = mapped_column(ForeignKey("research_tasks.id"), index=True)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("research_agents.id"), default=None)
+    role: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(40), default="pending")
+    assignment: Mapped[dict] = mapped_column(JSON, default=dict)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    checkpoints: Mapped[list] = mapped_column(JSON, default=list)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class ResearchObject(_Stamped, Base):
     """One node of the research graph. `kind` from vocab.ObjectKind; kind-specific payload
     (formal statement, task state, dataset path, section text, ...) in `body` JSON."""
@@ -141,9 +173,7 @@ class ClaimEvidence(_Stamped, Base):
     __tablename__ = "claim_evidence"
     claim_id: Mapped[str] = mapped_column(ForeignKey("claims.id"), index=True)
     excerpt_id: Mapped[str | None] = mapped_column(ForeignKey("excerpts.id"), default=None)
-    research_object_id: Mapped[str | None] = mapped_column(
-        ForeignKey("research_objects.id"), default=None
-    )
+    research_object_id: Mapped[str | None] = mapped_column(ForeignKey("research_objects.id"), default=None)
     entailment: Mapped[str] = mapped_column(String(40), default="asserted")  # asserted|verified
 
 
@@ -155,13 +185,13 @@ class Thread(_Stamped, Base):
     title: Mapped[str] = mapped_column(String(300))
     goal: Mapped[str] = mapped_column(Text, default="")
     summary: Mapped[str] = mapped_column(Text, default="")
+    manuscript_id: Mapped[str | None] = mapped_column(ForeignKey("research_objects.id"), default=None)
+    section_id: Mapped[str | None] = mapped_column(ForeignKey("research_objects.id"), default=None)
     pinned_object_ids: Mapped[list] = mapped_column(JSON, default=list)
     pinned_source_ids: Mapped[list] = mapped_column(JSON, default=list)
     # dialogue mode (vocab in services.dialogue.MODES) + branch lineage
     mode: Mapped[str] = mapped_column(String(20), default="explore")
-    parent_thread_id: Mapped[str | None] = mapped_column(
-        ForeignKey("threads.id"), default=None
-    )
+    parent_thread_id: Mapped[str | None] = mapped_column(ForeignKey("threads.id"), default=None)
     branched_from_turn_id: Mapped[str | None] = mapped_column(
         ForeignKey("turns.id", use_alter=True), default=None
     )
@@ -174,6 +204,15 @@ class Turn(_Stamped, Base):
     content: Mapped[str] = mapped_column(Text)
     # AI provenance: model, provider, prompt hash, context object/source ids, usage.
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RevokedAccessToken(Base):
+    """Shared logout denylist; never stores raw tokens or depends on a worker cache."""
+
+    __tablename__ = "revoked_access_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    revoked_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class ProposedAction(_Stamped, Base):
@@ -232,12 +271,8 @@ class CitationEdge(_Stamped, Base):
 
     __tablename__ = "citation_edges"
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    citing_source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("sources.id"), default=None, index=True
-    )
-    cited_source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("sources.id"), default=None, index=True
-    )
+    citing_source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.id"), default=None, index=True)
+    cited_source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.id"), default=None, index=True)
     citing_key: Mapped[str] = mapped_column(String(700))
     cited_key: Mapped[str] = mapped_column(String(700))
     citing_title: Mapped[str] = mapped_column(String(600), default="")
@@ -279,9 +314,7 @@ class CreditAssignment(_Stamped, Base):
 
     __tablename__ = "credit_assignments"
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    manuscript_id: Mapped[str] = mapped_column(
-        ForeignKey("research_objects.id"), index=True
-    )
+    manuscript_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
     contributor_id: Mapped[str] = mapped_column(ForeignKey("contributors.id"), index=True)
     role: Mapped[str] = mapped_column(String(40))
     degree: Mapped[str] = mapped_column(String(20), default="equal")
@@ -308,9 +341,7 @@ class AuthorshipProposal(_Stamped, Base):
 
     __tablename__ = "authorship_proposals"
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    manuscript_id: Mapped[str] = mapped_column(
-        ForeignKey("research_objects.id"), index=True
-    )
+    manuscript_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
     ordered_contributor_ids: Mapped[list] = mapped_column(JSON)
     rationale: Mapped[str] = mapped_column(Text)
     method: Mapped[str] = mapped_column(String(50), default="manual")
@@ -493,9 +524,7 @@ class PublicationPackage(_Stamped, Base):
     __tablename__ = "publication_packages"
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     submission_id: Mapped[str] = mapped_column(ForeignKey("submissions.id"), index=True)
-    manuscript_id: Mapped[str] = mapped_column(
-        ForeignKey("research_objects.id"), index=True
-    )
+    manuscript_id: Mapped[str] = mapped_column(ForeignKey("research_objects.id"), index=True)
     version: Mapped[int] = mapped_column(default=1)
     state: Mapped[str] = mapped_column(String(20), default="draft")
     included_formats: Mapped[list] = mapped_column(JSON, default=list)
@@ -516,6 +545,193 @@ class PublicationPackage(_Stamped, Base):
     )
 
 
+class Proposal(_Stamped, Base):
+    """A project-scoped research collaboration or applied-pilot proposal.
+
+    The mutable brief and draft are intentionally separate from ``ProposalVersion``.
+    Saving a version snapshots the current state without turning it into a submission or
+    asserting that a client agreed to any of its contents.
+    """
+
+    __tablename__ = "proposals"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    kind: Mapped[str] = mapped_column(String(40))  # research_collaboration|applied_client_pilot
+    client_question: Mapped[str] = mapped_column(Text)
+    audience: Mapped[str] = mapped_column(Text, default="")
+    aims: Mapped[str] = mapped_column(Text, default="")
+    success_criteria: Mapped[str] = mapped_column(Text, default="")
+    constraints: Mapped[str] = mapped_column(Text, default="")
+    known_resources: Mapped[str] = mapped_column(Text, default="")
+    unanswered_questions: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    outline_state: Mapped[str] = mapped_column(String(30), default="missing")
+    draft_revision: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (Index("ix_proposals_project_status", "project_id", "status"),)
+
+
+class ProposalSource(_Stamped, Base):
+    """An explicit, project-local source import for a proposal collection.
+
+    Collection labels describe evidence use only; they never grant an application role
+    or cross-project access.
+    """
+
+    __tablename__ = "proposal_sources"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
+    collection: Mapped[str] = mapped_column(String(20))  # author|client|background
+    imported_snapshot_checksum: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "source_id"),
+        Index("ix_proposal_source_collection", "proposal_id", "collection"),
+    )
+
+
+class ProposalPassage(_Stamped, Base):
+    """A bounded extracted-text passage with an honest source/version locator."""
+
+    __tablename__ = "proposal_passages"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), index=True)
+    source_checksum: Mapped[str] = mapped_column(String(64))
+    chunk_index: Mapped[int] = mapped_column()
+    text: Mapped[str] = mapped_column(Text)
+    locator: Mapped[str] = mapped_column(String(300))
+    checksum: Mapped[str] = mapped_column(String(64))
+    extraction_confidence: Mapped[str] = mapped_column(String(40), default="unknown")
+    status: Mapped[str] = mapped_column(String(30), default="current")
+    manual_correction: Mapped[bool] = mapped_column(default=False)
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "source_id", "source_checksum", "chunk_index"),
+        Index("ix_proposal_passage_lookup", "proposal_id", "source_id", "status"),
+    )
+
+
+class ProposalFitRow(_Stamped, Base):
+    """One reviewable applicability hypothesis, never an automatic sales claim."""
+
+    __tablename__ = "proposal_fit_rows"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    client_need: Mapped[str] = mapped_column(Text)
+    relevant_method: Mapped[str] = mapped_column(Text, default="")
+    why_it_might_transfer: Mapped[str] = mapped_column(Text, default="")
+    assumptions: Mapped[str] = mapped_column(Text, default="")
+    limitations: Mapped[str] = mapped_column(Text, default="")
+    fit_status: Mapped[str] = mapped_column(String(30))
+    validation_step: Mapped[str] = mapped_column(Text, default="")
+    need_label: Mapped[str] = mapped_column(String(30), default="user_requirement")
+    method_label: Mapped[str] = mapped_column(String(30), default="established_fact")
+    transfer_label: Mapped[str] = mapped_column(String(30), default="model_inference")
+    validation_label: Mapped[str] = mapped_column(String(30), default="proposed_experiment")
+    state: Mapped[str] = mapped_column(String(20), default="proposed")
+    basis_hash: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (Index("ix_proposal_fit_row_proposal_state", "proposal_id", "state"),)
+
+
+class ProposalFitEvidence(_Stamped, Base):
+    __tablename__ = "proposal_fit_evidence"
+    fit_row_id: Mapped[str] = mapped_column(ForeignKey("proposal_fit_rows.id"), index=True)
+    passage_id: Mapped[str] = mapped_column(ForeignKey("proposal_passages.id"), index=True)
+    role: Mapped[str] = mapped_column(String(30))  # client_need|author_support|contrary
+
+    __table_args__ = (UniqueConstraint("fit_row_id", "passage_id", "role"),)
+
+
+class ProposalSection(_Stamped, Base):
+    """Mutable proposal prose. Each edit has an append-only revision record."""
+
+    __tablename__ = "proposal_sections"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    heading: Mapped[str] = mapped_column(String(300))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    position: Mapped[int] = mapped_column(default=0)
+    state: Mapped[str] = mapped_column(String(20), default="proposed")
+    revision: Mapped[int] = mapped_column(default=0)
+    basis_hash: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "position"),
+        Index("ix_proposal_section_proposal_state", "proposal_id", "state"),
+    )
+
+
+class ProposalSectionCitation(_Stamped, Base):
+    __tablename__ = "proposal_section_citations"
+    section_id: Mapped[str] = mapped_column(ForeignKey("proposal_sections.id"), index=True)
+    passage_id: Mapped[str] = mapped_column(ForeignKey("proposal_passages.id"), index=True)
+
+    __table_args__ = (UniqueConstraint("section_id", "passage_id"),)
+
+
+class ProposalSectionRevision(_Stamped, Base):
+    __tablename__ = "proposal_section_revisions"
+    section_id: Mapped[str] = mapped_column(ForeignKey("proposal_sections.id"), index=True)
+    revision: Mapped[int] = mapped_column()
+    before_text: Mapped[str] = mapped_column(Text)
+    after_text: Mapped[str] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(20))  # generated|human|undo
+    basis_hash: Mapped[str] = mapped_column(String(64), default="")
+    undone_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    __table_args__ = (UniqueConstraint("section_id", "revision"),)
+
+
+class ProposalVersion(_Stamped, Base):
+    """Immutable approved proposal snapshot; a reviewer approval is not scientific verification."""
+
+    __tablename__ = "proposal_versions"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    version: Mapped[int] = mapped_column()
+    name: Mapped[str] = mapped_column(String(120))
+    state: Mapped[str] = mapped_column(String(20), default="approved")
+    basis_hash: Mapped[str] = mapped_column(String(64))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "version"),
+        UniqueConstraint("proposal_id", "name"),
+    )
+
+
+class ProposalVersionExport(_Stamped, Base):
+    __tablename__ = "proposal_version_exports"
+    version_id: Mapped[str] = mapped_column(ForeignKey("proposal_versions.id"), index=True)
+    format: Mapped[str] = mapped_column(String(20))
+    artifact: Mapped[dict] = mapped_column(JSON)
+    sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (UniqueConstraint("version_id", "format"),)
+
+
+class ProposalGeneration(_Stamped, Base):
+    """Durable idempotency/audit record for bounded, resumable proposal generation."""
+
+    __tablename__ = "proposal_generations"
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("proposals.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))  # fit_matrix|outline|draft
+    idempotency_key: Mapped[str] = mapped_column(String(100))
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    context_hash: Mapped[str] = mapped_column(String(64))
+    result_hash: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    provider_request_id: Mapped[str] = mapped_column(String(200), default="")
+    simulated: Mapped[bool] = mapped_column(default=False)
+    error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (UniqueConstraint("proposal_id", "idempotency_key"),)
+
+
 class UsageEvent(_Stamped, Base):
     """One provider call's token usage, attributed to a project and a call kind.
     `simulated` rows (fake provider) are recorded for observability but never count
@@ -530,6 +746,7 @@ class UsageEvent(_Stamped, Base):
     output_tokens: Mapped[int] = mapped_column(default=0)
     total_tokens: Mapped[int] = mapped_column(default=0)
     simulated: Mapped[bool] = mapped_column(default=False)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class CostBudget(_Stamped, Base):

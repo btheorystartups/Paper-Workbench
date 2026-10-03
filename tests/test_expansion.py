@@ -3,10 +3,15 @@
 import pytest
 
 from workbench.services import (
-    authoring, literature, portfolio, research, security, semantic, venues,
+    authoring,
+    literature,
+    portfolio,
+    research,
+    security,
+    semantic,
+    venues,
 )
 from workbench.vocab import ClaimSupport, ObjectKind, SourceAccess
-
 
 # --- semantic ---
 

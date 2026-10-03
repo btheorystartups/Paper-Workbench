@@ -70,12 +70,9 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             "verification-debt",
-            lambda s, p: (
-                research.create_claim(
-                    s, p, text="Overclaim", support=ClaimSupport.VERIFICATION_REQUIRED
-                ),
-                _base(s, p, verified_source=True),
-            )[-1],
+            lambda s, p: _base(
+                s, p, verified_source=True, support=ClaimSupport.VERIFICATION_REQUIRED
+            ),
             expected_codes={"claim-verification-debt"},
         ),
         Scenario(
@@ -123,10 +120,25 @@ def _ai_cite(session: Session, project_id: str) -> str:
 
 
 def _unresolved(session: Session, project_id: str) -> str:
-    research.register_source(
-        session, project_id, title="Mystery memo", access=SourceAccess.METADATA_ONLY
+    source = research.register_source(
+        session, project_id, title="Mystery memo", access=SourceAccess.ABSTRACT_ONLY
     )
-    return _base(session, project_id, verified_source=True)
+    source.human_verified = True
+    excerpt = research.capture_excerpt(
+        session, source.id, text="Unresolved abstract claim.", locator="abstract"
+    )
+    claim = research.create_claim(
+        session,
+        project_id,
+        text="The unresolved source reports a result.",
+        support=ClaimSupport.EXTERNAL_SOURCE,
+        excerpt_ids=[excerpt.id],
+    )
+    manuscript = authoring.create_manuscript(session, project_id, title="MS")
+    authoring.add_section(
+        session, manuscript.id, heading="Results", purpose="report", claim_ids=[claim.id]
+    )
+    return manuscript.id
 
 
 def run(session_factory) -> dict:

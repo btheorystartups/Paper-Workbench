@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from .. import storage
 from ..models import ResearchObject
 from ..vocab import ObjectKind, Relation
 from . import research
@@ -60,14 +60,6 @@ def _matplotlib():
         raise FigureError(
             "matplotlib is required to render figures; install with pip install '.[figures]'"
         ) from exc
-
-
-def _artifact_dir(checksum: str):
-    from pathlib import Path
-
-    d = Path(get_settings().data_dir) / "artifacts" / checksum[:2] / checksum
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 # --- datasets ---
@@ -138,22 +130,43 @@ def render_figure(session: Session, project_id: str, *, title: str, dataset_id: 
 
     png_bytes = png_buf.getvalue()
     checksum = hashlib.sha256(png_bytes).hexdigest()
-    d = _artifact_dir(checksum)
-    (d / "figure.png").write_bytes(png_bytes)
-    (d / "figure.svg").write_text(svg_buf.getvalue(), encoding="utf-8")
+    try:
+        png_ref = storage.store_content(
+            png_bytes,
+            filename="figure.png",
+            namespace="figures",
+            content_type="image/png",
+        )
+        svg_ref = storage.store_content(
+            svg_buf.getvalue().encode("utf-8"),
+            filename="figure.svg",
+            namespace="figures",
+            content_type="image/svg+xml",
+        )
+    except storage.ArtifactStorageError as exc:
+        raise FigureError(str(exc)) from exc
 
     number = _next_number(session, project_id, ObjectKind.FIGURE)
     figure = research.create_object(
         session, project_id, kind=ObjectKind.FIGURE, title=title,
         body={
             "number": number, "dataset_id": dataset_id, "spec": spec,
-            "data_hash": ds.hash(), "png_path": str(d / "figure.png"),
-            "svg_path": str(d / "figure.svg"), "png_sha256": checksum,
+            "data_hash": ds.hash(), "png_artifact": png_ref,
+            "svg_artifact": svg_ref, "png_sha256": checksum,
             "palette": "grayscale" if grayscale else "okabe_ito",
             "colorblind_safe": True, "renderer": f"matplotlib-{_mpl_version()}",
             "caption": None, "alt_text": None,
         },
     )
+    png_path = storage.local_path(png_ref)
+    svg_path = storage.local_path(svg_ref)
+    if png_path or svg_path:
+        body = dict(figure.body)
+        if png_path:
+            body["png_path"] = png_path
+        if svg_path:
+            body["svg_path"] = svg_path
+        figure.body = body
     research.link_objects(session, project_id, figure.id, dataset_id, Relation.DERIVES_FROM,
                           note="rendered from dataset")
     return figure
@@ -293,7 +306,7 @@ def _parse_caption(text: str) -> tuple[str, str]:
 # --- staleness / integrity audit ---
 
 
-def audit_artifacts(session: Session, project_id: str) -> list[dict]:
+def audit_artifacts(session: Session, project_id: str, *, artifact_ids: set[str] | None = None) -> list[dict]:
     """Detect figures/tables whose source dataset changed (stale) or vanished (orphan),
     and artifacts missing a caption. Complements the manuscript unreferenced-artifact check."""
     findings: list[dict] = []
@@ -304,6 +317,8 @@ def audit_artifacts(session: Session, project_id: str) -> list[dict]:
                 ResearchObject.deleted_at.is_(None),
             )
         ):
+            if artifact_ids is not None and art.id not in artifact_ids:
+                continue
             ds_id = art.body.get("dataset_id")
             ds_obj = session.get(ResearchObject, ds_id) if ds_id else None
             if ds_obj is None or ds_obj.deleted_at is not None:

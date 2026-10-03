@@ -4,6 +4,7 @@ import pytest
 
 from workbench.ingest.safe_fetch import UnsafeUrlError, assert_safe_url, parse_html
 from workbench.providers.brave import BraveSearchAdapter
+from workbench.providers.extraction import MAX_BYTES, HttpExtractionProvider
 from workbench.providers.fakes import FakeChatProvider, FakeSearchProvider
 from workbench.providers.llm import parse_action_block
 from workbench.providers.registry import get_chat_provider, get_search_provider
@@ -30,11 +31,7 @@ def test_brave_parses_and_caches(tmp_path):
 
         def json(self):
             return {
-                "web": {
-                    "results": [
-                        {"url": "https://www.example.com/a", "title": "T", "description": "D"}
-                    ]
-                }
+                "web": {"results": [{"url": "https://www.example.com/a", "title": "T", "description": "D"}]}
             }
 
     class _Session:
@@ -42,9 +39,7 @@ def test_brave_parses_and_caches(tmp_path):
             calls.append(params["q"])
             return _Resp()
 
-    adapter = BraveSearchAdapter(
-        "key", session=_Session(), cache_dir=str(tmp_path), sleep=lambda _s: None
-    )
+    adapter = BraveSearchAdapter("key", session=_Session(), cache_dir=str(tmp_path), sleep=lambda _s: None)
     first = adapter.search("cm boolean")
     assert first[0].publisher == "example.com"
     assert first[0].provider_payload["provider"] == "brave"
@@ -59,9 +54,7 @@ def test_ssrf_guard_blocks_private_and_bad_schemes():
         assert_safe_url("http://127.0.0.1/admin", resolve=False)
     with pytest.raises(UnsafeUrlError):
         assert_safe_url("http://169.254.169.254/latest/meta-data", resolve=False)
-    assert assert_safe_url("HTTPS://Example.com:443/p#frag", resolve=False) == (
-        "https://example.com/p"
-    )
+    assert assert_safe_url("HTTPS://Example.com:443/p#frag", resolve=False) == ("https://example.com/p")
 
 
 def test_parse_html_extracts_metadata():
@@ -78,10 +71,54 @@ def test_parse_html_extracts_metadata():
     assert "bad()" not in parsed.text
 
 
+def test_http_extraction_revalidates_redirects_and_streams_bounded_bytes(monkeypatch):
+    from workbench.providers import extraction
+
+    checked = []
+    monkeypatch.setattr(extraction, "assert_safe_url", lambda url: checked.append(url) or url)
+
+    class Response:
+        def __init__(self, status, headers=None, chunks=None):
+            self.status_code = status
+            self.headers = headers or {}
+            self.encoding = "utf-8"
+            self._chunks = chunks or []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError("HTTP failure")
+
+        def iter_bytes(self):
+            return iter(self._chunks)
+
+    responses = iter(
+        [
+            Response(302, {"location": "https://example.test/final"}),
+            Response(200, {"content-type": "text/html"}, [b"<title>T</title><p>bounded text</p>"]),
+        ]
+    )
+
+    class Client:
+        def stream(self, *_args, **_kwargs):
+            return next(responses)
+
+    page = HttpExtractionProvider(session=Client()).fetch("https://example.test/start")
+    assert page.fetch_ok is True
+    assert page.url == "https://example.test/final"
+    assert checked == ["https://example.test/start", "https://example.test/final"]
+    assert page.http_metadata["byte_count"] < MAX_BYTES
+    assert "bounded text" in page.extracted_text
+
+
 def test_action_block_parsing_is_defensive():
     prose, actions = parse_action_block(
-        'Before.\n```wb-actions\n[{"kind": "create_object", "payload": {"kind": "task", '
-        '"title": "T"}}]\n```'
+        'Before.\n```wb-actions\n[{"kind": "create_object", "payload": {"kind": "task", "title": "T"}}]\n```'
     )
     assert prose == "Before."
     assert actions[0]["kind"] == "create_object"
@@ -91,7 +128,5 @@ def test_action_block_parsing_is_defensive():
     assert prose2 == "Text"
 
     # entries missing required fields are dropped, valid ones kept
-    _, actions3 = parse_action_block(
-        '```wb-actions\n[{"kind": "x", "payload": {}}, {"nope": 1}]\n```'
-    )
+    _, actions3 = parse_action_block('```wb-actions\n[{"kind": "x", "payload": {}}, {"nope": 1}]\n```')
     assert len(actions3) == 1

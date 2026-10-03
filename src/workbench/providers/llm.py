@@ -14,7 +14,7 @@ import json
 import logging
 import re
 
-from .protocols import ChatResult
+from .protocols import ChatResult, validate_reasoning_effort
 
 _logger = logging.getLogger("wb.llm")
 
@@ -54,14 +54,17 @@ class OpenAIChatAdapter:
         return self._client
 
     def chat(
-        self, *, system: str, messages: list[dict], model: str, max_output_tokens: int
+        self, *, system: str, messages: list[dict], model: str, max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> ChatResult:
+        validate_reasoning_effort(reasoning_effort)
         client = self._ensure_client()
         response = client.responses.create(
             model=model,
             instructions=system,
             input=[{"role": m["role"], "content": m["content"]} for m in messages],
             max_output_tokens=max_output_tokens,
+            **({"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}),
         )
         text = response.output_text or ""
         prose, actions = parse_action_block(text)
@@ -99,8 +102,12 @@ class AnthropicChatAdapter:
         return self._session
 
     def chat(
-        self, *, system: str, messages: list[dict], model: str, max_output_tokens: int
+        self, *, system: str, messages: list[dict], model: str, max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> ChatResult:
+        validate_reasoning_effort(reasoning_effort)
+        if reasoning_effort is not None:
+            raise ValueError("reasoning effort is not supported by the Anthropic adapter")
         session = self._ensure_session()
         resp = session.post(
             self.API_URL,

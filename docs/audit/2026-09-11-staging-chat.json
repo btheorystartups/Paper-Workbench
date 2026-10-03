@@ -1,0 +1,413 @@
+{
+  "run_id": "641e7d2c9d76475ca297e973dd8f8dc8",
+  "deployment_id": "dpl_BoCfTGBdWq1DwxoHu8zBMbLZKGjB",
+  "project_id": "prj_a4tgpf6rsmYp7H3JroXUH4x6ERk3",
+  "started_at": "2026-09-11T05:48:53.222929+00:00",
+  "fixture_ids": {
+    "users": [
+      "56b8b93c55b4578d87704ae77da61ff0",
+      "9834c9de1fd45a34a70f14566210e13b"
+    ],
+    "workspaces": [
+      "2ee81280192c5b999020a1a3af965bf0",
+      "d22a3fd180475101995ee2df04502b28"
+    ],
+    "memberships": [
+      "21343d738db654afabaabb9a3888c809",
+      "ff97b14b2eea51b8a3d387452dd38e52"
+    ]
+  },
+  "checks": [
+    {
+      "check": "user_0_wrong_password",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_0_login",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_identity",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_workspace_list",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_wrong_password",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_login",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_identity",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_workspace_list",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_wrong",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_other_session",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_valid",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_own_tenant_read",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_read",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_projects",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_write",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_login",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_wrong",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_other_session",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_valid",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_own_tenant_read",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_read",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_projects",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_write",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_login",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "chat_project",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_manuscript",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_source",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_excerpt",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_claim",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_section",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_thread",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_brief",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_context",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_context_other_tenant",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "chat_missing_csrf",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "chat_proposal",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_unchanged_before_review",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_other_tenant_approval",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "chat_human_revision",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_apply",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_applied_text",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_double_approval",
+      "status": 409,
+      "passed": true
+    },
+    {
+      "check": "chat_undo_proposal",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_unchanged_before_undo",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_apply_undo",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_restored_text",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_first_proposal",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_second_proposal",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_apply_first",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_stale_approval",
+      "status": 409,
+      "passed": true
+    },
+    {
+      "check": "chat_rejected_proposal",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_reject",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_final_text",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "chat_claims_unchanged",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_logout_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_still_authenticated",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_logout",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_logged_out_denial",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_0_bearer_replay_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_0_alternate_encoding_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_logout_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_still_authenticated",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_logout",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_logged_out_denial",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_bearer_replay_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_alternate_encoding_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "deleted_user_0_session_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "deleted_user_1_session_denied",
+      "status": 401,
+      "passed": true
+    }
+  ],
+  "session_replay_after_logout": [
+    {
+      "user": 0,
+      "status": 401
+    },
+    {
+      "user": 1,
+      "status": 401
+    }
+  ],
+  "status": "passed",
+  "alembic_revision": "a91d4e7b620f",
+  "revocation_hashes": [
+    "fa109517433d280302eddecc6a0daff6fb9ae3267a232fba2221e527db0021c8",
+    "86519a210db5f710702f65fd1b6cecf60d8ed6b3bf97055d596462924f9a6fcf"
+  ],
+  "manuscript_checks": "passed",
+  "cleanup": {
+    "deleted": {
+      "proposed_actions": 6,
+      "turns": 8,
+      "threads": 1,
+      "claim_evidence": 1,
+      "excerpts": 1,
+      "claims": 1,
+      "edges": 1,
+      "research_objects": 2,
+      "sources": 1,
+      "usage_events": 4,
+      "project_members": 1,
+      "projects": 1,
+      "revoked_access_tokens": 2,
+      "audit_events": 20,
+      "workspace_members": 2,
+      "workspaces": 2,
+      "users": 2
+    },
+    "remaining": 0
+  },
+  "finished_at": "2026-09-11T05:59:46.865778+00:00",
+  "findings": []
+}

@@ -22,10 +22,11 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import storage
 from ..config import get_settings
-from ..models import Claim, ClaimEvidence, Excerpt, ResearchObject, Source
+from ..models import Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
 from ..vocab import ObjectKind
-from . import audits, authoring, research
+from . import audits, authoring, math_typesetting, research
 
 
 def _latex_escape(text: str) -> str:
@@ -45,7 +46,7 @@ def _bib_key(source: Source) -> str:
 
 def _collect(session: Session, manuscript_id: str):
     manuscript = session.get(ResearchObject, manuscript_id)
-    if manuscript is None or manuscript.kind != ObjectKind.MANUSCRIPT:
+    if manuscript is None or manuscript.deleted_at or manuscript.kind != ObjectKind.MANUSCRIPT:
         raise research.IntegrityError("manuscript not found")
     sections = authoring.manuscript_sections(session, manuscript_id)
     claims: dict[str, Claim] = {}
@@ -57,7 +58,7 @@ def _collect(session: Session, manuscript_id: str):
                 continue
             claims[cid] = claim
             for ev in session.scalars(
-                select(ClaimEvidence).where(ClaimEvidence.claim_id == cid)
+                select(ClaimEvidence).where(ClaimEvidence.claim_id == cid, ClaimEvidence.deleted_at.is_(None))
             ):
                 if ev.excerpt_id:
                     excerpt = session.get(Excerpt, ev.excerpt_id)
@@ -76,7 +77,9 @@ def _claims_block(claim_ids: list[str], claims: dict[str, Claim], sources: dict[
         if claim is None:
             continue
         cites = []
-        for ev in session.scalars(select(ClaimEvidence).where(ClaimEvidence.claim_id == cid)):
+        for ev in session.scalars(select(ClaimEvidence).where(
+            ClaimEvidence.claim_id == cid, ClaimEvidence.deleted_at.is_(None)
+        )):
             if ev.excerpt_id:
                 excerpt = session.get(Excerpt, ev.excerpt_id)
                 src = sources.get(excerpt.source_id) if excerpt else None
@@ -84,7 +87,8 @@ def _claims_block(claim_ids: list[str], claims: dict[str, Claim], sources: dict[
                     cites.append((_bib_key(src), excerpt.locator))
         if fmt == "tex":
             cite = " ".join(f"\\cite{{{k}}}" for k, _loc in cites)
-            lines.append(f"% [support: {claim.support}]\n{_latex_escape(claim.text)} {cite}".strip())
+            content = math_typesetting.latex_text(claim.text, _latex_escape)
+            lines.append(f"% [support: {claim.support}]\n{content} {cite}".strip())
         else:
             cite = " ".join(f"[@{k}, {loc}]" for k, loc in cites)
             lines.append(f"{claim.text} {cite} *[support: {claim.support}]*".strip())
@@ -149,6 +153,7 @@ class PdfRenderResult:
     requested_mode: str
     renderer_version: str | None = None
     fallback_reason: str | None = None
+    math_count: int = 0
 
     def manifest(self) -> dict:
         return {
@@ -156,6 +161,8 @@ class PdfRenderResult:
             "requested_mode": self.requested_mode,
             "renderer_version": self.renderer_version,
             "fallback_reason": self.fallback_reason,
+            "math_renderer": "MathJax 3.2.2 SVG" if self.math_count else None,
+            "math_count": self.math_count,
         }
 
 
@@ -165,6 +172,17 @@ def _render_pdf(title: str, html: str, paragraphs: list[str], mode: str) -> PdfR
         raise research.IntegrityError(
             "pdf_renderer must be one of: auto, weasyprint, minimal"
         )
+    from . import math_typesetting
+
+    has_math = bool(math_typesetting.MATH.search(html))
+    if has_math and (mode == "minimal" or not weasyprint_status()["available"]):
+        raise research.IntegrityError(
+            "Typeset math requires WeasyPrint; plain-text fallback would lose equations."
+        )
+    if has_math:
+        html, math_count = math_typesetting.render_html(html)
+    else:
+        math_count = 0
     if mode == "minimal":
         return PdfRenderResult(_minimal_pdf(title, paragraphs), "minimal", mode)
     status = weasyprint_status()
@@ -174,12 +192,12 @@ def _render_pdf(title: str, html: str, paragraphs: list[str], mode: str) -> PdfR
                 "pdf_renderer=weasyprint but WeasyPrint/GTK is unavailable on this system"
             )
         return PdfRenderResult(
-            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"])
+            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"]), math_count=math_count
         )
     # auto
     if status["available"]:
         return PdfRenderResult(
-            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"])
+            _weasyprint_pdf(html), "weasyprint", mode, str(status["version"]), math_count=math_count
         )
     return PdfRenderResult(
         _minimal_pdf(title, paragraphs),
@@ -452,7 +470,9 @@ def _jats_xml(
     return "\n".join(parts)
 
 
-def _export_supplements(session: Session, project_id: str, out_dir: Path) -> list[dict]:
+def _export_supplements(
+    session: Session, project_id: str, out_dir: Path, *, artifact_ids: set[str]
+) -> list[dict]:
     """Copy the project's figures/tables into the bundle with their data-provenance and a
     live staleness check, so a reviewer can trace every artifact back to its data."""
     from sqlalchemy import select
@@ -470,6 +490,8 @@ def _export_supplements(session: Session, project_id: str, out_dir: Path) -> lis
                 ResearchObject.deleted_at.is_(None),
             )
         ):
+            if art.id not in artifact_ids:
+                continue
             supp_dir.mkdir(parents=True, exist_ok=True)
             ds = session.get(ResearchObject, art.body.get("dataset_id"))
             stale = None
@@ -479,20 +501,46 @@ def _export_supplements(session: Session, project_id: str, out_dir: Path) -> lis
             entry = {"id": art.id, "kind": str(kind), "number": art.body.get("number"),
                      "title": art.title, "data_hash": art.body.get("data_hash"),
                      "stale": stale, "caption": art.body.get("caption")}
+            payloads = {}
             if kind == ObjectKind.FIGURE:
+                png_ref = art.body.get("png_artifact")
                 png = art.body.get("png_path")
-                if png and Path(png).is_file():
-                    dest = supp_dir / f"figure_{art.body.get('number')}.png"
-                    dest.write_bytes(Path(png).read_bytes())
+                png_payload = None
+                if isinstance(png_ref, dict):
+                    png_payload = storage.read_bytes(png_ref)
+                elif png:
+                    try:
+                        png_payload = storage.read_legacy_location(png)
+                    except storage.ArtifactStorageError:
+                        png_payload = None
+                if png_payload is not None:
+                    dest = supp_dir / f"figure_{art.id}.png"
+                    dest.write_bytes(png_payload)
+                    payloads[dest.name] = png_payload
+                    svg_ref = art.body.get("svg_artifact")
                     svg = art.body.get("svg_path")
-                    if svg and Path(svg).is_file():
-                        (supp_dir / f"figure_{art.body.get('number')}.svg").write_text(
-                            Path(svg).read_text(encoding="utf-8"), encoding="utf-8")
+                    svg_payload = None
+                    if isinstance(svg_ref, dict):
+                        svg_payload = storage.read_bytes(svg_ref)
+                    elif svg:
+                        try:
+                            svg_payload = storage.read_legacy_location(svg)
+                        except storage.ArtifactStorageError:
+                            svg_payload = None
+                    if svg_payload is not None:
+                        svg_dest = supp_dir / f"figure_{art.id}.svg"
+                        svg_dest.write_bytes(svg_payload)
+                        payloads[svg_dest.name] = svg_payload
                     entry["file"] = dest.name
             else:
-                dest = supp_dir / f"table_{art.body.get('number')}.md"
-                dest.write_text(art.body.get("markdown", ""), encoding="utf-8")
+                dest = supp_dir / f"table_{art.id}.md"
+                payloads[dest.name] = art.body.get("markdown", "").encode("utf-8")
+                dest.write_bytes(payloads[dest.name])
                 entry["file"] = dest.name
+            entry["artifacts"] = {
+                name: storage.store_content(payload, filename=name, namespace="exports/supplements")
+                for name, payload in payloads.items()
+            }
             out.append(entry)
     return out
 
@@ -500,6 +548,11 @@ def _export_supplements(session: Session, project_id: str, out_dir: Path) -> lis
 def export_manuscript(
     session: Session, manuscript_id: str, *, formats: list[str] | None = None
 ) -> dict:
+    from . import evidence_basis
+
+    input_basis = evidence_basis.collect(session, manuscript_id)
+    if input_basis["problems"]:
+        raise research.IntegrityError("manuscript evidence is unavailable")
     formats = formats or ["md", "tex", "html", "docx", "bib", "pdf", "jats"]
     manuscript, sections, claims, sources = _collect(session, manuscript_id)
     from .authorship import export_credit
@@ -538,7 +591,8 @@ def export_manuscript(
     # --- LaTeX ---
     if "tex" in formats:
         tex = [
-            r"\documentclass{article}", r"\usepackage[utf8]{inputenc}", "",
+            r"\documentclass{article}", r"\usepackage[utf8]{inputenc}",
+            r"\usepackage{amsmath,amssymb}", "",
             f"\\title{{{_latex_escape(manuscript.title)}}}",
         ]
         if credit["authors"]:
@@ -551,7 +605,7 @@ def export_manuscript(
         for s in sections:
             tex.append(f"\\section{{{_latex_escape(s.title)}}}")
             if s.body.get("text"):
-                tex.append(_latex_escape(s.body["text"]))
+                tex.append(math_typesetting.latex_text(s.body["text"], _latex_escape))
             tex += _claims_block(s.body.get("claim_ids", []), claims, sources, session, "tex")
             tex.append("")
         if sources:
@@ -680,7 +734,8 @@ def export_manuscript(
         ).as_dict()
 
     # --- Supplements: figures & tables with data provenance ---
-    supplements = _export_supplements(session, manuscript.project_id, out_dir)
+    supplements = _export_supplements(session, manuscript.project_id, out_dir,
+                                      artifact_ids=evidence_basis.ids(input_basis, ResearchObject))
     if supplements:
         extra_manifest["supplements"] = supplements
 
@@ -704,6 +759,7 @@ def export_manuscript(
             }
             for sid, s in sources.items()
         },
+        "evidence_basis_hash": stable_hash(input_basis),
         "audit_findings_at_export": findings,
         "files": {},
         **extra_manifest,
@@ -716,9 +772,25 @@ def export_manuscript(
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    artifact_refs = {
+        fmt: storage.store_content(
+            path.read_bytes(),
+            filename=path.name,
+            namespace=f"exports/manuscripts/{manuscript_id}",
+        )
+        for fmt, path in written.items()
+    }
+    artifact_refs["manifest"] = storage.store_content(
+        manifest_path.read_bytes(),
+        filename=manifest_path.name,
+        namespace=f"exports/manuscripts/{manuscript_id}",
+        content_type="application/json",
+    )
+
     return {
         "out_dir": str(out_dir),
         "files": {fmt: str(p) for fmt, p in written.items()} | {"manifest": str(manifest_path)},
+        "artifact_refs": artifact_refs,
         "audit_findings": len(findings),
         **extra_manifest,
     }

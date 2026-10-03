@@ -83,6 +83,7 @@ def month_usage(session: Session, project_id: str) -> dict:
         .where(
             UsageEvent.project_id == project_id,
             UsageEvent.created_at >= _month_start().replace(tzinfo=None),
+            UsageEvent.provider != "codex_local",
         )
         .group_by(UsageEvent.kind, UsageEvent.simulated)
     ).all()
@@ -101,6 +102,12 @@ def month_usage(session: Session, project_id: str) -> dict:
             entry["output_tokens"] += _int(out)
             entry["total_tokens"] += _int(total)
             live_total += _int(total)
+    from ..providers.codex_access import LOCAL_NOTICE
+
+    codex_rows = session.scalars(select(UsageEvent).where(
+        UsageEvent.project_id == project_id, UsageEvent.provider == "codex_local",
+        UsageEvent.created_at >= _month_start().replace(tzinfo=None),
+    )).all()
     return {
         "month_start": _month_start().isoformat(),
         "live_total_tokens": live_total,
@@ -108,6 +115,14 @@ def month_usage(session: Session, project_id: str) -> dict:
         "remaining_tokens": max(ceiling - live_total, 0) if ceiling else None,
         "ceiling_reached": bool(ceiling) and live_total >= ceiling,
         "by_kind": by_kind,
+        "codex_local": {
+            "calls": len(codex_rows),
+            "reported_total_tokens": sum(row.total_tokens for row in codex_rows),
+            "usage_unavailable_calls": sum(not row.provenance.get("usage_available") for row in codex_rows),
+            "incomplete_usage_calls": sum(not row.provenance.get("usage_final") for row in codex_rows),
+            "quota_source": "chatgpt_plan" if codex_rows else None,
+            "account_usage_capped": False, "notice": LOCAL_NOTICE,
+        },
     }
 
 
@@ -124,12 +139,13 @@ def check_budget(session: Session, project_id: str) -> None:
 
 def record_usage(
     session: Session, project_id: str, *, provider: str, model: str, kind: str,
-    usage: dict | None, simulated: bool,
+    usage: dict | None, simulated: bool, provenance: dict | None = None,
 ) -> UsageEvent:
     inp, out, total = normalize_usage(usage)
     event = UsageEvent(
         project_id=project_id, provider=provider, model=model, kind=kind,
         input_tokens=inp, output_tokens=out, total_tokens=total, simulated=simulated,
+        provenance=provenance or {},
     )
     session.add(event)
     return event
@@ -143,18 +159,22 @@ def charged_chat(
     provider is contacted) → provider call → usage recorded in-transaction."""
     from ..config import get_settings
 
-    live = get_settings().provider_mode == "live"
-    if live:
+    settings = get_settings()
+    codex_local = settings.llm_provider == "codex_local"
+    live = settings.provider_mode == "live"
+    if live and not codex_local:
         check_budget(session, project_id)
     # Late-bound through the registry module so test monkeypatching keeps working.
     provider = registry.get_chat_provider()
     result = provider.chat(
         system=system, messages=messages, model=registry.chat_model_name(),
         max_output_tokens=max_output_tokens,
+        **({"reasoning_effort": settings.codex_local_reasoning_effort} if codex_local else {}),
     )
     record_usage(
-        session, project_id, provider=get_settings().llm_provider if live else "fake",
+        session, project_id, provider=settings.llm_provider if live or codex_local else "fake",
         model=result.model, kind=kind, usage=result.usage,
         simulated=result.model == "fake",
+        provenance=result.provenance,
     )
     return result

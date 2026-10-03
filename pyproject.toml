@@ -7,6 +7,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "python-multipart>=0.0.9",
+    "vercel>=0.5.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "httpx>=0.27",
@@ -19,6 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Fixed wire protocol for supervised offline evaluation; review before upgrading.
+evaluation = ["openai==2.46.0"]
+research-semantic = ["onnxruntime==1.30.0", "tokenizers==0.23.2", "numpy>=1.21.6"]
+# Pinned local ChatGPT runtime; upgraded only after a capability/security review.
+codex-local = ["openai-codex==0.154.0", "tiktoken>=0.12,<1"]
 dev = [
     "pytest>=8.2",
     "ruff>=0.5",
@@ -42,6 +50,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 workbench = [
+    "math_runtime/*.cjs",
+    "math_runtime/package*.json",
     "schemas/jats_1_3_archiving/*",
     "schemas/jats_1_3_archiving/iso8879/*",
     "schemas/jats_1_3_archiving/iso9573-13/*",

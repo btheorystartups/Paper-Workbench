@@ -286,3 +286,77 @@ Ledger status (2026-09-08, workspace-tenancy and OIDC hardening):
   direct-resource ID substitution, scoped-key denial/revocation, issuer collision, tenant-claim
   binding, legacy migration backfill, and real RSA ID-token signature/issuer/audience checks.
   No IdP, provider, or other live API was contacted.
+
+Ledger status (2026-09-10, Vercel/PostgreSQL deployment foundation):
+- **Explicit hosting mode** — local behavior remains the default. `WB_DEPLOYMENT_MODE=vercel`
+  fails closed unless enforced auth, Secure HttpOnly cookie sessions, PostgreSQL, null runtime
+  pooling, separately controlled migrations, `/tmp` scratch space, minimal PDF rendering, and
+  disabled workstation compute are all selected.
+- **Database boundary** — common provider URLs select psycopg 3 explicitly. Runtime requests
+  can use a pooled URL while Alembic uses a separate direct URL; hosted startup never runs
+  migrations implicitly. SQLite and automatic migration remain available for standalone use.
+- **Browser authentication** — the backend now owns Authorization Code + PKCE with signed,
+  short-lived state/nonce/verifier cookies. ID-token nonce is verified. Browser access tokens
+  stay in Secure HttpOnly SameSite cookies and unsafe requests require a random CSRF value
+  bound inside that token. Bearer and scoped API-key flows remain available for automation.
+- **Vercel packaging** — the repository has a Python 3.13 FastAPI entry point, bounded Function
+  duration, bundle exclusions, and baseline security headers. Provider mode remains fake unless
+  separately authorized.
+- **Honest blocker** — Vercel `/tmp` is treated only as scratch. Real hosted research data is
+  blocked until private durable Blob references and authenticated retrieval cover ingest,
+  figures, exports/packages, and project portability.
+- **Verification** — 176 offline tests, Ruff on the application/changed surface, and JavaScript
+  syntax are green. New tests cover URL normalization, migration separation, every hosted-mode
+  guardrail, cookie-token non-disclosure, CSRF denial, PKCE construction, state binding, nonce
+  binding, callback login, and logout. No IdP, database, Blob, AI, or search API was called.
+
+Ledger status (2026-09-10, durable hosted artifacts and transfer boundary):
+- **Private artifact abstraction** — ingested originals/extractions, figures, manuscript
+  exports, publication packages, and project-transfer bundles now use content-addressed local
+  or private-Blob descriptors. Reads are bounded and checksum-verified; repeated writes are
+  accepted only after the existing object's bytes verify against the requested digest.
+- **Hosted browser boundary** — file ingest and project restore accept bounded multipart
+  uploads; project/manuscript/package downloads are returned by authorized application routes
+  with private/no-store response controls. Search snippets and similarity remain discovery-only.
+- **Portability** — project bundles collect referenced artifacts from either backend and
+  retarget descriptors on restore without promoting any evidence or review state.
+- **Verification** — 187 offline tests, Ruff, and JavaScript syntax are green. Private-Blob
+  behavior is exercised with a deterministic no-network client. No live Blob/database/IdP,
+  AI, or search API call occurred in this verification pass.
+- **Remaining deployment gate** — provision and explicitly migrate the isolated staging
+  database, attach a private Blob store, configure a pre-provisioned IdP identity, and pass
+  synthetic authenticated smoke tests before real research data or a production alias is used.
+
+Ledger status (2026-09-11, isolated Preview verification):
+- **Preview Ready** — `dpl_EnHFGu3GHJSfB791FYtQ98wumwQv`, fake providers, enforced auth,
+  closed registration, disabled OIDC; health/UI return 200 and unauthenticated API reads 401.
+- **Resources verified** — existing isolated Neon revision `f3a1c7e9b420`; synthetic workspace
+  write/read/rollback; private Blob checksum/idempotency/anonymous-denial/delete checks passed.
+  No staging identity or real research data was created.
+- **Real integration fix** — corrected the Python Blob SDK `content`/`stream` mismatch,
+  added pre-download size checks and actual-byte limits, repaired the dependency lock, and
+  excluded local caches from deployment uploads.
+- **Initializer retired** — removed only `dpl_HauzT9iX4xSvPCong76sCsoj872Y` after independent
+  Preview verification. No active project alias or custom domain; inactive default Vercel
+  domain configuration remains. Runtime error/5xx queries returned zero records.
+- **Verification** — 190 offline tests, Ruff, JavaScript syntax, lockfile consistency, and
+  whitespace checks passed. Nothing staged, committed, or pushed.
+- **Next gate** — authorize staging identity provisioning, then authenticated Function and
+  tenant-isolation tests. Monitoring/backups, security review, and the remaining product
+  roadmap remain open. Full evidence and limitations: `2026-09-11-staging-preview.md`.
+
+Ledger status (2026-09-11, authorized temporary staging authentication checks):
+- **Two synthetic identities/tenants** — explicitly authorized by Brian; generated credentials
+  stayed in memory. Registration remained closed, OIDC disabled, and research providers fake.
+- **Real Function checks** — 36 expected HTTP checks passed: password login, cookie flags,
+  workspace enumeration, missing/wrong/cross-session CSRF denial, valid-CSRF writes,
+  cross-tenant reads/writes, logout cookie clearing, and post-cleanup session denial.
+- **Open security finding** — copied session tokens returned 200 after logout for both users.
+  Logout clears browser cookies but does not revoke tokens server-side. Persistent revocation
+  is the next security priority; real Auth0/PKCE and artifact workflows remain unverified.
+- **Cleanup verified twice** — removed both users, both workspaces, two memberships, and two
+  synthetic audit events; independent rerun confirmed zero remaining. Alembic stayed at
+  `f3a1c7e9b420`; no application deployment, schema, provider, or registration change occurred.
+- **Local verification** — 193 offline tests, Ruff, JavaScript syntax, and whitespace checks
+  passed. Harness/report additions only; no commit or push. Full results:
+  `2026-09-11-staging-auth.md`, `2026-09-11-staging-auth.json`, and cleanup JSON alongside them.

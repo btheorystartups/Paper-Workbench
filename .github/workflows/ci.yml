@@ -26,7 +26,13 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install offline test dependencies
-        run: python -m pip install -e ".[dev,figures]"
+        run: python -m pip install -e ".[dev,figures,evaluation]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install offline math renderer
+        working-directory: src/workbench/math_runtime
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Ruff
         run: python -m ruff check src/
       - name: Pytest

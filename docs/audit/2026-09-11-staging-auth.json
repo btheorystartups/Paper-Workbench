@@ -1,0 +1,231 @@
+{
+  "run_id": "a60effb173bc42b5b17aa6ad18ec909e",
+  "deployment_id": "dpl_EnHFGu3GHJSfB791FYtQ98wumwQv",
+  "project_id": "prj_a4tgpf6rsmYp7H3JroXUH4x6ERk3",
+  "started_at": "2026-09-11T04:14:22.381739+00:00",
+  "fixture_ids": {
+    "users": [
+      "c2c3ab13542258a4902c5acf8d4bd066",
+      "35620ec3ab3252fd92881a3dfea3b17d"
+    ],
+    "workspaces": [
+      "d4d970816bfc5f5ca7636b8af60286e6",
+      "427ca29e628f58abae55c4af56b95a1e"
+    ],
+    "memberships": [
+      "3608dfd5cbae5523bfe8e87a4c679abf",
+      "cfd973a4830b51aa8c266a9aad642f4f"
+    ]
+  },
+  "checks": [
+    {
+      "check": "user_0_wrong_password",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_0_login",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_identity",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_workspace_list",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_wrong_password",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_login",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_identity",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_workspace_list",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_wrong",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_other_session",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_csrf_valid",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_own_tenant_read",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_read",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_projects",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_write",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_0_other_tenant_login",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_wrong",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_other_session",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_csrf_valid",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_own_tenant_read",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_read",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_projects",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_write",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "user_1_other_tenant_login",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_0_logout_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_0_still_authenticated",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_logout",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_0_logged_out_denial",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "user_1_logout_csrf_missing",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "check": "user_1_still_authenticated",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_logout",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "user_1_logged_out_denial",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "deleted_user_0_session_denied",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "deleted_user_1_session_denied",
+      "status": 401,
+      "passed": true
+    }
+  ],
+  "session_replay_after_logout": [
+    {
+      "user": 0,
+      "status": 200
+    },
+    {
+      "user": 1,
+      "status": 200
+    }
+  ],
+  "status": "passed_with_findings",
+  "alembic_revision": "f3a1c7e9b420",
+  "cleanup": {
+    "deleted": {
+      "audit_events": 2,
+      "workspace_members": 2,
+      "workspaces": 2,
+      "users": 2
+    },
+    "remaining": 0
+  },
+  "finished_at": "2026-09-11T04:18:36.929613+00:00",
+  "findings": [
+    {
+      "code": "session_replay_after_logout",
+      "state": "unresolved",
+      "detail": "Logout clears cookies but does not revoke the copied server session token."
+    }
+  ]
+}

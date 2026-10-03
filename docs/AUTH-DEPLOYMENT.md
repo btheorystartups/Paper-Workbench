@@ -2,6 +2,15 @@
 
 ## Security boundary
 
+The manuscript-chat slice adds shared logout revocation in migration `a91d4e7b620f`.
+`POST /auth/logout` commits a revocation record before clearing cookies. Both cookie and
+bearer authentication consult it on every request. The stored hash identifies the signed
+issuer and session id, so equivalent JWT encodings cannot evade revocation. Other sessions
+for the same user remain usable. This revokes a Workbench session, not the upstream IdP
+session or independent API credentials. API keys retain their explicit revocation endpoint.
+Expired revocation rows may be pruned only after `expires_at` (which includes verification
+leeway); raw tokens are never stored. See [slice verification](audit/2026-09-11-manuscript-chat.md).
+
 A Paper-Workbench workspace is a tenant. A user must be an active workspace member before
 the API exposes that tenant, and must also hold a project role unless they are a workspace
 `admin` or `owner`. Direct resource routes resolve their source, claim, thread, manuscript,
@@ -41,10 +50,17 @@ Live mode requires:
 - an asymmetric RS/ES algorithm allowlist; and
 - the `PyJWT[crypto]` dependency installed by the project package.
 
-`POST /auth/oidc/login` accepts an ID token acquired by a deployment-owned Authorization Code
-+ PKCE client or authenticating gateway. The backend validates the signature, issuer,
-audience, issued-at/expiry claims, and configured algorithm. Paper-Workbench does not yet
-initiate the browser redirect or exchange an authorization code.
+`POST /auth/oidc/login` accepts an ID token for non-browser integrations. When
+`WB_OIDC_BROWSER_ENABLED=true`, `/auth/oidc/start` and `/auth/oidc/callback` own the browser
+Authorization Code + PKCE flow. A short-lived signed HttpOnly flow cookie binds state, nonce,
+the PKCE verifier, and a same-origin return path. The backend exchanges the one-time code and
+validates the ID-token signature, issuer, audience, nonce, issued-at/expiry claims, and
+configured algorithm before issuing a Workbench session.
+
+Browser sessions keep the Workbench access token in a Secure, HttpOnly, SameSite=Lax cookie;
+the token is not returned to browser JavaScript. Unsafe requests must present a readable CSRF
+cookie whose random value is also bound inside the signed access token. Bearer authentication
+remains available for scoped automation credentials and non-browser clients.
 
 Federated identities are keyed by `(issuer, subject)`, because `sub` is not globally unique.
 An unverified email never links an account. Verified-email linking, just-in-time user creation,
@@ -80,7 +96,7 @@ Revocation is immediate. Raw values and hashes are excluded from audit detail.
 Before exposing the service, the operator must additionally provide and verify:
 
 - TLS termination and trusted proxy/host policy;
-- the IdP client, redirect URIs, Authorization Code + PKCE flow, and logout/session policy;
+- the IdP client, exact redirect URI, logout destination, and account-provisioning policy;
 - distributed login throttling and abuse monitoring;
 - secret rotation and short token lifetimes appropriate to the deployment;
 - database backup/restore, encryption, monitoring, and a production-engine review; and
@@ -88,3 +104,12 @@ Before exposing the service, the operator must additionally provide and verify:
 
 These controls are deliberately documented as deployment work, not simulated as complete by
 the local FastAPI process.
+
+Vercel/PostgreSQL-specific setup and the verified synthetic Preview boundary are documented in
+[`VERCEL-DEPLOYMENT.md`](VERCEL-DEPLOYMENT.md).
+The database and private Blob store are provisioned. Authorized temporary staging identities
+passed password login, cookie/CSRF, and workspace-isolation checks and were removed afterward.
+**Logout now revokes the signed session identity across workers.** Cookie and bearer replay,
+including alternate JWT encodings, were denied for both synthetic staging users. Real
+Auth0/PKCE and authenticated artifact workflows remain open. See
+[current verification](audit/2026-09-11-manuscript-chat.md).

@@ -5,7 +5,7 @@ and tests offline, and every fake response is clearly labeled as simulated in pr
 import hashlib
 import json
 
-from .protocols import ChatResult, ExtractedPage, SearchResult
+from .protocols import ChatResult, ExtractedPage, SearchResult, validate_reasoning_effort
 
 
 class FakeSearchProvider:
@@ -50,7 +50,9 @@ class FakeChatProvider:
         messages: list[dict],
         model: str,
         max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> ChatResult:
+        validate_reasoning_effort(reasoning_effort)
         last_user = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
         )
@@ -64,6 +66,13 @@ class FakeChatProvider:
             f"You said: {last_user[:200]}"
         )
         actions: list[dict] = []
+        if last_user.startswith("revise:") and "Selected section id: " in system:
+            section_id = system.split("Selected section id: ", 1)[1].split(".", 1)[0]
+            actions.append({
+                "kind": "revise_section",
+                "payload": {"section_id": section_id, "text": last_user.split(":", 1)[1].strip()},
+                "basis": context_ids,
+            })
         if "propose:" in last_user:
             title = last_user.split("propose:", 1)[1].strip() or "Untitled suggestion"
             actions.append(

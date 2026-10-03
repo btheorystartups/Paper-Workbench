@@ -1,0 +1,36 @@
+{
+  "deployment_id": "dpl_BoCfTGBdWq1DwxoHu8zBMbLZKGjB",
+  "checks": [
+    {
+      "path": "/health",
+      "status": 200,
+      "credential_patterns": "absent"
+    },
+    {
+      "path": "/auth/config",
+      "status": 200,
+      "credential_patterns": "absent"
+    },
+    {
+      "path": "/ui/",
+      "status": 200,
+      "credential_patterns": "absent"
+    },
+    {
+      "path": "/ui/app.js",
+      "status": 200,
+      "credential_patterns": "absent"
+    },
+    {
+      "path": "/workspaces",
+      "status": 401,
+      "credential_patterns": "absent"
+    },
+    {
+      "path": "/auth/me",
+      "status": 401,
+      "credential_patterns": "absent"
+    }
+  ],
+  "status": "passed"
+}
