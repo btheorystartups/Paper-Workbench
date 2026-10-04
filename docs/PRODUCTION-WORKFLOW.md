@@ -15,6 +15,13 @@ default” therefore means `max_children=3`; it may involve four model processes
 parent and all three children run. A task's explicit child, token and time limits remain
 authoritative.
 
+Specialist proof, citation and literature review are supported building blocks,
+but the current runner does not automatically require all three for each final
+manuscript. A completed research task is not a completed specialist review campaign.
+The proposed [manuscript quality integration plan](MANUSCRIPT-QUALITY-INTEGRATION-PLAN.md)
+defines the missing assignments, complete-candidate review and publication checks;
+that additional orchestration is not yet implemented.
+
 Research output does not enter a manuscript automatically. A human first reviews the
 hash-bound task and report for an explicit purpose. Manuscript promotion creates a linked
 claim and scoped section. Subsequent objections and repairs use
