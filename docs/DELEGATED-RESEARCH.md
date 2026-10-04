@@ -39,7 +39,14 @@ return and hash, and synthesis on the planning thread. This establishes a live
 parent-to-child-to-parent handoff for the narrow one-source scope. See the
 verification record for the completed package and earlier partial packages. The
 pilot ZIP remains a single-agent format reference, never evidence of delegation.
-The separate `codex_local` chat provider and its text-only restrictions are unchanged.
+On 2026-10-04, a synthetic finite-partition manuscript task completed with three
+independent child researchers and the original parent synthesizing their reports.
+The live package verified all three returns and thread identities. The generated
+paper, research report and reviewer report remain unreviewed diagnostic artifacts.
+See [the manuscript validation record](audit/2026-10-04-manuscript-validation.md).
+The separate `codex_local` chat provider also passed a live reviewed-edit and summary
+check after its request format was updated for the pinned runtime; its text-only
+restrictions remain enforced.
 
 ## Intake, provenance and evidence
 
@@ -92,10 +99,17 @@ Every worker operation receives a total-token allowance (including supplied cont
 reasoning and tool/model work), and a remaining wall-time allowance. No unbounded
 retry or automatic continuation exists.
 
+Completed phases with confirmed final actual usage release their unused allowance
+for parent integration, within the original task-wide ceiling. In-flight work and
+phases with incomplete telemetry keep their full reservation. The ledger records
+released capacity separately; cumulative historical reservations may therefore be
+larger than the currently committed allowance. Progress notifications are coalesced,
+and bounded transport backpressure preserves final reports during bursts.
+
 Actual reported tokens are separate from conservative estimates. Missing/incomplete
 telemetry charges the unused part of the full reservation as estimated usage; it is
-not zero usage and is not an account billing ledger. Reservation cannot exceed the
-task limit. A worker may advertise a hard total-token ceiling, or explicitly
+not zero usage and is not an account billing ledger. Committed capacity cannot exceed
+the task limit when allocating new work. A worker may advertise a hard total-token ceiling, or explicitly
 advertise best-effort stopping with task-level human opt-in. The Codex worker uses
 the latter: it rejects oversized supplied prompts and interrupts when streamed
 usage reaches the allowance, but an in-flight turn can overshoot before usage

@@ -13,6 +13,7 @@ from .llm import parse_action_block
 from .protocols import ChatResult, validate_reasoning_effort
 
 request_cancel: ContextVar[threading.Event | None] = ContextVar("codex_cancel", default=None)
+TEXT_ONLY_PROFILE = "paper_workbench_text_only"
 
 # Official configuration-schema feature switches. Pinning the runtime makes this
 # explicit deny set reviewable; a runtime upgrade requires a capability review.
@@ -32,7 +33,7 @@ DISABLED_FEATURES = (
 )
 
 
-def runtime_overrides(settings):
+def runtime_overrides(settings, *, restrict_reads=False):
     values = {f"features.{name}": False for name in DISABLED_FEATURES if name != "code_mode"}
     values.update({
         "features.code_mode.enabled": False,
@@ -52,6 +53,13 @@ def runtime_overrides(settings):
     })
     if settings.codex_local_workspace_id:
         values["forced_chatgpt_workspace_id"] = settings.codex_local_workspace_id
+    if restrict_reads:
+        values.pop("sandbox_mode")
+        values.update({
+            "default_permissions": TEXT_ONLY_PROFILE,
+            f"permissions.{TEXT_ONLY_PROFILE}.filesystem": {},
+            f"permissions.{TEXT_ONLY_PROFILE}.network.enabled": False,
+        })
     return values
 
 
@@ -88,12 +96,19 @@ class CodexLocalChatAdapter:
 
         config = client.request("config/read", {"includeLayers": False}, deadline=deadline).get("config", {})
         # Check effective security settings, not merely requested command-line flags.
-        for key, expected in runtime_overrides(settings).items():
+        for key, expected in runtime_overrides(settings, restrict_reads=True).items():
             current = config
             for part in key.split("."):
                 current = current.get(part) if isinstance(current, dict) else None
+            if key == f"permissions.{TEXT_ONLY_PROFILE}.filesystem" and isinstance(current, dict):
+                # The pinned runtime serializes this optional default even when
+                # the requested filesystem table has no access grants.
+                current = {k: v for k, v in current.items() if k != "glob_scan_max_depth" or v is not None}
             if current != expected:
                 raise CodexLocalError("codex_local could not verify the effective runtime restrictions")
+        profile = (config.get("permissions") or {}).get(TEXT_ONLY_PROFILE, {})
+        if profile.get("extends") or profile.get("workspace_roots"):
+            raise CodexLocalError("codex_local refuses inherited filesystem permissions")
         # Inherited standalone MCP servers must be absent, not simply uncalled.
         if config.get("mcp_servers"):
             raise CodexLocalError("codex_local profile must not configure MCP servers")
@@ -174,8 +189,10 @@ class CodexLocalChatAdapter:
         try:
             with tempfile.TemporaryDirectory(prefix="workbench-codex-") as cwd:
                 try:
-                    client = self.client_factory(profile=self.settings.codex_local_home, cwd=cwd,
-                                                 overrides=runtime_overrides(self.settings), cancel=cancel)
+                    client = self.client_factory(
+                        profile=self.settings.codex_local_home, cwd=cwd,
+                        overrides=runtime_overrides(self.settings, restrict_reads=True), cancel=cancel,
+                    )
                     account = self._preflight(client, deadline)
                     if prompt is None:
                         return {**account, "provider": "codex_local", "local_only": True,
@@ -184,7 +201,8 @@ class CodexLocalChatAdapter:
                                 "notice": LOCAL_NOTICE}
                     start = client.request("thread/start", {
                         "model": self.settings.codex_local_model, "modelProvider": "openai",
-                        "cwd": cwd, "sandbox": "read-only", "approvalPolicy": "never", "ephemeral": True,
+                        "cwd": cwd, "permissions": TEXT_ONLY_PROFILE,
+                        "approvalPolicy": "never", "ephemeral": True,
                         "baseInstructions": "Answer the supplied conversation as text. Tools are disabled.",
                     }, deadline=deadline)
                     thread_id = (start.get("thread") or {}).get("id")
@@ -194,6 +212,8 @@ class CodexLocalChatAdapter:
                             or start.get("modelProvider") != "openai"
                             or start.get("reasoningEffort") != self.settings.codex_local_reasoning_effort
                             or start.get("approvalPolicy") != "never"
+                            or (start.get("activePermissionProfile") or {}).get("id") != TEXT_ONLY_PROFILE
+                            or (start.get("activePermissionProfile") or {}).get("extends")
                             or (start.get("sandbox") or {}).get("type") != "readOnly"
                             or (start.get("thread") or {}).get("ephemeral") is not True):
                         raise CodexLocalError("codex_local thread selection or sandbox could not be verified")
@@ -202,9 +222,7 @@ class CodexLocalChatAdapter:
                         "model": self.settings.codex_local_model,
                         "effort": self.settings.codex_local_reasoning_effort,
                         "approvalPolicy": "never",
-                        "sandboxPolicy": {"type": "readOnly", "access": {
-                            "type": "restricted", "includePlatformDefaults": False, "readableRoots": [],
-                        }},
+                        "permissions": TEXT_ONLY_PROFILE,
                     }, deadline=deadline)
                     turn_id = (turn.get("turn") or {}).get("id")
                     if not turn_id:

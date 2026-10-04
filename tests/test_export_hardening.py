@@ -138,3 +138,15 @@ def test_manifest_records_renderer_and_validation(session, project, tmp_path, mo
     assert manifest["pdf_rendering"]["requested_mode"] == "auto"
     assert manifest["jats_validation"]["method"] == "dtd-jats-1.3-archiving"
     assert manifest["jats_validation"]["schema_version"] == "1.3"
+
+
+def test_requested_bibliography_exists_when_no_sources_are_cited(session, project, tmp_path, monkeypatch):
+    from workbench import config
+
+    monkeypatch.setenv("WB_DATA_DIR", str(tmp_path / "data"))
+    config.get_settings.cache_clear()
+    manuscript = authoring.create_manuscript(session, project.id, title="Self-contained note")
+    authoring.add_section(session, manuscript.id, heading="Example", text="A synthetic demonstration.")
+    result = export_service.export_manuscript(session, manuscript.id, formats=["md", "bib"])
+    assert set(result["files"]) == {"md", "bib", "manifest"}
+    assert Path(result["files"]["bib"]).read_text(encoding="utf-8") == ""

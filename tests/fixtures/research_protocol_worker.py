@@ -176,4 +176,6 @@ for line in sys.stdin:
         }
         if control == "bad-synthesis":
             synthesis["report_ids"] = []
-        emit(aid, "synthesis", result=synthesis, usage={"tokens": 30, "kind": "actual", "source": "fixture"})
+        emit(aid, "synthesis", result=synthesis, usage={
+            "tokens": 700 if control == "reclaim-unused" else 30, "kind": "actual", "source": "fixture",
+        })

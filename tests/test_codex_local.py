@@ -57,7 +57,7 @@ class Rpc:
 
     def config(self):
         config = {}
-        for key, value in codex_local.runtime_overrides(self.settings).items():
+        for key, value in codex_local.runtime_overrides(self.settings, restrict_reads=True).items():
             target = config
             path = key.split(".")
             for part in path[:-1]:
@@ -83,6 +83,7 @@ class Rpc:
             "model/list": {"data": [{"model": self.settings.codex_local_model,
                 "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}]}]},
             "thread/start": {"thread": {"id": "thr_test", "ephemeral": True},
+                             "activePermissionProfile": {"id": codex_local.TEXT_ONLY_PROFILE},
                              "model": self.settings.codex_local_model, "instructionSources": [],
                              "modelProvider": "openai", "reasoningEffort": "xhigh",
                              "approvalPolicy": "never", "sandbox": {"type": "readOnly"}},
@@ -190,8 +191,11 @@ def test_success_exact_selection_isolation_and_provenance(settings):
     assert start["ephemeral"] is True
     assert start["model"] == turn["model"] == "gpt-5.6-sol"
     assert turn["effort"] == "xhigh"
-    assert turn["sandboxPolicy"]["type"] == "readOnly"
-    assert turn["sandboxPolicy"]["access"]["readableRoots"] == []
+    assert start["permissions"] == turn["permissions"] == codex_local.TEXT_ONLY_PROFILE
+    assert "sandbox" not in start and "sandboxPolicy" not in turn
+    assert rpc.config()["permissions"][codex_local.TEXT_ONLY_PROFILE] == {
+        "filesystem": {}, "network": {"enabled": False},
+    }
     assert turn["approvalPolicy"] == "never"
     assert not any(m in {"thread/resume", "thread/read", "thread/list"} for m, _ in rpc.calls)
     assert rpc.closed
@@ -199,6 +203,42 @@ def test_success_exact_selection_isolation_and_provenance(settings):
     assert GATE not in json.dumps(result.__dict__)
     assert GATE not in str(settings)
     assert "codex_local_gate_secret" not in settings.model_dump()
+
+
+def test_runtime_cannot_substitute_a_broader_permission_profile(settings):
+    rpc = Rpc(settings)
+    reply = rpc.request("thread/start", {})
+    reply["activePermissionProfile"] = {"id": ":read-only"}
+    rpc.replies["thread/start"] = reply
+    with pytest.raises(CodexLocalError, match="sandbox"):
+        run(settings, rpc)
+    assert not any(method == "turn/start" for method, _ in rpc.calls)
+
+
+def test_text_profile_cannot_inherit_filesystem_grants(settings):
+    rpc = Rpc(settings)
+    configuration = rpc.config()
+    configuration["permissions"][codex_local.TEXT_ONLY_PROFILE]["extends"] = ":workspace"
+    rpc.replies["config/read"] = {"config": configuration}
+    with pytest.raises(CodexLocalError, match="inherited filesystem"):
+        run(settings, rpc)
+    assert not any(method == "thread/start" for method, _ in rpc.calls)
+
+
+@pytest.mark.parametrize("grant", [False, True])
+def test_text_profile_accepts_runtime_default_but_rejects_read_grants(settings, grant):
+    rpc = Rpc(settings)
+    configuration = rpc.config()
+    filesystem = configuration["permissions"][codex_local.TEXT_ONLY_PROFILE]["filesystem"]
+    filesystem["glob_scan_max_depth"] = None
+    if grant:
+        filesystem[":root"] = "read"
+    rpc.replies["config/read"] = {"config": configuration}
+    if grant:
+        with pytest.raises(CodexLocalError, match="restrictions"):
+            run(settings, rpc)
+    else:
+        assert run(settings, rpc).text == "Hello"
 
 
 @pytest.mark.parametrize("endpoint", [None, "https://example.test/backend-api/",

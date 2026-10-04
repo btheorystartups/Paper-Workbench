@@ -107,6 +107,36 @@ def parse_json(text, model):
     return model.model_validate(json.loads(raw)).model_dump()
 
 
+def output_schema(operation, message):
+    """Constrain generation to the same contract validated on receipt."""
+    model = {"plan": Plan, "research": AgentReport, "integrate": Synthesis}[operation]
+    schema = model.model_json_schema()
+    if operation == "integrate":
+        # Structured output requires closed objects. This task already declares
+        # the finite set of requested deliverables; do not accept invented keys.
+        names = message["contract"]["deliverables"]
+        text_schema = schema["properties"]["deliverables"]["additionalProperties"]
+        schema["properties"]["deliverables"] = {
+            "type": "object", "properties": {name: dict(text_schema) for name in names},
+            "required": list(names), "additionalProperties": False,
+        }
+
+    def close_objects(value):
+        if isinstance(value, dict):
+            value.pop("default", None)
+            if value.get("type") == "object":
+                value["additionalProperties"] = False
+                value["required"] = list(value.get("properties", {}))
+            for child in value.values():
+                close_objects(child)
+        elif isinstance(value, list):
+            for child in value:
+                close_objects(child)
+
+    close_objects(schema)
+    return schema
+
+
 class CodexResearchWorker:
     def __init__(self):
         self.settings = settings_from_environment()
@@ -121,14 +151,22 @@ class CodexResearchWorker:
         self.progress_lock = threading.Lock()
         self.notification_count = 0
         self.notification_types = {}
+        self.last_progress_monotonic = float("-inf")
+        self.last_progress_stage = None
 
     def progress(self, agent_id, source):
         with self.progress_lock:
+            now = time.monotonic()
+            if (source == "codex_notification" and self.stage == self.last_progress_stage
+                    and now - self.last_progress_monotonic < 1):
+                return
+            self.last_progress_monotonic = now
+            self.last_progress_stage = self.stage
             payload = {
                 "source": source,
                 "timestamp": datetime.now(UTC).isoformat(),
                 "stage": self.stage if self.stage in PROGRESS_STAGES else "setup",
-                "elapsed_seconds": round(max(0, time.monotonic() - self.started_monotonic), 3),
+                "elapsed_seconds": round(max(0, now - self.started_monotonic), 3),
                 "codex_notification_count": self.notification_count,
                 "codex_notification_types": dict(self.notification_types),
             }
@@ -316,6 +354,7 @@ class CodexResearchWorker:
                 "model": self.settings.codex_local_model,
                 "effort": self.settings.codex_local_reasoning_effort,
                 "approvalPolicy": "never",
+                "outputSchema": output_schema(operation, message),
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
             },
             deadline=deadline,

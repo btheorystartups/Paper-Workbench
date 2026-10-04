@@ -3,6 +3,7 @@
 import json
 import re
 
+from .bibliography import bibliography_markers as bibliography_markers
 from .evaluation import Denied, digest
 
 
@@ -53,21 +54,6 @@ def evidence_inventory(packet):
     if "feedback" in packet:
         add("/feedback/report", "review_report", packet["feedback"].get("report"))
     return artifacts
-
-
-def bibliography_markers(source):
-    """Locate incomplete bibliography wording without supplying missing metadata."""
-    if type(source) is not str:
-        return []
-    match = re.search(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", source, re.S)
-    if match is None:
-        return []
-    patterns = (r"bibliographic details? to be checked", r"\b(?:TODO|TBD|citation needed)\b")
-    return [
-        {"line": source.count("\n", 0, match.start() + hit.start()) + 1, "marker": hit.group()}
-        for pattern in patterns
-        for hit in re.finditer(pattern, match.group(), re.I)
-    ]
 
 
 _EVIDENCE_PATH = re.compile(

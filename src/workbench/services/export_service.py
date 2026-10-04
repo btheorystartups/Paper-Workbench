@@ -673,7 +673,7 @@ def export_manuscript(
             document.save(str(written["docx"]))
 
     # --- BibTeX ---
-    if "bib" in formats and sources:
+    if "bib" in formats:
         entries = []
         for s in sources.values():
             authors = " and ".join(a.strip() for a in s.authors.split(";") if a.strip())

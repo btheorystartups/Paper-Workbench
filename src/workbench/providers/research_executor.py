@@ -66,10 +66,14 @@ class AgentProcess:
         return self.process.pid
 
     def _emit(self, event):
-        try:
-            self.events.put_nowait(event)
-        except queue.Full:
-            self.closed.set()
+        # Apply backpressure without losing terminal reports or usage. The reader
+        # must also wake when cancellation closes a full queue.
+        while not self.closed.is_set():
+            try:
+                self.events.put(event, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
     def _read(self):
         total = 0

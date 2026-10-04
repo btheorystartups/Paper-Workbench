@@ -224,8 +224,18 @@ class Runner:
             "usage_complete": all(a.get("final_actual") for a in self.allocations),
         }
 
+    def remaining_tokens(self):
+        # Only completed phases with final actual usage release unused capacity.
+        # In-flight work and missing telemetry retain their entire reservation.
+        committed = sum(
+            (a.get("actual_tokens") or 0) if a.get("final_actual")
+            else max(a["reserved"], a.get("actual_tokens") or 0)
+            for a in self.allocations
+        )
+        return max(0, self.task.contract["token_limit"] - committed)
+
     def allocate(self, agent, phase, tokens):
-        if sum(a["reserved"] for a in self.allocations) + tokens > self.task.contract["token_limit"]:
+        if tokens <= 0 or tokens > self.remaining_tokens():
             raise StopResearch("limit_reached_partial", "token allocation limit reached")
         allocation = {
             "agent_id": agent.id,
@@ -395,6 +405,13 @@ class Runner:
                          "account_recheck", "prompt_preparation", "turn_start", "turn_stream",
                          "report_validation"}:
                 agent.provenance = {**agent.provenance, "worker_failure_stage": stage}
+                if event.get("error_class") in {
+                    "ValueError", "TypeError", "ValidationError", "JSONDecodeError",
+                    "CodexLocalError", "CodexTimeoutError", "OSError",
+                }:
+                    agent.provenance = {
+                        **agent.provenance, "worker_failure_class": event["error_class"],
+                    }
                 self.session.commit()
             raise ExecutorError("worker failed before returning a valid result")
         if kind != expected:
@@ -414,6 +431,8 @@ class Runner:
                 raise ExecutorError("live worker changed model-turn identity")
             agent.provenance = {**agent.provenance, expected + "_model": provenance}
         allocation["final_actual"] = bool(event.get("usage", {}).get("kind") == "actual")
+        if allocation["final_actual"]:
+            allocation["released_tokens"] = max(0, allocation["reserved"] - allocation["actual_tokens"])
         self.save_ledger()
         self.session.commit()
         return event.get("result")
@@ -529,7 +548,7 @@ class Runner:
             handle,
             parent,
             "integrate",
-            self.task.contract["handoff_token_reserve"],
+            self.remaining_tokens(),
             {
                 "contract": self.task.contract,
                 "reports": reports,

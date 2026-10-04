@@ -64,6 +64,8 @@ def prepared_worker(client):
     worker.progress_lock = threading.Lock()
     worker.notification_count = 0
     worker.notification_types = {}
+    worker.last_progress_monotonic = float("-inf")
+    worker.last_progress_stage = None
     return worker
 
 
@@ -82,6 +84,8 @@ def test_codex_worker_uses_read_only_turn_and_returns_actual_usage(monkeypatch):
     turn = next(params for method, params in client.calls if method == "turn/start")
     assert turn["sandboxPolicy"] == {"type": "readOnly", "networkAccess": False}
     assert turn["threadId"] == "parent-thread"
+    assert turn["outputSchema"]["required"] == ["rationale", "assignments"]
+    assert turn["outputSchema"]["additionalProperties"] is False
     assert "Frozen source text" not in turn["input"][0]["text"]
     assert emitted[0][0] == ("parent", "turn_started")
     assert emitted[0][1]["provenance"]["codex_turn_id"] == "plan-turn"
@@ -120,3 +124,47 @@ def test_progress_telemetry_is_content_free_and_distinguishes_notifications(monk
     assert progress[-1]["codex_notification_types"] == {"item/agentMessage/delta": 1}
     assert "text" not in json.dumps(progress)
     assert all(item["elapsed_seconds"] >= 0 and item["timestamp"].endswith("+00:00") for item in progress)
+
+
+def test_notification_burst_is_coalesced_without_losing_counts(monkeypatch):
+    worker = prepared_worker(ControlledCodexClient())
+    worker.stage = "turn_stream"
+    emitted = []
+    monkeypatch.setattr(worker_module, "emit", lambda *args, **kw: emitted.append(kw["progress"]))
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 100.0)
+    for _ in range(500):
+        worker.record_notification("child", "item/agentMessage/delta")
+    assert len(emitted) == 1
+    worker.progress("child", "worker_heartbeat")
+    assert emitted[-1]["codex_notification_count"] == 500
+    assert emitted[-1]["codex_notification_types"] == {"item/agentMessage/delta": 500}
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 101.0)
+    worker.record_notification("child", "item/completed")
+    assert len(emitted) == 3
+    worker.stage = "report_validation"
+    worker.record_notification("child", "turn/completed")
+    assert len(emitted) == 4 and emitted[-1]["stage"] == "report_validation"
+
+
+def test_structured_synthesis_requires_only_requested_deliverables():
+    schema = worker_module.output_schema("integrate", {"contract": {"deliverables": ["paper"]}})
+    deliverables = schema["properties"]["deliverables"]
+    assert deliverables["required"] == ["paper"]
+    assert set(deliverables["properties"]) == {"paper"}
+    assert deliverables["additionalProperties"] is False
+    assert "deliverables" in schema["required"]
+
+
+def test_structured_report_keeps_all_evidence_fields():
+    schema = worker_module.output_schema("research", {})
+    citation = schema["$defs"]["Citation"]
+    assert set(citation["required"]) == {"id", "source_id", "locator", "url", "access"}
+    assert "default" not in json.dumps(schema)
+    with pytest.raises(ValueError, match="verified result"):
+        worker_module.parse_json(json.dumps({
+            "summary": "Unsupported success", "findings": [{
+                "id": "f1", "claim_key": "example", "statement": "Claim", "category": "verified_result",
+                "stance": "supports", "scope": "synthetic", "citation_ids": [], "verification_ids": [],
+            }], "citations": [], "proof_attempts": [], "failed_approaches": [],
+            "unresolved_questions": [], "research_leads": [], "search_log": [], "verification_artifacts": [],
+        }), worker_module.AgentReport)

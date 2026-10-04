@@ -12,6 +12,7 @@ from workbench.services import (
     authoring,
     authorship,
     publication_packages,
+    research,
     submissions,
     venues,
 )
@@ -20,6 +21,7 @@ from workbench.services import (
 @pytest.fixture()
 def manuscript(session, project):
     manuscript = authoring.create_manuscript(session, project.id, title="Defensible paper")
+    authoring.add_section(session, manuscript.id, heading="Scope", text="A bounded synthetic example.")
     contributor = authorship.create_contributor(
         session,
         project.id,
@@ -83,6 +85,66 @@ def _approve(session, package):
         session, package.id, decision="approved", note="complete package reviewed"
     )
     return package
+
+
+@pytest.mark.parametrize("text", [
+    "An unresolved source [citation needed].",
+    "Bibliographic details to be checked.",
+    r"\begin{thebibliography}{9}\bibitem{x} TBD.\end{thebibliography}",
+    "## References\n- Author. TODO.",
+])
+def test_bibliography_placeholders_block_release(session, manuscript, submission, text):
+    authoring.add_section(session, manuscript.id, heading="Discussion", text=text)
+    package = _complete_draft(session, publication_packages.create_package(session, submission.id))
+    status = publication_packages.readiness(session, package.id)
+    assert not status["ready"]
+    assert any("bibliography-placeholder" in item["message"] for item in status["blockers"])
+    with pytest.raises(publication_packages.PackageError, match="not review-ready"):
+        publication_packages.prepare_for_review(session, package.id)
+
+
+def test_accepting_output_does_not_clear_its_bibliography_marker(session, manuscript, submission):
+    output = research.create_object(
+        session, manuscript.project_id, kind="note", title="Final abstract", ai_suggested=True,
+        body={"output_kind": "conference_abstract", "manuscript_id": manuscript.id,
+              "content": "A bounded result [citation needed]."},
+    )
+    research.accept_object(session, output.id)
+    package = _complete_draft(session, publication_packages.create_package(session, submission.id))
+    assert not publication_packages.readiness(session, package.id)["ready"]
+    output.body = {**output.body, "content": "A bounded synthetic result; no external sources cited."}
+    assert publication_packages.readiness(session, package.id)["ready"]
+
+
+def test_historical_review_quote_does_not_block_current_manuscript(session, manuscript, submission):
+    research.create_object(
+        session, manuscript.project_id, kind="note", title="Correction record",
+        body={"manuscript_id": manuscript.id,
+              "content": 'Earlier draft said "citation needed"; the current draft removed that claim.'},
+    )
+    package = _complete_draft(session, publication_packages.create_package(session, submission.id))
+    assert publication_packages.readiness(session, package.id)["ready"]
+
+
+def test_unaccepted_ai_section_blocks_release(session, manuscript, submission):
+    section = authoring.add_section(session, manuscript.id, heading="Draft", text="Unreviewed AI prose.")
+    section.ai_suggested, section.accepted_by_user = True, False
+    package = _complete_draft(session, publication_packages.create_package(session, submission.id))
+    assert not publication_packages.readiness(session, package.id)["ready"]
+    research.accept_object(session, section.id)
+    assert publication_packages.readiness(session, package.id)["ready"]
+
+
+def test_empty_manuscript_cannot_be_release_ready(session, manuscript, submission):
+    from workbench.models import utcnow
+
+    for section in authoring.manuscript_sections(session, manuscript.id):
+        section.deleted_at = utcnow()
+    manuscript.body = {**manuscript.body, "section_order": []}
+    package = _complete_draft(session, publication_packages.create_package(session, submission.id))
+    status = publication_packages.readiness(session, package.id)
+    assert not status["ready"]
+    assert any("manuscript-empty" in item["message"] for item in status["blockers"])
 
 
 def test_controlled_documents_and_review_notes(session, submission):
@@ -152,7 +214,7 @@ def test_approved_bundle_is_checksummed_and_local_only(
         changes=["clarified methods"],
     )
     package = publication_packages.create_package(
-        session, submission.id, included_formats=["md", "jats"]
+        session, submission.id, included_formats=["md", "jats", "bib"]
     )
     _approve(session, package)
     result = publication_packages.build_bundle(session, package.id)
@@ -175,6 +237,7 @@ def test_approved_bundle_is_checksummed_and_local_only(
             "package-manifest.json",
             "manuscript/manuscript.md",
             "manuscript/manuscript.jats.xml",
+            "manuscript/references.bib",
             "manuscript/manifest.json",
         } <= names
         manifest = json.loads(archive.read("package-manifest.json"))
@@ -184,6 +247,7 @@ def test_approved_bundle_is_checksummed_and_local_only(
         for name, entry in manifest["files"].items():
             assert hashlib.sha256(archive.read(name)).hexdigest() == entry["sha256"]
         assert b"Author contributions (CRediT)" in archive.read("declarations.md")
+        assert archive.read("manuscript/references.bib") == b""
     config.get_settings.cache_clear()
 
 

@@ -77,7 +77,7 @@ async function tabResearch(el, pid, sub) {
       '<div class="field"><label>Task-wide token limit<input name="token_limit" type="number" value="24000" min="2000" max="1000000" required></label></div>' +
       '<div class="field"><label>Time limit (seconds)<input name="time_limit_seconds" type="number" value="600" min="10" max="7200" required></label></div>' +
       '<div class="field"><label>Maximum child agents<input name="max_children" type="number" value="3" min="1" max="6" required></label></div>' +
-      '<p class="small-text dim">20% of tokens and 10% of time are reserved for the final handoff. Missing usage is conservatively charged as the full allowance and labelled an estimate.</p>' +
+      '<p class="small-text dim">The final handoff reserves 20% of tokens (25% for best-effort workers) and 10% of time. Confirmed unused phase tokens can also support the handoff. Missing usage is charged as the full allowance and labelled an estimate.</p>' +
       '<div class="field"><label>Executor<select name="executor"><option value="offline">Offline controlled workers — no model research</option><option value="process"' +
       (executors.process.available ? '' : ' disabled') + '>Configured live agent executor</option></select></label></div>' +
       '<label><input type="checkbox" name="allow_best_effort_tokens"> Permit a live worker with best-effort token stopping. In-flight model work may exceed the displayed token limit; the time limit still stops the local worker.</label>' +

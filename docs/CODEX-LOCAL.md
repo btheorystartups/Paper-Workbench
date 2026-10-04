@@ -106,8 +106,11 @@ upstream cancellation is best effort and tokens already consumed cannot be recov
 Every generation verifies the profile, effective restrictions, account email and plan,
 ChatGPT quota metadata, available model and reasoning effort. Unknown or unavailable
 metadata causes refusal. Tools are disabled through the pinned runtime's feature
-controls; read-only sandboxing, denied approval requests and an empty temporary working
-directory provide additional restrictions. The child receives neither the gate nor API
+controls; a named permission profile with no filesystem grants and network disabled,
+denied approval requests and an empty temporary working directory provide additional
+restrictions. The adapter checks the effective profile and rejects inherited grants.
+The pinned runtime requires this profile instead of the obsolete `readOnly.access`
+turn field. The child receives neither the gate nor API
 keys. Unexpected tool activity, model rerouting, authentication changes and malformed
 responses fail closed with application-owned error messages.
 

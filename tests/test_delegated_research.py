@@ -118,6 +118,20 @@ def test_lifting_parent_child_parent_and_default_package(session, project):
             assert hashlib.sha256(archive.read(entry["file"])).hexdigest() == entry["sha256"]
 
 
+def test_integration_can_use_verified_unused_phase_allowances(session, project):
+    task = run_controlled(session, make_task(
+        session, project, QUESTION + " reclaim-unused", token_limit=2000, max_children=3,
+    ))
+    assert task.state == "completed", task.ledger.get("stop_reason")
+    assert task.ledger["actual_tokens"] == 1050
+    integration = task.ledger["allocations"][-1]
+    assert integration["phase"] == "integrate" and integration["reserved"] == 1650
+    assert integration["actual_tokens"] > task.contract["handoff_token_reserve"]
+    assert integration["reserved"] + sum(
+        allocation["actual_tokens"] for allocation in task.ledger["allocations"][:-1]
+    ) == task.contract["token_limit"]
+
+
 @pytest.mark.parametrize("kind", ["literature_search", "proof_audit"])
 def test_other_task_types_and_requested_deliverables(session, project, kind):
     task = run_controlled(

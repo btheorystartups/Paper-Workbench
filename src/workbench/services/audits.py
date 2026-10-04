@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..models import CitationEdge, Claim, ClaimEvidence, Excerpt, ResearchObject, Source, stable_hash
 from ..vocab import ClaimSupport, ObjectKind, SourceAccess
 from . import authoring, evidence_basis, research, source_dedup
+from .bibliography import bibliography_markers
 
 _NUM_RE = re.compile(r"\d+(\.\d+)?\s*(%|x|×)|\b\d+\.\d+\b")
 
@@ -149,11 +150,15 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
         raise research.IntegrityError("manuscript not found")
     findings: list[dict] = []
     sections = authoring.manuscript_sections(session, manuscript_id)
-    if not sections:
+    if not any(section.body.get("text", "").strip() or section.body.get("claim_ids") for section in sections):
         findings.append(
-            {"severity": "warning", "code": "manuscript-empty",
-             "message": "manuscript has no sections", "object_id": manuscript_id}
+            {"severity": "error", "code": "manuscript-empty",
+             "message": "manuscript has no substantive sections", "object_id": manuscript_id}
         )
+    for obj in [manuscript, *sections]:
+        if obj.ai_suggested and not obj.accepted_by_user:
+            findings.append({"severity": "error", "code": "manuscript-unaccepted-ai",
+                             "message": "manuscript prose awaits human acceptance", "object_id": obj.id})
     for section in sections:
         body = section.body
         claim_ids = body.get("claim_ids", [])
@@ -165,6 +170,14 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
                      "object_id": section.id}
                 )
         text = body.get("text", "")
+        markers = bibliography_markers(
+            text,
+            bibliography_context=section.title.casefold() in {"references", "bibliography", "works cited"},
+        )
+        if markers:
+            findings.append({"severity": "error", "code": "bibliography-placeholder",
+                             "message": "section contains unresolved bibliography completion markers",
+                             "object_id": section.id, "markers": markers})
         if _NUM_RE.search(text) and not claim_ids:
             findings.append(
                 {"severity": "warning", "code": "section-unreferenced-numbers",
@@ -201,6 +214,14 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
 
     for identifier in evidence_basis.ids(basis, ResearchObject):
         review = session.get(ResearchObject, identifier)
+        # Current accepted outputs may be carried into a release. Historical review
+        # notes can quote corrected wording and are not current manuscript prose.
+        if review and review.body.get("output_kind") and review.accepted_by_user:
+            markers = bibliography_markers(review.body.get("content", ""))
+            if markers:
+                findings.append({"severity": "error", "code": "bibliography-placeholder",
+                                 "message": "accepted output contains unresolved bibliography markers",
+                                 "object_id": review.id, "markers": markers})
         if review:
             for check_id in review.body.get("required_check_ids", []):
                 check = session.get(ResearchObject, check_id)
