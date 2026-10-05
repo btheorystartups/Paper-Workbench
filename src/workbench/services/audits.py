@@ -47,7 +47,10 @@ def audit_claims(session: Session, project_id: str, *, claim_ids: set[str] | Non
         if claim.support in {ClaimSupport.UNSUPPORTED, ClaimSupport.VERIFICATION_REQUIRED}:
             findings.append(
                 {"severity": "warning", "code": "claim-verification-debt",
-                 "message": f"claim '{claim.text[:60]}' is {claim.support}",
+                 "message": (f"claim '{claim.text[:60]}' has human support review pending; "
+                             "scoped agent assessments are recorded separately"
+                             if claim.support == ClaimSupport.VERIFICATION_REQUIRED
+                             else f"claim '{claim.text[:60]}' is {claim.support}"),
                  "object_id": claim.id}
             )
         for e in evidence:
@@ -66,7 +69,8 @@ def audit_claims(session: Session, project_id: str, *, claim_ids: set[str] | Non
                 if src is not None and not src.human_verified:
                     findings.append(
                         {"severity": "warning", "code": "claim-source-unverified",
-                         "message": f"claim '{claim.text[:60]}' relies on unverified source "
+                         "message": f"claim '{claim.text[:60]}' relies on a source "
+                                    "pending human verification "
                                     f"'{src.title[:50]}'",
                          "object_id": claim.id}
                     )
@@ -238,6 +242,15 @@ def audit_manuscript(session: Session, manuscript_id: str) -> list[dict]:
                                      "object_id": review.id})
     findings.extend(audit_checklists(session, manuscript_id))
     findings.extend(audit_authorship(session, manuscript_id))
+    from .manuscript_quality import assessment
+
+    quality = assessment(session, manuscript_id)
+    findings.extend({"severity": "error", "code": "manuscript-quality-incomplete",
+                     "message": message, "object_id": manuscript_id} for message in quality["blockers"])
+    findings.extend({"severity": "error", "code": "manuscript-evidence-review-flag",
+                     "message": "Unresolved evidence availability prose requires review.",
+                     "object_id": manuscript_id, "review_flag": flag}
+                    for flag in quality.get("release_review_flags", []))
     return findings
 
 

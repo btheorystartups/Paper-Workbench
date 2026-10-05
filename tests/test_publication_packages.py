@@ -87,6 +87,22 @@ def _approve(session, package):
     return package
 
 
+def test_readiness_reports_actual_human_approval_and_staleness(session, manuscript, submission):
+    from workbench.services.manuscript_readiness import report
+
+    package = publication_packages.create_package(session, submission.id)
+    assert not report(session, manuscript.id)["human_publication_approval"]
+    _approve(session, package)
+    current = report(session, manuscript.id)
+    assert current["human_publication_approval"] and current["release_eligible"]
+    assert current["status"] == "human_approved_current_package"
+    section = authoring.manuscript_sections(session, manuscript.id)[0]
+    authoring.update_section(session, section.id, text="Changed after approval.")
+    stale = report(session, manuscript.id)
+    assert not stale["human_publication_approval"] and not stale["release_eligible"]
+    assert stale["publication_packages"][0]["stale"]
+
+
 @pytest.mark.parametrize("text", [
     "An unresolved source [citation needed].",
     "Bibliographic details to be checked.",

@@ -47,7 +47,7 @@ def main():
         WB_RESEARCH_EXECUTOR_ENABLED="true",
         WB_RESEARCH_EXECUTOR_COMMAND=json.dumps([sys.executable, str(worker)]),
         WB_RESEARCH_CODEX_HOME=str(profile),
-        WB_RESEARCH_CODEX_MODEL="gpt-5.6-sol",
+        WB_RESEARCH_CODEX_MODEL="gpt-5.5",
         WB_RESEARCH_CODEX_REASONING_EFFORT="low",
     )
     sys.path.insert(0, str(root / "src"))

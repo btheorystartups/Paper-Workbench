@@ -153,6 +153,17 @@ def install(app, session_dependency, principal_dependency, require, bounded_uplo
         session.commit()
         return research_tasks.snapshot(session, task)
 
+    @app.get("/projects/{project_id}/research-tasks/{task_id}/call-trace")
+    def call_trace(project_id: str, task_id: str, session: Session = Depends(session_dependency),
+                   user=Depends(principal_dependency)):
+        task = scoped(session, project_id, task_id, user)
+        return {"task_id": task.id, "events": task.ledger.get("call_trace", []),
+                "summary": task.ledger.get("trace_summary", {}),
+                "rpc_calls": [{"agent_id": a.id, "role": a.assignment.get("specialist_role", a.role),
+                               "calls": a.provenance.get("failed_rpc_calls") or
+                               a.provenance.get("active_model_turn", {}).get("rpc_calls", [])}
+                              for a in research_tasks.agents_for(session, task.id)]}
+
     @app.post("/projects/{project_id}/research-tasks/{task_id}/start", status_code=202)
     def start(
         project_id: str,

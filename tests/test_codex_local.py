@@ -453,6 +453,30 @@ def test_rpc_timeout_and_cancellation_without_process():
         client._next(time.monotonic() + 1)
 
 
+def test_rpc_server_requests_default_deny_and_only_trusted_handler_can_reply():
+    import queue
+
+    client = object.__new__(StdioCodexClient)
+    client._cancel = threading.Event()
+    client._closed = threading.Event()
+    client._queue = queue.Queue()
+    writes = []
+    client._write = writes.append
+    client._queue.put({"id": "tool", "method": "item/tool/call"})
+    with pytest.raises(CodexLocalError, match="unsupported client capability"):
+        client._next(time.monotonic() + 1)
+    assert writes[-1]["error"]["code"] == -32601
+    client._server_request_handler = lambda request: {"success": True} if request["method"] == "item/tool/call" else None
+    client._queue.put({"id": "allowed", "method": "item/tool/call"})
+    client._queue.put({"method": "turn/completed", "params": {}})
+    assert client._next(time.monotonic() + 1)["method"] == "turn/completed"
+    assert writes[-1] == {"id": "allowed", "result": {"success": True}}
+    client._queue.put({"id": "approval", "method": "item/commandExecution/requestApproval"})
+    with pytest.raises(CodexLocalError, match="unsupported client capability"):
+        client._next(time.monotonic() + 1)
+    assert writes[-1]["id"] == "approval" and "error" in writes[-1]
+
+
 def test_blocked_transport_write_is_bounded():
     from types import SimpleNamespace
 

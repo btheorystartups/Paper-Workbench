@@ -9,7 +9,9 @@ from . import evidence_basis, research
 def candidate_hash(session, manuscript_id: str) -> str:
     session.flush()
     session.expire_all()
-    basis = evidence_basis.collect(session, manuscript_id)
+    manuscript = session.get(ResearchObject, manuscript_id)
+    basis = evidence_basis.collect(session, manuscript_id,
+                                   scientific_only=bool(manuscript.body.get("quality_policy")))
     # Review records bind the candidate, but must not recursively hash their own events.
     basis["records"] = {
         key: value

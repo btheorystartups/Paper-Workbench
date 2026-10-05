@@ -126,6 +126,11 @@ def bundle(
         sources.append({"task_id": task_id, "sources": snapshot.get("sources", [])})
         reviews.append({"task_id": task_id, "reviews": snapshot.get("reviews", {})})
         files[prefix + "/synthesis.json"] = _json(_safe(snapshot.get("synthesis", {})))
+        files[prefix + "/call-trace.json"] = _json(_safe(snapshot.get("ledger", {}).get("call_trace", [])))
+        files[prefix + "/call-timing-summary.json"] = _json(
+            _safe(snapshot.get("ledger", {}).get("trace_summary", {})))
+        files[prefix + "/quality-assessment.json"] = _json(_safe(snapshot.get("quality")))
+        files[prefix + "/readiness-report.json"] = _json(_safe(snapshot.get("readiness")))
         files[prefix + "/lineage-and-plans.json"] = _json(
             _safe(
                 [

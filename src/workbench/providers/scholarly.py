@@ -86,6 +86,7 @@ class _HttpBase:
         self._sleep = sleep
         self._rate = rate_limit_seconds
         self._last = 0.0
+        self.last_error = None
 
     def _ensure(self):
         if self._session is None:
@@ -97,6 +98,7 @@ class _HttpBase:
         return self._session
 
     def _get(self, url: str, params: dict) -> dict | None:
+        self.last_error = None
         wait = self._rate - (time.monotonic() - self._last)
         if wait > 0:
             self._sleep(wait)
@@ -106,6 +108,7 @@ class _HttpBase:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:  # fail soft
+            self.last_error = type(exc).__name__
             _logger.warning("scholarly: %s failed: %s", url, exc)
             return None
 

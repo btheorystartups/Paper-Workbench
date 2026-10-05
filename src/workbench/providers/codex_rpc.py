@@ -18,8 +18,10 @@ RUNTIME_VERSION = "0.154.0"
 
 
 class StdioCodexClient:
-    def __init__(self, *, profile: str, cwd: str, overrides: dict, cancel: threading.Event):
+    def __init__(self, *, profile: str, cwd: str, overrides: dict, cancel: threading.Event,
+                 server_request_handler=None):
         self._cancel = cancel
+        self._server_request_handler = server_request_handler
         self._proc = None
         self._reader = None
         self._closed = threading.Event()
@@ -120,7 +122,13 @@ class StdioCodexClient:
                     raise CodexLocalError("codex_local transport closed") from None
                 continue
             if "method" in message and "id" in message:
-                # No approvals, dynamic tool execution, token refresh, or user input.
+                handler = getattr(self, "_server_request_handler", None)
+                result = handler(message) if handler else None
+                if result is not None:
+                    self._deadline = deadline
+                    self._write({"id": message["id"], "result": result})
+                    continue
+                # Default deny, including approvals, token refresh and user input.
                 self._write({"id": message["id"], "error": {
                     "code": -32601, "message": "Unsupported by this text-only client",
                 }})

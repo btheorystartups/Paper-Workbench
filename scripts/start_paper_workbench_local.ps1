@@ -5,7 +5,7 @@ param(
     [string]$AccountEmail = '',
     [string]$ChatModel = 'gpt-5.6-sol',
     [string]$ChatReasoningEffort = 'xhigh',
-    [string]$ResearchModel = 'gpt-5.6-sol',
+    [string]$ResearchModel = 'gpt-5.5',
     [string]$ResearchReasoningEffort = 'low'
 )
 

@@ -91,6 +91,11 @@ def source_snapshot(source: Source, *, version: str = "unspecified", origin: dic
     return {
         "source_id": source.id,
         "title": source.title,
+        "authors": source.authors,
+        "year": source.year,
+        "venue": source.venue,
+        "doi": source.doi,
+        "url": source.url,
         "version": version,
         "version_status": "user_declared" if version != "unspecified" else "not_established",
         "sha256": digest,
@@ -277,6 +282,15 @@ def agent_dict(agent: ResearchAgent) -> dict:
 
 def snapshot(session: Session, task: ResearchTask) -> dict:
     agents = [agent_dict(a) for a in agents_for(session, task.id)]
+    quality = None
+    readiness = None
+    if task.contract.get("quality_manuscript_id"):
+        from .manuscript_quality import assessment
+
+        quality = assessment(session, task.contract["quality_manuscript_id"])
+        from .manuscript_readiness import report
+
+        readiness = report(session, task.contract["quality_manuscript_id"])
     return {
         "id": task.id,
         "project_id": task.project_id,
@@ -293,6 +307,8 @@ def snapshot(session: Session, task: ResearchTask) -> dict:
         "finished_at": task.finished_at.isoformat() if task.finished_at else None,
         "review_hash": review_hash(task, agents),
         "research_can_continue": task.state not in TERMINAL,
+        "quality": quality,
+        "readiness": readiness,
     }
 
 
@@ -537,6 +553,13 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
         + "\n```\n",
     )
     add("reviews.json", task.reviews)
+    if task.contract.get("quality_policy"):
+        from .manuscript_quality import campaign_export
+
+        add("manuscript-quality.json", campaign_export(session, task))
+        add("readiness-report.json", data["readiness"])
+    add("call-trace.json", task.ledger.get("call_trace", []))
+    add("call-timing-summary.json", task.ledger.get("trace_summary", {}))
     searches, open_questions, verification_index = [], [], []
     for agent in data["agents"]:
         aid = agent["id"]

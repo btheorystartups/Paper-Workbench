@@ -446,6 +446,20 @@ def build_project_path(session: Session, project_id: str, *, manuscript_id: str 
     result = build_path_from_snapshots(tasks, recorded, project_id=project_id)
     result["scope"] = "manuscript" if manuscript_id else "project_inventory"
     result["manuscript_id"] = manuscript_id
+    if manuscript_id:
+        from .manuscript_quality import assessment
+
+        result["quality"] = assessment(session, manuscript_id)
+        from .manuscript_readiness import report
+
+        result["readiness"] = report(session, manuscript_id)
+        if result["quality"]["required"]:
+            result["stages"].append(_stage(
+                "specialist_review", "Complete manuscript specialist review",
+                "recorded" if result["quality"]["agent_checks_complete"] else "blocked", [],
+                result["quality"]["blockers"], "Review the manuscript-specific specialist evidence."))
+            if result["quality"]["blockers"]:
+                result["publication_ready"] = False
     if manuscript_id is None:
         result["publication_ready"] = False
         result["notice"] += " Select a manuscript for manuscript-specific readiness."

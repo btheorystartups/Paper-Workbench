@@ -40,7 +40,9 @@ REFERENCE_FIELDS = {
     "section_order": ResearchObject,
     "dataset_id": ResearchObject,
     "compute_run_id": ComputeRun,
+    "compute_run_ids": ComputeRun,
     "research_task_id": ResearchTask,
+    "quality_task_id": ResearchTask,
 }
 
 
@@ -70,7 +72,8 @@ def record(row):
     )
 
 
-def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> dict:
+def collect(session, manuscript_id: str, *, verify_artifacts: bool = True,
+            scientific_only: bool = False) -> dict:
     manuscript = session.get(ResearchObject, manuscript_id)
     if manuscript is None or manuscript.kind != "manuscript" or manuscript.deleted_at:
         raise research.IntegrityError("manuscript not found")
@@ -88,6 +91,7 @@ def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> di
     # Reviewer notes and explicitly attached artifacts/checks belong to this version scope.
     pending += [
         (ResearchObject, o.id) for o in project_objects if o.body.get("manuscript_id") == manuscript_id
+        and not (scientific_only and (o.body.get("quality_assessment") or o.body.get("revision_review")))
     ]
     project_edges = list(
         session.scalars(
@@ -95,7 +99,7 @@ def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> di
         )
     )
 
-    def references(value):
+    def references(value, local_claims=None):
         if isinstance(value, dict):
             if "storage_key" in value:
                 key = stable_hash(value)
@@ -112,13 +116,17 @@ def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> di
                         artifacts[key] = {"invalid": True}
                         problems.append("missing, changed or unversioned artifact")
             for key, item in value.items():
+                if scientific_only and key == "quality_task_id":
+                    continue
                 if key in REFERENCE_FIELDS and item:
                     values = item if isinstance(item, list) else [item]
-                    pending.extend((REFERENCE_FIELDS[key], i) for i in values if isinstance(i, str))
-                references(item)
+                    pending.extend((REFERENCE_FIELDS[key], (local_claims or {}).get(i, i)
+                                    if REFERENCE_FIELDS[key] is Claim else i)
+                                   for i in values if isinstance(i, str))
+                references(item, local_claims)
         elif isinstance(value, list):
             for item in value:
-                references(item)
+                references(item, local_claims)
 
     while pending:
         cls, identifier = pending.pop()
@@ -139,6 +147,13 @@ def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> di
             problems.append("cross-manuscript dependency requires an explicit result")
             continue
         rows[key] = record(row)
+        if scientific_only and cls is ResearchObject:
+            if row.body.get("quality_assessment") or row.body.get("revision_review"):
+                del rows[key]
+                continue
+            # Human acceptance is assessed by release readiness, not scientific review.
+            for field in ("updated_at", "accepted_by_user", "ai_suggested"):
+                rows[key].pop(field, None)
         if cls is Source:
             ingest = row.provider_metadata.get("ingest", {})
             for path_key, reference_key in [
@@ -151,7 +166,18 @@ def collect(session, manuscript_id: str, *, verify_artifacts: bool = True) -> di
             for path_key, reference_key in [("png_path", "png_artifact"), ("svg_path", "svg_artifact")]:
                 if row.body.get(path_key) and not row.body.get(reference_key):
                     problems.append("legacy figure bytes require content-addressed reingestion")
-        references(rows[key])
+        # Specialist contracts use candidate-local claim IDs. Resolve them through
+        # this manuscript's explicit map only for its campaign/task/agent records;
+        # ordinary graph references keep their database identities.
+        local_claims = None
+        owner_task = row if cls is ResearchTask else (
+            session.get(ResearchTask, row.task_id) if cls is ResearchAgent else None)
+        campaign_record = (cls is ResearchObject and row.body.get("manuscript_id") == manuscript_id
+                           and (row.body.get("quality_assessment") or row.body.get("revision_review")))
+        if campaign_record or (
+                owner_task and owner_task.contract.get("quality_manuscript_id") == manuscript_id):
+            local_claims = manuscript.body.get("quality_claim_map", {})
+        references(rows[key], local_claims)
         if cls is Claim:
             pending.extend(
                 (ClaimEvidence, ev.id)

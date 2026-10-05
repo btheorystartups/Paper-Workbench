@@ -19,6 +19,49 @@ function researchSynthesis(synthesis) {
     '<details><summary>Full synthesis and report references</summary><pre>' + esc(JSON.stringify(synthesis, null, 2)) + '</pre></details>';
 }
 
+function researchCapacity(capacity) {
+  if (!capacity) return '';
+  const forecast = capacity.forecast;
+  const authorShortfall = forecast.author_slice_shortfall_tokens ?? forecast.conditional_revision?.author_slice_shortfall_tokens ?? 0;
+  const timing = forecast.timing || forecast.conditional_revision?.timing;
+  return '<h4>Cycle capacity estimate</h4><p>' + esc(capacity.stage.replaceAll('_', ' ')) + ' · ' +
+    esc((forecast.capacity_status || forecast.status).replaceAll('_', ' ')) + ' · ' +
+    (capacity.basis_current ? 'Current candidate and token/time limits.' : 'Historical candidate or token/time limits; this estimate is stale.') + '</p>' +
+    (forecast.required_remaining_tokens != null ? '<p>Required remaining tokens: ' + esc(forecast.required_remaining_tokens) +
+    ' · Available at forecast: ' + esc(forecast.remaining_tokens) +
+    ' · Shared token shortfall: ' + esc(forecast.shortfall_tokens) +
+    ' · Author allowance shortfall: ' + esc(authorShortfall) +
+    ' · Estimated minimum total budget: ' + esc(forecast.minimum_total_token_limit) + ' tokens.</p>' : '') +
+    (forecast.additional_cycles_not_forecast ? '<p>Additional configured revision cycles without a forecast: ' + esc(forecast.additional_cycles_not_forecast) + '.</p>' : '') +
+    ((forecast.required_remaining_seconds ?? timing?.required_remaining_seconds) != null ? '<p>Required research time with repair/startup reserves: ' +
+      esc(Math.ceil(forecast.required_remaining_seconds ?? timing.required_remaining_seconds)) +
+      ' seconds · Available at forecast: ' + esc(timing.remaining_research_seconds == null ? 'unestimated' : Math.floor(timing.remaining_research_seconds)) +
+      ' seconds · ' + esc((forecast.status || timing.status).replaceAll('_', ' ')) + '. ' + esc(timing.notice) + '</p>' : '') +
+    '<p class="small-text dim">' + esc(capacity.notice) + '</p>';
+}
+
+function researchAgentDiagnostics(agent) {
+  const error = agent.provenance?.worker_runtime_error;
+  const activity = agent.provenance?.codex_activities?.at(-1);
+  let html = error ? '<p>Runtime error: ' + esc(error.category) +
+    (error.http_status_code == null ? '' : ' · HTTP ' + esc(error.http_status_code)) +
+    ' · Runtime retry flag: ' + esc(error.will_retry == null ? 'unknown' : String(error.will_retry)) +
+    '. This workflow does not automatically retry.</p>' : '';
+  const counterReason = agent.provenance?.worker_counter_failure_reason;
+  if (counterReason) html += '<p>Counter transport configuration blocked: ' + esc(counterReason) +
+    '. Select a reviewed direct-tool model and runtime before starting another run.</p>';
+  if (activity) {
+    html += '<p>Observed reasoning updates: ' + esc(activity.reasoning_delta_count) +
+      ' · Reasoning item: ' + (activity.reasoning_item_open ? 'open' : 'closed or unobserved') +
+      ' · Seconds since runtime notification: ' + esc(activity.summary.notification_idle_seconds) +
+      ' · Seconds since observable progress: ' + esc(activity.summary.observable_progress_idle_seconds) + '</p>';
+    if (activity.summary.local_heartbeat_gap_observed) html += '<p>Local heartbeat gap detected (' +
+      esc(activity.max_heartbeat_gap_seconds) + ' seconds). Sleep or scheduling interruption may have affected this run.</p>';
+    if (activity.summary.long_observable_silence) html += '<p>No observable progress for at least two minutes. Local heartbeats do not establish provider progress; computation may still be occurring.</p>';
+  }
+  return html;
+}
+
 async function tabResearch(el, pid, sub) {
   const base = "/projects/" + encodeURIComponent(pid) + "/research-tasks";
   const terminal = new Set(["completed", "limit_reached_partial", "failed_partial",
@@ -67,24 +110,36 @@ async function tabResearch(el, pid, sub) {
       '<ul>' + tasks.map(t => '<li><a href="#/project/' + esc(pid) + '/research/' + esc(t.id) + '">' +
         researchTitle(t.question) + '</a> — ' + esc((t.task_type || 'research').replaceAll('_', ' ')) + ' · ' + esc(t.state.replaceAll('_', ' ')) + ' · ' + esc(t.executor) + '</li>').join("") + '</ul>' +
       '<form id="research-create" class="stack"><div class="field"><label>Research question<textarea name="question" required maxlength="24000"></textarea></label></div>' +
-      '<div class="field"><label>Task type<select name="task_type"><option value="research">General research</option><option value="literature_search">Literature search</option><option value="proof_audit">Independent proof audit</option></select></label></div>' +
+      '<div class="field"><label>Task type<select name="task_type"><option value="manuscript">Manuscript production — four required reviews</option><option value="research">General research</option><option value="literature_search">Literature search</option><option value="proof_audit">Independent proof audit</option></select></label></div>' +
       '<div class="field"><label>Success criteria<textarea name="success_criteria" placeholder="Optional — use the default evidence and open-questions checklist"></textarea></label></div>' +
       '<div class="field"><label>Instructions<textarea name="instructions" placeholder="Optional — use bounded research and evidence safeguards"></textarea></label></div>' +
       '<fieldset><legend>Deliverables (default: research report and evidence package)</legend>' +
       ['research_report', 'paper', 'reviewer_report'].map(name => '<label><input type="checkbox" name="deliverables" value="' + name + '"> ' + esc(name.replaceAll('_', ' ')) + '</label>').join(' ') + '</fieldset>' +
       '<details><summary>Select existing ingested documents (optional)</summary><fieldset><legend>Project sources</legend>' + (sources.length ? sources.map(s =>
         '<label><input type="checkbox" name="source_ids" value="' + esc(s.id) + '"> ' + esc(s.title) + ' · ' + esc(s.id.slice(0, 8)) + '</label><br>').join('') : '<p>No sources yet. You can upload after creating the task.</p>') + '</fieldset></details>' +
-      '<div class="field"><label>Task-wide token limit<input name="token_limit" type="number" value="24000" min="2000" max="1000000" required></label></div>' +
-      '<div class="field"><label>Time limit (seconds)<input name="time_limit_seconds" type="number" value="600" min="10" max="7200" required></label></div>' +
+      '<div class="field"><label>Task-wide token limit<input name="token_limit" type="number" value="96000" min="2000" max="1000000" required></label></div>' +
+      '<div class="field"><label>Time limit (seconds)<input name="time_limit_seconds" type="number" value="900" min="10" max="7200" required></label></div>' +
       '<div class="field"><label>Maximum child agents<input name="max_children" type="number" value="3" min="1" max="6" required></label></div>' +
-      '<p class="small-text dim">The final handoff reserves 20% of tokens (25% for best-effort workers) and 10% of time. Confirmed unused phase tokens can also support the handoff. Missing usage is charged as the full allowance and labelled an estimate.</p>' +
+      '<p class="small-text dim">Manuscript budgets cover drafting, four reviews, revisions and re-reviews, corrections and final handoff. The default 96,000 tokens may stop before that cycle completes. Capacity estimates appear after the first draft; maximum revision cycles do not guarantee a funded cycle.</p>' +
+      '<p class="small-text dim">Manuscript planning protects 10,000 tokens for final handoff. General research reserves 20% of tokens (25% for best-effort workers). Both reserve 10% of time. Missing usage is charged as the full allowance and labelled an estimate.</p>' +
       '<div class="field"><label>Executor<select name="executor"><option value="offline">Offline controlled workers — no model research</option><option value="process"' +
       (executors.process.available ? '' : ' disabled') + '>Configured live agent executor</option></select></label></div>' +
       '<label><input type="checkbox" name="allow_best_effort_tokens"> Permit a live worker with best-effort token stopping. In-flight model work may exceed the displayed token limit; the time limit still stops the local worker.</label>' +
       '<button type="submit" class="primary">Create research task</button></form><p id="research-message" role="status"></p>';
     const createForm = el.querySelector('#research-create');
+    createForm.elements.task_type.closest('.field').insertAdjacentHTML('afterend',
+      '<details><summary>Manuscript review settings</summary>' +
+      '<label>Paper type<select name="paper_type"><option value="expository">Expository — no novelty claim</option><option value="research">Research contribution</option></select></label>' +
+      '<label>Minimum manuscript words (optional)<input name="manuscript_min_words" type="number" min="1" max="200000" step="1"></label>' +
+      '<label>Maximum manuscript words (optional)<input name="manuscript_max_words" type="number" min="1" max="200000" step="1"></label>' +
+      '<p>Set both bounds to enforce length. Counts all section text, including equations and references; excludes title and headings.</p>' +
+      '<label>Maximum revision cycles<input name="max_revision_cycles" type="number" value="2" min="0" max="2"></label>' +
+      '<label>Public literature queries (one per line, up to four; five Crossref results each)<textarea name="public_queries"></textarea></label>' +
+      '<label><input type="checkbox" name="allow_public_search"> Allow these bounded public literature searches</label>' +
+      '<label><input type="checkbox" name="finite_partitions"> Run the reviewed finite-partition verification (sizes 1–5)</label>' +
+      '<p>Manuscript production requires four review roles, with at most three concurrent reviewers. Drafts remain available when checks cannot finish. Human publication approval is a separate step.</p></details>');
     createForm.elements.question.closest('.field').insertAdjacentHTML('afterend',
-      '<label><input type="checkbox" name="reuse_prior_research" checked> Retrieve saved project evidence and prior research</label>' +
+      '<label><input type="checkbox" name="reuse_prior_research"> Retrieve saved project evidence and prior research</label>' +
       '<label>Matching method<select name="retrieval_mode"><option value="hybrid">Semantic + lexical (local model)</option><option value="lexical">Lexical only</option></select></label>' +
       '<label>Discovery breadth<select name="retrieval_recall"><option value="broad">Broad — include weaker semantic leads</option><option value="focused">Focused — stronger semantic matches</option></select></label>' +
       '<p class="small-text dim">For blind audits, disable prior research reuse. Semantic matching requires a local index; it never sends source text to an embedding API.</p>' +
@@ -147,6 +202,22 @@ async function tabResearch(el, pid, sub) {
       try {
         const body = Object.fromEntries(data);
         body.deliverables = data.getAll('deliverables'); body.source_ids = data.getAll('source_ids');
+        body.allow_public_search = data.has('allow_public_search');
+        body.literature_queries = String(data.get('public_queries') || '').split('\n').map(s => s.trim()).filter(Boolean).map(query => ({provider: 'crossref', query, count: 5}));
+        body.verification_routines = data.has('finite_partitions') ? ['finite_partitions_v1'] : [];
+        delete body.public_queries; delete body.finite_partitions;
+        const minimum = String(data.get('manuscript_min_words') || '').trim();
+        const maximum = String(data.get('manuscript_max_words') || '').trim();
+        delete body.manuscript_min_words; delete body.manuscript_max_words;
+        if (body.task_type === 'manuscript' && (minimum || maximum)) {
+          if (!minimum || !maximum) throw new Error('Set both minimum and maximum manuscript words.');
+          const minWords = Number(minimum), maxWords = Number(maximum);
+          if (!Number.isInteger(minWords) || !Number.isInteger(maxWords) || minWords < 1 || minWords > maxWords || maxWords > 200000) {
+            throw new Error('Use whole-number manuscript bounds from 1 to 200,000, with minimum no greater than maximum.');
+          }
+          body.manuscript_length = {min_words: minWords, max_words: maxWords};
+        }
+        body.max_revision_cycles = Number(body.max_revision_cycles);
         body.allow_best_effort_tokens = data.has('allow_best_effort_tokens');
         body.reuse_prior_research = data.has('reuse_prior_research');
         body.coverage_topics = data.get('coverage_topics').split('\n').map(s => s.trim()).filter(Boolean);
@@ -194,9 +265,31 @@ async function tabResearch(el, pid, sub) {
       '<label>Version label<input name="version" value="unspecified" maxlength="200" required></label><button type="submit">Attach sources</button></form>' +
       '<p class="small-text dim">ZIPs are inspected with path, member-count and expansion limits. Attached scripts are retained as text and never executed. Versions are user-declared; “latest” is never inferred.</p>' +
       (task.contract.executor !== 'offline' ? '<label><input id="research-live-ack" type="checkbox"> I authorize the configured live executor within this task’s limits.</label>' : '') +
+      (task.contract.executor !== 'offline' ? '<p>Keep this computer awake throughout a local live run. Closing the lid or sleeping can interrupt agent connections; the original time limit continues.</p>' : '') +
       '<button class="primary" data-r-action="start">Start bounded research</button>' : '') +
+    (task.quality ? '<h3>Manuscript assessment</h3><p>Draft produced: ' + (task.quality.draft_produced ? 'yes' : 'no') +
+      ' · Agent checks complete: ' + (task.quality.agent_checks_complete ? 'yes' : 'no') +
+      ' · Agent review grants publication approval: no</p><ul>' +
+      task.quality.blockers.map(b => '<li>' + esc(b) + '</li>').join('') + '</ul>' : '') +
+    (task.readiness ? '<h3>Readiness report</h3><p>' + esc(task.readiness.status) +
+      ' · Current human publication approval: ' + (task.readiness.human_publication_approval ? 'yes' : 'no') +
+      ' · Release eligible: ' + (task.readiness.release_eligible ? 'yes' : 'no') + '</p>' +
+      (task.readiness.length_check ? '<p>Manuscript length: ' + esc(task.readiness.length_check.word_count) + ' words · ' + esc(task.readiness.length_check.status.replaceAll('_', ' ')) + '</p>' : '') +
+      (task.readiness.release_review_flags?.length ? '<p>Evidence availability review pending: ' + task.readiness.release_review_flags.length + ' flagged statements.</p>' : '') +
+      researchCapacity(task.readiness.capacity) +
+      '<p>' + esc(task.readiness.scope_notice) + '</p><ul>' +
+      task.readiness.review_dimensions.map(r => '<li>' + esc(r.role) + ': ' + esc(r.status) + '</li>').join('') +
+      '</ul><p>Pending human text decisions: ' + task.readiness.human_review.pending_text_ids.length +
+      ' · Claim support decisions: ' + task.readiness.human_review.pending_claim_ids.length +
+      ' · Source verification decisions: ' + task.readiness.human_review.pending_source_ids.length + '</p>' +
+      '<details><summary>Evidence bindings, challenges and publication findings</summary><pre>' +
+      esc(JSON.stringify(task.readiness, null, 2)) + '</pre></details>' : '') +
+    '<p>Workers created: ' + task.agents.length + ' · Currently active: ' +
+      (finished ? 0 : task.agents.filter(a => !['completed', 'failed', 'cancelled', 'stopped', 'limit_reached'].includes(a.state)).length) + '</p>' +
+    '<button data-r-action="trace">Download call and timing trace</button>' +
+    '<details><summary>Call order and timings</summary><pre>' + esc(JSON.stringify(usage.trace_summary || usage.call_trace || [], null, 2)) + '</pre></details>' +
     '<h3>Agent lineage and original reports</h3>' + task.agents.map(a => '<details><summary>' + esc(a.role) + ' ' + esc(a.id) +
-      ' · ' + esc(a.state) + ' · parent ' + esc(a.parent_id || 'none') + '</summary><pre>' + esc(JSON.stringify(a, null, 2)) + '</pre></details>').join('') +
+      ' · ' + esc(a.state) + ' · parent ' + esc(a.parent_id || 'none') + '</summary>' + researchAgentDiagnostics(a) + '<pre>' + esc(JSON.stringify(a, null, 2)) + '</pre></details>').join('') +
     researchSynthesis(task.synthesis) +
     (finished ? '<h3>Human review</h3><p>“Verified result” is the child’s assessment within its stated scope. Review the original evidence and any conflicts. Approval is bound to this exact snapshot and intended use.</p>' +
       task.agents.filter(a => a.role === 'child').flatMap(a => (a.report.findings || []).map(f =>
@@ -235,6 +328,8 @@ async function tabResearch(el, pid, sub) {
       if (action === 'download' || action === 'pdf') {
         await researchDownload(url + (action === 'pdf' ? '/results.pdf' : '/download'),
           'research-task-' + task.id + (action === 'pdf' ? '.pdf' : '.zip'));
+      } else if (action === 'trace') {
+        await researchDownload(url + '/call-trace', 'research-call-trace.json');
       } else if (action === 'start') {
         await api(url + '/start', 'POST', {acknowledge_live_execution: !!el.querySelector('#research-live-ack')?.checked});
       } else if (action === 'promote') {
@@ -246,7 +341,7 @@ async function tabResearch(el, pid, sub) {
         }
         await api(url + '/promote', 'POST', {agent_id, finding_id, purpose, manuscript_id, expected_hash: task.review_hash});
       } else await api(url + '/cancel', 'POST');
-      if (action !== 'download' && action !== 'pdf') await tabResearch(el, pid, sub);
+      if (!['download', 'pdf', 'trace'].includes(action)) await tabResearch(el, pid, sub);
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   }));

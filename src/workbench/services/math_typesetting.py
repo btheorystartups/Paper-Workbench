@@ -21,6 +21,7 @@ FORBIDDEN = re.compile(
     r"\\(?:require|href|url|includegraphics|style|class|cssId|htmlClass|htmlId|htmlStyle|htmlData|"
     r"input|include|write|read|openin|openout|catcode|def|gdef|edef|xdef|let|csname|newcommand)\b"
 )
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SVG_TAGS = {"svg", "g", "path", "rect", "line", "polygon", "polyline", "circle", "ellipse", "title"}
 
 
@@ -73,6 +74,7 @@ def render_html(document: str) -> tuple[str, int]:
         tex = html.unescape(next(value for value in match.groups() if value is not None))
         # Existing prose renderers insert line-break tags; math receives whitespace instead.
         tex = tex.replace("<br>", "\n").replace("<br/>", "\n")
+        tex = CONTROL_CHARS.sub("", tex)
         if len(tex) > 20000 or FORBIDDEN.search(tex):
             raise IntegrityError("Equation contains unsupported markup or commands.")
         formulas.append({"tex": tex, "display": match.group(1) is not None or match.group(3) is not None})
@@ -100,6 +102,7 @@ def latex_text(text: str, escape) -> str:
     result, offset = [], 0
     for match in MATH.finditer(text):
         tex = next(value for value in match.groups() if value is not None)
+        tex = CONTROL_CHARS.sub("", tex)
         if FORBIDDEN.search(tex) or len(tex) > 20000:
             raise IntegrityError("Equation contains unsupported markup or commands.")
         display = match.group(1) is not None or match.group(3) is not None

@@ -28,7 +28,7 @@ $env:WB_RESEARCH_EXECUTOR_ENABLED = 'true'
 $env:WB_RESEARCH_EXECUTOR_COMMAND = ConvertTo-Json -Compress @($python, $worker)
 $env:WB_RESEARCH_CODEX_HOME = $profile
 $env:WB_RESEARCH_CODEX_ACCOUNT_EMAIL = ''
-$env:WB_RESEARCH_CODEX_MODEL = 'gpt-5.6-sol'
+$env:WB_RESEARCH_CODEX_MODEL = 'gpt-5.5'
 $env:WB_RESEARCH_CODEX_REASONING_EFFORT = 'low'
 
 Set-Location -LiteralPath $projectRoot

@@ -79,6 +79,9 @@ def test_pilot_zip_through_real_application_endpoints(client):
     html = client.get("/ui/")
     assert 'src="/ui/research.js"' in html.text
     assert client.get("/ui/research.js").status_code == 200
+    trace = client.get(url + "/call-trace")
+    assert trace.status_code == 200 and trace.json()["events"]
+    assert len(trace.json()["rpc_calls"]) == 4
 
 
 def test_unconfigured_live_executor_and_invalid_limits_fail_closed(client):
@@ -111,7 +114,7 @@ def test_research_routes_enforce_tenant_boundaries(tenant_client):
     root = f"/projects/{project['id']}/research-tasks"
     task = client.post(root, headers=headers, json={"question": "Private research"}).json()
     url = root + "/" + task["id"]
-    for suffix in ("", "/download"):
+    for suffix in ("", "/download", "/call-trace"):
         assert client.get(url + suffix, headers=other_headers).status_code == 404
         assert client.get(url + suffix).status_code == 401
     for suffix, body in (("/start", {}), ("/cancel", None), ("/reviews", {}), ("/promote", {})):
@@ -124,3 +127,17 @@ def test_research_routes_enforce_tenant_boundaries(tenant_client):
         ).status_code
         == 404
     )
+
+
+def test_manuscript_length_contract_round_trips_and_rejects_reversed_bounds(client):
+    ws = client.post("/workspaces", json={"name": "Length fixture"}).json()
+    project = client.post("/projects", json={"workspace_id": ws["id"], "name": "Length fixture"}).json()
+    root = f"/projects/{project['id']}/research-tasks"
+    request = {"question": "Bounded manuscript", "task_type": "manuscript",
+               "manuscript_length": {"min_words": 900, "max_words": 1200}}
+    created = client.post(root, json=request)
+    assert created.status_code == 200, created.text
+    assert created.json()["contract"]["manuscript_length"] == {
+        "min_words": 900, "max_words": 1200, "counting_policy": "section-text-whitespace-v1"}
+    request["manuscript_length"] = {"min_words": 1200, "max_words": 900}
+    assert client.post(root, json=request).status_code == 422

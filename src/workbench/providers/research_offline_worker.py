@@ -7,6 +7,8 @@ import json
 import os
 import sys
 
+from research_quality_offline import reply as manuscript_reply
+
 
 def emit(agent_id, kind, **payload):
     print(json.dumps({"agent_id": agent_id, "type": kind, **payload}), flush=True)
@@ -33,6 +35,10 @@ def main():
                     "no_external_writes": True,
                 },
             )
+        elif operation in {"draft", "revise", "audit"}:
+            emit(agent_id, "specialist_report" if operation == "audit" else "draft",
+                 result=manuscript_reply(operation, message),
+                 usage={"tokens": 0, "kind": "actual", "source": "offline; no model invoked"})
         elif operation == "plan":
             contract = message["contract"]
             roles = {

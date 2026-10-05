@@ -52,6 +52,13 @@ def test_unmarked_equations_are_not_guessed_and_invalid_tex_fails():
         math_typesetting.render_html(r"\(\NotARealMacro{x}\)")
 
 
+def test_math_control_characters_are_removed_inside_tex_spans():
+    output, count = math_typesetting.render_html("\\(\x7f\\delta(\\pi r,\x7f\\pi s)\\)")
+    assert count == 1
+    assert "data:image/svg+xml;base64," in output
+    assert "\x7f" not in output
+
+
 def test_math_task_downloads_use_shared_renderer(client):
     if not export_service.weasyprint_available():
         pytest.skip("Optional WeasyPrint runtime unavailable")
