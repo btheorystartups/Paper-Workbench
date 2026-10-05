@@ -1,0 +1,125 @@
+{
+  "notice": "Read-only saved-case replay; current prompt estimates and scheduling replay are not measured new model usage or completion guarantees. Historical artifacts were not modified.",
+  "source_task_id": "0e8f65982b9f4f44bed2af6dbf84ab6c",
+  "source_snapshot_sha256": "52136091a1a0863751324754f0e8d445fe112f657a2ef1300bbda37b6c01a4f0",
+  "saved_revision_plan": {
+    "iteration": 0,
+    "remaining_tokens": 134502,
+    "review_role_reserves": {
+      "proof_method": 27344,
+      "source_citation": 28032,
+      "literature_contribution": 27415,
+      "adversarial": 28553
+    },
+    "review_reserve": 111344,
+    "handoff_reserve": 10000,
+    "repair_reserve": 28213,
+    "input_token_estimate": 19676,
+    "repair_input_token_estimate": 22213,
+    "author_input_token_estimate": 13737,
+    "minimum_author_grant": 20530,
+    "author_grant": 0,
+    "policy": "fresh-operation-usage-with-25-percent-margin"
+  },
+  "current_revision_plan": {
+    "candidate_sha256": "243e838561a2ad3561f955066bbae5a020eeaec1520e68261ece0864c88801bd",
+    "token_limit": 240000,
+    "remaining_tokens": 134502,
+    "review_role_reserves": {
+      "proof_method": 27344,
+      "source_citation": 28032,
+      "literature_contribution": 27415,
+      "adversarial": 28553
+    },
+    "review_reserve": 111344,
+    "handoff_reserve": 10000,
+    "repair_reserve": 24976,
+    "input_token_estimate": 16605,
+    "repair_input_token_estimate": 18976,
+    "author_input_token_estimate": 12425,
+    "minimum_author_grant": 20530,
+    "author_grant": 0,
+    "required_remaining_tokens": 166850,
+    "shortfall_tokens": 32348,
+    "minimum_total_token_limit": 272348,
+    "capacity_status": "insufficient_tokens",
+    "timing": {
+      "observed_author_seconds": 177.616167,
+      "observed_role_seconds": {
+        "proof_method": 32.025183,
+        "literature_contribution": 120.783438,
+        "source_citation": 143.573642,
+        "adversarial": 162.898414
+      },
+      "review_wave_seconds": 194.923597,
+      "revision_and_review_seconds": 372.539764,
+      "remaining_research_seconds": null,
+      "status": "observed_duration_estimate",
+      "notice": "Observed-duration replay with three occupied slots and prompt dispatch on release; startup, repairs, handoff, changed candidate and service latency remain unestimated."
+    },
+    "policy": "fresh-operation-usage-with-25-percent-margin",
+    "author_slice_shortfall_tokens": 0
+  },
+  "current_audit_prompt_tokens": {
+    "proof_method": 13224,
+    "literature_contribution": 13227,
+    "source_citation": 13227,
+    "adversarial": 13229
+  },
+  "current_before_first_review_plan": {
+    "candidate_sha256": "243e838561a2ad3561f955066bbae5a020eeaec1520e68261ece0864c88801bd",
+    "token_limit": 240000,
+    "remaining_tokens": 223576,
+    "initial_review_reserve": 80000,
+    "initial_repair_reserve": 20000,
+    "conditional_revision": {
+      "candidate_sha256": "243e838561a2ad3561f955066bbae5a020eeaec1520e68261ece0864c88801bd",
+      "token_limit": 240000,
+      "remaining_tokens": 223576,
+      "review_role_reserves": {
+        "proof_method": 22251,
+        "source_citation": 22251,
+        "literature_contribution": 22251,
+        "adversarial": 22251
+      },
+      "review_reserve": 89004,
+      "handoff_reserve": 10000,
+      "repair_reserve": 22251,
+      "input_token_estimate": 16251,
+      "repair_input_token_estimate": 16251,
+      "author_input_token_estimate": 12061,
+      "minimum_author_grant": 20530,
+      "author_grant": 60000,
+      "required_remaining_tokens": 141785,
+      "shortfall_tokens": 0,
+      "minimum_total_token_limit": 158209,
+      "capacity_status": "funded",
+      "timing": {
+        "observed_author_seconds": null,
+        "observed_role_seconds": {},
+        "review_wave_seconds": null,
+        "revision_and_review_seconds": null,
+        "remaining_research_seconds": null,
+        "status": "unestimated",
+        "notice": "Observed-duration replay with three occupied slots and prompt dispatch on release; startup, repairs, handoff, changed candidate and service latency remain unestimated."
+      },
+      "policy": "fresh-operation-usage-with-25-percent-margin",
+      "author_slice_shortfall_tokens": 0
+    },
+    "forecast_revision_cycles": 1,
+    "additional_cycles_not_forecast": 1,
+    "required_without_format_repairs": 199534,
+    "required_remaining_tokens": 241785,
+    "shortfall_tokens": 18209,
+    "minimum_total_token_limit": 258209,
+    "capacity_status": "capacity_risk",
+    "policy": "conditional-one-revision-with-fresh-context",
+    "unknowns": [
+      "future candidate size",
+      "reviewer objections and responses",
+      "model overhead and reasoning",
+      "actual usage",
+      "wall time"
+    ]
+  }
+}

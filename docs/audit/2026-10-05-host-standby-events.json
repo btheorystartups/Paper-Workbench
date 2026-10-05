@@ -1,0 +1,17 @@
+[
+  {
+    "utc": "2026-10-05T14:40:00.3190755Z",
+    "id": 506,
+    "message": "The system is entering connected standby \r\n\r\nReason: Idle Timeout."
+  },
+  {
+    "utc": "2026-10-05T14:39:10.1458658Z",
+    "id": 507,
+    "message": "The system is exiting connected standby \r\n\r\nReason: Lid."
+  },
+  {
+    "utc": "2026-10-05T14:24:29.7273640Z",
+    "id": 506,
+    "message": "The system is entering connected standby \r\n\r\nReason: Lid."
+  }
+]

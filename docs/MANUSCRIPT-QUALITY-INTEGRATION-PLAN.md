@@ -1,7 +1,10 @@
 # Plan: agent responsibility for manuscript quality
 
-Status: proposed implementation, requested on 2026-10-04. The existing smoke-test
-repairs are implemented and tested; the additional workflow below is not yet implemented.
+Status: implementation authorized and implemented on 2026-10-04. See
+`PRODUCTION-WORKFLOW.md` for the current behavior and
+[the acceptance record](audit/2026-10-04-specialist-manuscript-acceptance.md) for
+verification results. Live acceptance remains incomplete; the gap inventory below
+records the pre-implementation state.
 
 ## Answer: what is already integrated?
 
@@ -78,12 +81,16 @@ independence or remove errors shared by the underlying model.
 3. **Research and draft.** The parent uses bounded assignments and writes against
    the claim inventory. Preserve conjectures, negative results and unsupported
    gaps. The draft may complete even when some review requirements remain unmet.
-4. **Audit the complete candidate.** Launch the three specialist reviewers on the
+4. **Audit the complete candidate.** Launch proof/method, source/citation and
+   literature/contribution reviewers, then a mandatory independent adversarial reviewer on the
    same frozen candidate and source set, independently of the author's conclusions.
    Review full sections and cross-section dependencies. If context limits require
    chunks, retain an explicit coverage manifest and an overall consistency pass;
    truncation must produce a gap, never an implicit pass. The current optional
    800-character skeptical-review input is insufficient for this stage.
+   The adversarial reviewer attempts concrete proof, source, novelty, scope and
+   reproducibility challenges. Unresolved challenges require bound blocking objections;
+   the structured rubric cannot substitute for full claim and section coverage.
 5. **Revise and recheck.** Turn objections into existing `revision_review` comments
    with measurable acceptance criteria. The author responds and proposes changes.
    A different verifier checks the exact response and revised candidate. Permit at
@@ -261,11 +268,98 @@ quality workflow passes, with a selected question, frozen source set and explici
 research limits. Agent checks should reduce the human review burden while leaving
 scientific responsibility and the publication decision with the author.
 
-## Next decision
+## Authorization and validation boundary
 
-Approve implementation of steps 1–4 as a scoped follow-up, then perform the advanced
-acceptance test above. This planning request does not itself implement those steps.
-Continue in this thread while the reviewed integration context is useful. For
-implementation, use `gpt-6-sol` at high reasoning: the cross-service identity, budget
-and evidence-binding changes warrant careful reasoning. Use deterministic tests
-before spending live research usage.
+The user approved implementation and the advanced acceptance test, explicitly requesting
+call identity, timing and stack evidence. The same original live ceiling applies across
+all phases; a diagnostic partial result does not authorize a fresh full-budget task.
+The original manuscript collection and frozen desktop pilot remain outside this test.
+
+On 2026-10-04, after the first attempt stopped during specialist review, the user
+explicitly authorized one additional bounded live acceptance attempt. It retains the
+96,000-token and 900-second limits, including setup in the time ceiling. Related local
+repairs and offline regressions may be batched before and after that attempt; this is
+not authorization to reset the budget through further live tasks.
+
+The user subsequently authorized another single bounded attempt. Its three specialist
+reviews completed, but final parent integration exceeded the remaining token grant.
+See `docs/audit/2026-10-04-specialist-manuscript-acceptance-3.md` for the preserved
+trace, compact-handoff repair and release gate. That authorization is consumed; any
+further live acceptance attempt needs a new explicit allowance.
+
+The user then authorized one fourth single bounded attempt. It completed three
+reviews but found source-support and claim-inventory blockers. The protected
+re-review reservation prevented an unreviewed revision under the remaining
+96,000-token ceiling. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-4.md` for the trace,
+diagnostic exports and offline prompt correction. That authorization is consumed.
+
+The user conditionally requested a final live check in this task. Automatic
+approval review rejected a proposed 180,000-token cap as an unapproved increase;
+no call started under that cap. One fresh 96,000-token attempt then ran and
+stopped with two per-source passage gaps after all three reviews. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-5.md`. Its authorization
+is consumed. Further diagnosis can proceed offline; a further live attempt or
+larger cap requires explicit approval.
+
+The offline source-binding follow-up is documented in
+`docs/audit/2026-10-04-source-passage-binding-follow-up.md`. It narrows attribution
+to the supplied evidence, makes every cited source's passage obligation explicit
+to both author and reviewer, and adds the missing source IDs to existing
+deterministic blockers. It does not clear the saved attempt's objections or
+authorize another live run.
+
+The user explicitly approved the increase to 180,000 tokens. One sixth live
+attempt used that ceiling and 900 seconds including setup, but stopped at author
+intake because a search receipt was placed in `verification_ids`. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-6.md` for the saved failure
+and offline addition of one author correction within its original grant. No
+specialist or final handoff ran. That single-attempt authorization is consumed;
+the higher ceiling is approved, but another attempt still needs authorization.
+
+The subsequent request to fix and attempt again authorized a seventh task at
+180,000 tokens / 900 seconds. It admitted two drafts and six specialist reports,
+resolved all 15 first-round comments, then stopped partial at 170,863 tokens
+with new review-history and bibliography-inventory objections. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-7.md` for the trace,
+diagnostic exports and offline separation of manuscript content from process
+reports, plus explicit original-candidate hashes on prior review comments.
+Final live integration remains unverified. This attempt's authorization is
+consumed; a further live task requires explicit authorization.
+
+The user authorized an eighth attempt, describing the supervising-model change
+as Astra-High to Sol-Light. Manuscript workers retained `gpt-5.6-sol` / low.
+It admitted one draft and three reports, with one proof-report correction, then
+stopped during a revision that exceeded its 24,074-token grant. Observed usage
+was 132,013 with incomplete final-turn telemetry. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-8.md` for the comparison,
+trace and offline search-receipt assessment clarification. Acceptance and final
+handoff remain incomplete; this single-attempt authorization is consumed.
+
+The user then authorized a ninth attempt with the updated revision-budget
+policy. It admitted a 31,799-token revision within a 33,313 grant and two
+second-wave specialist reports. The final literature worker stopped at 24,506
+against a 23,986 grant; overall observed usage was 171,575 with incomplete
+final-turn telemetry. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-9.md` for the recorded
+budget decisions, diagnostic exports and task-seed provenance context repair.
+Acceptance and final integration remain incomplete. This authorization is
+consumed; further live work requires explicit authorization.
+
+The subsequent offline review changes re-review scheduling to two concurrent
+workers followed by literature review after their completed receipts release
+capacity, and starts final manuscript integration in a fresh summary thread in
+the existing parent worker. The three mandatory roles and original task ledger
+remain intact. See
+`docs/audit/2026-10-04-concurrent-grants-and-handoff-review.md` for the synthetic
+replay, context measurements and remaining live acceptance boundary.
+
+The user authorized a tenth bounded attempt. It completed at 177,187 tokens
+and 419.651 seconds with complete usage telemetry, two admitted drafts, six
+accepted independent specialist reports, all eight first-round comments
+resolved and successful fresh-context parent integration. The final assessment
+has no agent blockers; human publication approval remains pending. See
+`docs/audit/2026-10-04-specialist-manuscript-acceptance-10.md`. This closes the
+live acceptance gap for the specified expository case without claiming original
+research novelty or universal success within the budget. No further live task
+is authorized by that consumed one-attempt approval.

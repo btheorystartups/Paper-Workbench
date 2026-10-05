@@ -1,0 +1,58 @@
+{
+  "source_task_id": "e2a4939d5dcf4251ae0c092051b9bb6b",
+  "replay": "offline; no model call, database or historical artifact mutation",
+  "token_limit": 320000,
+  "at_original_revision_admission": {
+    "observed_author_seconds": 163.519738,
+    "observed_role_seconds": {
+      "source_citation": 40.645673,
+      "literature_contribution": 151.344108,
+      "proof_method": 170.526204,
+      "adversarial": 199.667078
+    },
+    "review_wave_seconds": 240.312751,
+    "revision_and_review_seconds": 403.832489,
+    "author_repair_seconds": 175.603246,
+    "report_repair_pool_seconds": 199.667078,
+    "author_repair_basis": "observed",
+    "report_repair_basis": "largest_reviewer_fallback",
+    "startup_reserve_seconds": 19.453624999999874,
+    "margin": 1.25,
+    "required_remaining_seconds": 993.3321412499998,
+    "shortfall_seconds": 732.9322394500258,
+    "remaining_research_seconds": 260.39990179997403,
+    "policy": "observed-duration-with-repair-margin-v1",
+    "status": "insufficient_time",
+    "notice": "Three-slot review forecast plus one author correction and one shared report-repair pool, 25% duration margin and reviewer startup reserve. Handoff time stays outside the research deadline. This estimate cannot guarantee service latency or fund every possible repair."
+  },
+  "at_rejected_revision_correction": {
+    "timing": {
+      "observed_author_seconds": 228.467045,
+      "observed_role_seconds": {
+        "source_citation": 40.645673,
+        "literature_contribution": 151.344108,
+        "proof_method": 170.526204,
+        "adversarial": 199.667078
+      },
+      "review_wave_seconds": 240.312751,
+      "revision_and_review_seconds": 468.77979600000003,
+      "author_repair_seconds": 228.467045,
+      "report_repair_pool_seconds": 199.667078,
+      "author_repair_basis": "observed",
+      "report_repair_basis": "largest_reviewer_fallback",
+      "startup_reserve_seconds": 19.453624999999874,
+      "margin": 1.25,
+      "required_remaining_seconds": 1140.59602375,
+      "shortfall_seconds": 1108.730977950026,
+      "remaining_research_seconds": 31.86504579997404,
+      "policy": "observed-duration-with-repair-margin-v1",
+      "status": "insufficient_time",
+      "notice": "Three-slot review forecast plus one author correction and one shared report-repair pool, 25% duration margin and reviewer startup reserve. Handoff time stays outside the research deadline. This estimate cannot guarantee service latency or fund every possible repair."
+    },
+    "required_remaining_seconds": 855.0122174999999,
+    "remaining_basis": "trace-derived relative to saved revision forecast, approximately",
+    "would_dispatch": false
+  },
+  "frozen_pilot_files": 131,
+  "frozen_pilot_hash_changes": []
+}

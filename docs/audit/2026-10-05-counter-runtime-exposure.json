@@ -1,0 +1,517 @@
+{
+  "runtime_version": "0.154.0",
+  "synthetic_only": true,
+  "model_inference_calls": 0,
+  "probe_directory": "C:\\Users\\brian\\AppData\\Local\\Temp\\paper-workbench-counter-exposure-b4cbcfd08d5043bbab3cc2587e466d34",
+  "cases": [
+    {
+      "output_schema": true,
+      "defer_loading": null,
+      "boolean_code_mode_override": false,
+      "experiment": "wire-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "experiment": "wire-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": true,
+      "boolean_code_mode_override": false,
+      "error_class": "CodexLocalError",
+      "experiment": "wire-exposure.json",
+      "inventory": [],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": false,
+      "defer_loading": null,
+      "boolean_code_mode_override": false,
+      "experiment": "wire-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": false,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "experiment": "wire-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": false,
+      "defer_loading": true,
+      "boolean_code_mode_override": false,
+      "error_class": "CodexLocalError",
+      "experiment": "wire-exposure.json",
+      "inventory": [],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": true,
+      "experiment": "wire-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": "top_enabled",
+      "experiment": "top-level-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": "top_bool",
+      "experiment": "top-level-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "experiment": "synthetic-classic-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "apply_patch",
+              "type": "custom",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "check_manuscript_length",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": false,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "experiment": "synthetic-classic-exposure.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "apply_patch",
+              "type": "custom",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "check_manuscript_length",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": null,
+      "boolean_code_mode_override": false,
+      "experiment": "gpt-5-5-exposure.json",
+      "inventory": [
+        {
+          "name": "request_user_input",
+          "type": "function",
+          "counter_in_description": false,
+          "nested": []
+        },
+        {
+          "name": "apply_patch",
+          "type": "custom",
+          "counter_in_description": false,
+          "nested": []
+        },
+        {
+          "name": "check_manuscript_length",
+          "type": "function",
+          "counter_in_description": false,
+          "nested": []
+        }
+      ],
+      "format_type": "json_schema",
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": false,
+      "defer_loading": null,
+      "boolean_code_mode_override": false,
+      "experiment": "gpt-5-5-exposure.json",
+      "inventory": [
+        {
+          "name": "request_user_input",
+          "type": "function",
+          "counter_in_description": false,
+          "nested": []
+        },
+        {
+          "name": "apply_patch",
+          "type": "custom",
+          "counter_in_description": false,
+          "nested": []
+        },
+        {
+          "name": "check_manuscript_length",
+          "type": "function",
+          "counter_in_description": false,
+          "nested": []
+        }
+      ],
+      "format_type": null,
+      "code_host_unavailable_warning": false
+    },
+    {
+      "output_schema": true,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "turn_status": "completed",
+      "experiment": "direct-roundtrip.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": "json_schema",
+      "counter_receipts": [
+        {
+          "counting_policy": "section-text-whitespace-v1",
+          "word_count": 3,
+          "section_counts": [
+            {
+              "id": "sec",
+              "word_count": 3
+            }
+          ],
+          "section_text_sha256": "c6541afdb47de8126ef0f5bc8a814298188dc4d5c0bdcf83b02e2587b24a4e60",
+          "bounds": {
+            "min_words": 3,
+            "max_words": 5,
+            "counting_policy": "section-text-whitespace-v1"
+          },
+          "target_words": 4,
+          "status": "within_bounds"
+        }
+      ],
+      "code_host_unavailable_warning": true
+    },
+    {
+      "output_schema": false,
+      "defer_loading": false,
+      "boolean_code_mode_override": false,
+      "turn_status": "completed",
+      "experiment": "direct-roundtrip.json",
+      "inventory": [
+        {
+          "name": "functions",
+          "type": "namespace",
+          "counter_in_description": false,
+          "nested": [
+            {
+              "name": "exec",
+              "type": "custom",
+              "counter_in_description": true,
+              "nested": []
+            },
+            {
+              "name": "wait",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            },
+            {
+              "name": "request_user_input",
+              "type": "function",
+              "counter_in_description": false,
+              "nested": []
+            }
+          ]
+        }
+      ],
+      "format_type": null,
+      "counter_receipts": [
+        {
+          "counting_policy": "section-text-whitespace-v1",
+          "word_count": 3,
+          "section_counts": [
+            {
+              "id": "sec",
+              "word_count": 3
+            }
+          ],
+          "section_text_sha256": "c6541afdb47de8126ef0f5bc8a814298188dc4d5c0bdcf83b02e2587b24a4e60",
+          "bounds": {
+            "min_words": 3,
+            "max_words": 5,
+            "counting_policy": "section-text-whitespace-v1"
+          },
+          "target_words": 4,
+          "status": "within_bounds"
+        }
+      ],
+      "code_host_unavailable_warning": true
+    }
+  ],
+  "bundled_model_tool_modes": {
+    "gpt-5.6-sol": "code_mode_only",
+    "gpt-5.5": null
+  },
+  "bundled_catalog_sha256": "2ac0306d8869f00de9a5a1136a23824c844cad55c0ec4eeb03b931ff672579ae",
+  "external_provider_requests": 0
+}

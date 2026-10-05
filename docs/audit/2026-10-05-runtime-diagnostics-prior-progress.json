@@ -1,0 +1,84 @@
+[
+  {
+    "role": "parent",
+    "progress": {
+      "source": "codex_notification",
+      "worker_timestamp": "2026-10-05T14:24:14.059611+00:00",
+      "received_at": "2026-10-05T14:24:14.097675+00:00",
+      "stage": "turn_stream",
+      "elapsed_seconds": 306.728,
+      "codex_notification_count": 3719,
+      "codex_notification_types": {
+        "other": 20,
+        "item/started": 5,
+        "item/completed": 5,
+        "thread/tokenUsage/updated": 3,
+        "item/agentMessage/delta": 3685,
+        "turn/completed": 1
+      },
+      "worker_heartbeat_count": 60
+    },
+    "stream_seconds": 301.26668,
+    "failure_code": null
+  },
+  {
+    "role": "proof_method",
+    "progress": {
+      "source": "codex_notification",
+      "worker_timestamp": "2026-10-05T14:39:21.822318+00:00",
+      "received_at": "2026-10-05T14:39:21.880061+00:00",
+      "stage": "turn_stream",
+      "elapsed_seconds": 904.82,
+      "codex_notification_count": 21,
+      "codex_notification_types": {
+        "other": 17,
+        "item/started": 2,
+        "item/completed": 1,
+        "error": 1
+      },
+      "worker_heartbeat_count": 7
+    },
+    "stream_seconds": 899.605256,
+    "failure_code": "runtime_error"
+  },
+  {
+    "role": "source_citation",
+    "progress": {
+      "source": "codex_notification",
+      "worker_timestamp": "2026-10-05T14:39:21.822315+00:00",
+      "received_at": "2026-10-05T14:39:21.887436+00:00",
+      "stage": "turn_stream",
+      "elapsed_seconds": 899.632,
+      "codex_notification_count": 21,
+      "codex_notification_types": {
+        "other": 17,
+        "item/started": 2,
+        "item/completed": 1,
+        "error": 1
+      },
+      "worker_heartbeat_count": 6
+    },
+    "stream_seconds": 895.109509,
+    "failure_code": null
+  },
+  {
+    "role": "literature_contribution",
+    "progress": {
+      "source": "codex_notification",
+      "worker_timestamp": "2026-10-05T14:39:21.822318+00:00",
+      "received_at": "2026-10-05T14:39:21.894992+00:00",
+      "stage": "turn_stream",
+      "elapsed_seconds": 894.707,
+      "codex_notification_count": 21,
+      "codex_notification_types": {
+        "other": 17,
+        "item/started": 2,
+        "item/completed": 1,
+        "error": 1
+      },
+      "worker_heartbeat_count": 5
+    },
+    "stream_seconds": 890.383363,
+    "failure_code": null
+  }
+]

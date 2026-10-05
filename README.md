@@ -14,8 +14,10 @@ Local delegated research: the **Research** project tab supports bounded tasks,
 safe document/ZIP intake, independent child-worker handoffs, source provenance,
 human-reviewed promotion and downloadable partial/full research packages.
 The offline executor is an explicitly labelled fake. An opt-in Codex worker uses
-independent model threads with best-effort token stopping; its full live handoff
-remains unverified. See [Delegated research](docs/DELEGATED-RESEARCH.md).
+independent model threads with bounded execution. A three-child GPT-5.5 research
+handoff passed live acceptance on 2026-10-06. The manuscript workflow adds four
+mandatory specialist reviews; see [current capabilities and verification limits](docs/CAPABILITY-STATUS.md)
+and [Delegated research](docs/DELEGATED-RESEARCH.md).
 
 For the optional local ChatGPT-account chat provider, see
 [Codex local setup and configurable text limits](docs/CODEX-LOCAL.md).
