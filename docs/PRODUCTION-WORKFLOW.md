@@ -228,18 +228,18 @@ for the current live worker; missing telemetry consumes the full reserved allowa
 
 ## Production budget reservations
 
-The research Codex worker defaults to **gpt-5.5 / low**. Bounded author operations
-require the version-reviewed direct counter transport for runtime **0.154.0**.
-The previous gpt-5.6-sol catalog requires Code Mode, whose execution host this
-restricted workflow disables. Explicit model overrides are preserved; incompatible
+The research Codex worker defaults to **gpt-5.6-sol / low**. Bounded author operations
+require the version-reviewed namespaced direct counter transport for runtime **0.160.1**.
+The `paper_counter` namespace stays directly model-visible while Code Mode and its
+execution host remain disabled. Explicit model overrides are preserved; incompatible
 or unreviewed bounded-author selections stop at input checking before a model turn,
 with a saved, fixed counter-compatibility reason. General text-only operations do
 not require counter compatibility. Existing account/model/effort preflight remains
 mandatory; the new default does not attest authenticated availability.
 
-Set `WB_RESEARCH_CODEX_MODEL=gpt-5.5` in an approved launch when an older explicit
-override exists. No profile, secret file, generic chat default or permission setting
-is changed by this selection. The counter descriptor declares `deferLoading: false`.
+Set `WB_RESEARCH_CODEX_MODEL=gpt-5.6-sol` in an approved launch when an older explicit
+override exists. No profile, secret file or generic chat default is changed by this
+selection. The counter descriptor declares `deferLoading: false`.
 `length_tool_capability` records the pinned offline review separately from registration
 and successful callback receipt; `length_precheck.matching_check` still determines
 whether a receipt matches the final text. Compatibility review is not live model

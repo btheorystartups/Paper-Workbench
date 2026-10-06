@@ -1,6 +1,6 @@
 """Version-bound offline counter transport review; not live capability attestation."""
 
-REVIEWED_RUNTIME_VERSION = "0.154.0"
+REVIEWED_RUNTIME_VERSION = "0.160.1"
 COUNTER_FAILURE_REASONS = frozenset(
     {
         "unreviewed_runtime",
@@ -21,14 +21,12 @@ class CounterCompatibilityError(ValueError):
 def counter_capability(model, runtime_version):
     if runtime_version != REVIEWED_RUNTIME_VERSION:
         raise CounterCompatibilityError("unreviewed_runtime")
-    if model == "gpt-5.6-sol":
-        raise CounterCompatibilityError("model_requires_code_mode")
-    if model != "gpt-5.5":
+    if model not in {"gpt-5.6-sol", "gpt-5.5"}:
         raise CounterCompatibilityError("unreviewed_model")
     return {
         "runtime_version": REVIEWED_RUNTIME_VERSION,
         "model": model,
-        "reviewed_dispatch": "direct_function",
+        "reviewed_dispatch": "direct_namespaced_function",
         "verification": "pinned_runtime_offline",
         "successful_invocation_received": False,
     }

@@ -21,7 +21,15 @@ from pydantic import ValidationError
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from workbench.manuscript_length import MAX_CHECKS, TOOL_NAME, LengthInput, measure, tool_spec
+from workbench.manuscript_length import (
+    MAX_CHECKS,
+    TOOL_NAME,
+    TOOL_NAMESPACE,
+    LengthInput,
+    measure,
+    namespaced_tool_spec,
+    tool_spec,
+)
 from workbench.models import stable_hash
 from workbench.providers.codex_diagnostics import RuntimeErrorInfo, normalize_runtime_error
 from workbench.providers.codex_local import runtime_overrides
@@ -95,7 +103,7 @@ def settings_from_environment():
     policy_text = os.environ.get("WB_RESEARCH_CODEX_ROLE_POLICY", "")
     policy = json.loads(policy_text) if policy_text else default_role_policy()
     selected = role_selection(role, policy,
-        model=os.environ.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.5"),
+        model=os.environ.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.6-sol"),
         effort=os.environ.get("WB_RESEARCH_CODEX_REASONING_EFFORT", "low"))
     return SimpleNamespace(
         worker_role=role,
@@ -540,7 +548,7 @@ class CodexResearchWorker:
         self.client = StdioCodexClient(
             profile=self.settings.codex_local_home,
             cwd=self.scratch.name,
-            overrides=runtime_overrides(self.settings),
+            overrides=runtime_overrides(self.settings, counter_namespace=True),
             cancel=self.cancel,
             server_request_handler=self.handle_length_tool_request,
         )
@@ -561,7 +569,7 @@ class CodexResearchWorker:
         config = self.request("config/read", {"includeLayers": False}, deadline=deadline).get(
             "config", {}
         )
-        for key, expected in runtime_overrides(self.settings).items():
+        for key, expected in runtime_overrides(self.settings, counter_namespace=True).items():
             value = config
             for component in key.split("."):
                 value = value.get(component) if isinstance(value, dict) else None
@@ -612,7 +620,7 @@ class CodexResearchWorker:
         params = request.get("params")
         active = getattr(self, "length_tool_active", None)
         if (request.get("method") != "item/tool/call" or not active or not isinstance(params, dict)
-                or params.get("tool") != TOOL_NAME or params.get("namespace") is not None
+                or params.get("tool") != TOOL_NAME or params.get("namespace") != TOOL_NAMESPACE
                 or params.get("threadId") != active["thread_id"]
                 or params.get("turnId") != active["turn_id"]
                 or not isinstance(params.get("callId"), str) or not 1 <= len(params["callId"]) <= 200
@@ -674,7 +682,7 @@ class CodexResearchWorker:
                     )
                     + "Return the requested structured JSON."
                 ),
-                **({"dynamicTools": [tool_spec()]} if length_tool else {}),
+                **({"dynamicTools": [namespaced_tool_spec()]} if length_tool else {}),
             },
             deadline=deadline,
         )
@@ -834,7 +842,7 @@ class CodexResearchWorker:
         if bounds is not None:
             provenance["length_tool_capability"] = capability
             provenance["length_tool_registration"] = {"registered": bool(self.thread_has_length_tool),
-                "tool": TOOL_NAME, "max_checks": MAX_CHECKS,
+                "tool": TOOL_NAME, "namespace": TOOL_NAMESPACE, "max_checks": MAX_CHECKS,
                 "input_schema_sha256": stable_hash(tool_spec()["inputSchema"])}
         # Record the real model turn even when its in-flight usage crosses the
         # allowance before a structured result can be returned.
@@ -926,7 +934,8 @@ class CodexResearchWorker:
                     item = params.get("item") or {}
                     item_type = item.get("type")
                     allowed_counter = (item_type == "dynamicToolCall" and self.length_tool_active
-                                       and item.get("tool") == TOOL_NAME and item.get("namespace") is None
+                                       and item.get("tool") == TOOL_NAME
+                                       and item.get("namespace") == TOOL_NAMESPACE
                                        and params.get("turnId") == turn_id)
                     if item_type not in ALLOWED_ITEM_TYPES and not allowed_counter:
                         raise WorkerStreamError("unsupported_item")

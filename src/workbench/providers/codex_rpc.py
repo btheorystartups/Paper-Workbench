@@ -14,7 +14,7 @@ from importlib.metadata import version
 
 from .codex_access import CodexLocalError, CodexTimeoutError
 
-RUNTIME_VERSION = "0.154.0"
+RUNTIME_VERSION = "0.160.1"
 
 
 class StdioCodexClient:

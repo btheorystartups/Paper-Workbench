@@ -6,7 +6,7 @@ param(
     [string]$ChatModel = 'gpt-5.6-sol',
     [string]$ChatReasoningEffort = 'xhigh',
     # Author/general workers. Reviewers use WB_RESEARCH_CODEX_ROLE_POLICY or the Astra defaults.
-    [string]$ResearchModel = 'gpt-5.5',
+    [string]$ResearchModel = 'gpt-5.6-sol',
     [string]$ResearchReasoningEffort = 'low'
 )
 

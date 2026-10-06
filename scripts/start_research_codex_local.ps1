@@ -29,7 +29,7 @@ $env:WB_RESEARCH_EXECUTOR_COMMAND = ConvertTo-Json -Compress @($python, $worker)
 $env:WB_RESEARCH_CODEX_HOME = $profile
 $env:WB_RESEARCH_CODEX_ACCOUNT_EMAIL = ''
 # Author/general workers; specialist roles use the Astra policy independently.
-$env:WB_RESEARCH_CODEX_MODEL = 'gpt-5.5'
+$env:WB_RESEARCH_CODEX_MODEL = 'gpt-5.6-sol'
 $env:WB_RESEARCH_CODEX_REASONING_EFFORT = 'low'
 
 Set-Location -LiteralPath $projectRoot

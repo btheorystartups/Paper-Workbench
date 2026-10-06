@@ -26,7 +26,7 @@ dependencies = [
 evaluation = ["openai==2.46.0"]
 research-semantic = ["onnxruntime==1.30.0", "tokenizers==0.23.2", "numpy>=1.21.6"]
 # Pinned local ChatGPT runtime; upgraded only after a capability/security review.
-codex-local = ["openai-codex==0.154.0", "tiktoken>=0.12,<1"]
+codex-local = ["openai-codex==0.160.1", "tiktoken>=0.12,<1"]
 dev = [
     "pytest>=8.2",
     "ruff>=0.5",

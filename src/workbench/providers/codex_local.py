@@ -33,7 +33,7 @@ DISABLED_FEATURES = (
 )
 
 
-def runtime_overrides(settings, *, restrict_reads=False):
+def runtime_overrides(settings, *, restrict_reads=False, counter_namespace=False):
     values = {f"features.{name}": False for name in DISABLED_FEATURES if name != "code_mode"}
     values.update({
         "features.code_mode.enabled": False,
@@ -51,6 +51,8 @@ def runtime_overrides(settings, *, restrict_reads=False):
         "features.skip_host_skill_discovery": True,
         "notify": [], "mcp_servers": {}, "plugins": {},
     })
+    if counter_namespace:
+        values["features.code_mode.direct_only_tool_namespaces"] = ["paper_counter"]
     if settings.codex_local_workspace_id:
         values["forced_chatgpt_workspace_id"] = settings.codex_local_workspace_id
     if restrict_reads:

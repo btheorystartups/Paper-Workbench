@@ -179,7 +179,7 @@ class ProcessResearchExecutor:
 
     def spawn(self, agent_id: str, *, deadline: float, role="research") -> AgentProcess:
         selection = role_selection(role, self.role_policy,
-            model=self.worker_config.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.5"),
+            model=self.worker_config.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.6-sol"),
             effort=self.worker_config.get("WB_RESEARCH_CODEX_REASONING_EFFORT", "low"))
         handle = AgentProcess(self.command, agent_id, {**self.worker_config, "WB_RESEARCH_CODEX_ROLE": role})
         handle.requested_model_policy = {"role": role, **selection}

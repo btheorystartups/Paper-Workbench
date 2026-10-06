@@ -322,7 +322,7 @@ def prepared_worker(client):
     return worker
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "PRIVATE_MODEL"])
+@pytest.mark.parametrize("model", ["gpt-5.6-terra", "PRIVATE_MODEL"])
 @pytest.mark.parametrize("operation", ["draft", "revise"])
 def test_incompatible_bounded_author_stops_before_account_or_model_dispatch(model, operation, monkeypatch):
     from workbench.providers.counter_compatibility import CounterCompatibilityError
@@ -608,7 +608,8 @@ class AuthorCorrectionClient(ControlledCodexClient):
 
 
 def length_request(**changes):
-    params = {"tool": worker_module.TOOL_NAME, "threadId": "parent-thread", "turnId": "plan-turn",
+    params = {"tool": worker_module.TOOL_NAME, "namespace": worker_module.TOOL_NAMESPACE,
+              "threadId": "parent-thread", "turnId": "plan-turn",
               "callId": "count-1", "arguments": {"sections": [{"id": "scope", "text": "one two"}]}}
     params.update(changes)
     return {"method": "item/tool/call", "params": params}
@@ -623,7 +624,7 @@ def counter_worker():
 
 
 @pytest.mark.parametrize("changes", [{"tool": "shell"}, {"threadId": "other"}, {"turnId": "stale"},
-    {"namespace": "other"}, {"callId": None}, {"callId": ""}])
+    {"namespace": "other"}, {"namespace": None}, {"callId": None}, {"callId": ""}])
 def test_counter_denies_other_capabilities_and_contexts(changes):
     worker = counter_worker()
     assert worker.handle_length_tool_request(length_request(**changes)) is None
@@ -677,7 +678,8 @@ def test_author_counter_receipt_binds_final_text_without_new_prose_rejection(mon
                 candidate["sections"][0]["text"] += " five"
                 client.events[1]["params"]["item"]["text"] = json.dumps(candidate)
             return {"method": "item/started", "params": {"threadId": worker.thread_id, "turnId": "plan-turn",
-                "item": {"type": "dynamicToolCall", "tool": worker_module.TOOL_NAME}}}
+                "item": {"type": "dynamicToolCall", "tool": worker_module.TOOL_NAME,
+                         "namespace": worker_module.TOOL_NAMESPACE}}}
         return original_event(deadline=deadline)
 
     client.event = event
@@ -691,11 +693,14 @@ def test_author_counter_receipt_binds_final_text_without_new_prose_rejection(mon
     assert all(c["success"] and c["call_stack"] and c["duration_seconds"] >= 0 for c in receipt["calls"])
     assert sum(method == "turn/start" for method, _ in client.calls) == 1
     thread = next(params for method, params in client.calls if method == "thread/start")
-    assert thread["dynamicTools"][0]["name"] == worker_module.TOOL_NAME
+    assert thread["dynamicTools"][0]["name"] == worker_module.TOOL_NAMESPACE
+    counter = thread["dynamicTools"][0]["tools"][0]
+    assert counter["name"] == worker_module.TOOL_NAME
     assert result["provenance"]["length_tool_registration"] == {
-        "registered": True, "tool": worker_module.TOOL_NAME, "max_checks": 4,
-        "input_schema_sha256": worker_module.stable_hash(thread["dynamicTools"][0]["inputSchema"])}
-    assert thread["dynamicTools"][0]["deferLoading"] is False
+        "registered": True, "tool": worker_module.TOOL_NAME,
+        "namespace": worker_module.TOOL_NAMESPACE, "max_checks": 4,
+        "input_schema_sha256": worker_module.stable_hash(counter["inputSchema"])}
+    assert counter["deferLoading"] is False
     assert result["provenance"]["length_tool_capability"]["successful_invocation_received"] is call_counter
     assert result["provenance"]["length_tool_capability"]["verification"] == "pinned_runtime_offline"
     assert worker.length_tool_active is None and "one two" not in json.dumps(receipt)

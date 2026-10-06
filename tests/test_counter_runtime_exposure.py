@@ -9,8 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from workbench.manuscript_length import TOOL_NAME, tool_spec
-from workbench.providers.codex_access import CodexLocalError
+from workbench.manuscript_length import TOOL_NAME, TOOL_NAMESPACE, namespaced_tool_spec
 from workbench.providers.codex_local import runtime_overrides
 from workbench.providers.codex_rpc import RUNTIME_VERSION, StdioCodexClient
 from workbench.providers.research_codex_worker import CodexResearchWorker
@@ -87,6 +86,7 @@ def runtime_probe(tmp_path):
                     "type": "function_call",
                     "call_id": "call_fake",
                     "name": TOOL_NAME,
+                    "namespace": TOOL_NAMESPACE,
                     "arguments": delta,
                 }
             response = {
@@ -123,7 +123,7 @@ def runtime_probe(tmp_path):
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    def probe(*, model, schema_on, reply="final", deferred=None, boolean_override=False):
+    def probe(*, model, schema_on, reply="final", deferred=None, direct_only=True):
         mode["reply"] = reply
         captures.clear()
         profile = tmp_path / "profile"
@@ -131,13 +131,10 @@ def runtime_probe(tmp_path):
         settings = SimpleNamespace(
             codex_local_model=model, codex_local_reasoning_effort="low", codex_local_workspace_id=None
         )
-        overrides = runtime_overrides(settings)
+        overrides = runtime_overrides(settings, counter_namespace=direct_only)
         # Only this synthetic fixture uses an unauthenticated custom loopback provider.
         # Production preflight still rejects custom endpoints and model catalogs.
         overrides.pop("forced_login_method")
-        if boolean_override:
-            overrides.pop("features.code_mode.enabled")
-            overrides["features.code_mode"] = False
         overrides.update(
             {
                 "model_provider": "offline_counter_probe",
@@ -178,11 +175,23 @@ def runtime_probe(tmp_path):
                 deadline=deadline,
             )
             client.notify("initialized")
-            spec = tool_spec()
+            config = client.request("config/read", {"includeLayers": False}, deadline=deadline)["config"]
+            for feature in ("code_mode_host", "shell_tool", "unified_exec", "js_repl",
+                            "apps", "connectors", "multi_agent"):
+                assert config["features"][feature] is False
+            assert config["features"]["code_mode"]["enabled"] is False
+            assert config["features"]["code_mode"].get("direct_only_tool_namespaces", []) == (
+                [TOOL_NAMESPACE] if direct_only else []
+            )
+            assert config["sandbox_mode"] == "read-only"
+            assert config["approval_policy"] == "never"
+            assert config["web_search"] == "disabled"
+            assert config["mcp_servers"] == {}
+            spec = namespaced_tool_spec()
             if deferred is None:
-                spec.pop("deferLoading", None)  # Exercise the legacy omitted-field descriptor too.
+                spec["tools"][0].pop("deferLoading", None)
             if deferred is not None:
-                spec["deferLoading"] = deferred
+                spec["tools"][0]["deferLoading"] = deferred
             selection = client.request(
                 "thread/start",
                 {
@@ -239,11 +248,17 @@ def runtime_probe(tmp_path):
 
 @pytest.mark.parametrize("schema_on", [False, True])
 @pytest.mark.parametrize("deferred", [None, False])
-def test_pinned_sol_exposes_counter_only_inside_unavailable_code_mode(runtime_probe, schema_on, deferred):
+def test_pinned_sol_exposes_only_namespaced_direct_counter(runtime_probe, schema_on, deferred):
     result = runtime_probe(model="gpt-5.6-sol", schema_on=schema_on, deferred=deferred)
-    inventory = flatten_inventory(result["captures"][0]["inventory"])
-    assert not any(t["name"] == TOOL_NAME for t in inventory)
-    assert any(t["name"] == "exec" and t["counter_in_description"] for t in inventory)
+    inventory = result["captures"][0]["inventory"]
+    counter = next(t for t in inventory if t["name"] == TOOL_NAMESPACE)
+    assert [tool["name"] for tool in counter["nested"]] == [TOOL_NAME]
+    assert {t["name"] for t in inventory} == {"functions", TOOL_NAMESPACE}
+    assert {t["name"] for t in flatten_inventory(inventory) if t["name"] != TOOL_NAME} == {
+        "functions", "exec", "wait", "request_user_input", TOOL_NAMESPACE,
+    }
+    assert not any(t["counter_in_description"] for t in flatten_inventory(inventory)
+                   if t["name"] == "exec")
     warnings = [e["params"].get("message", "") for e in result["events"] if e.get("method") == "warning"]
     assert any("Code Mode is unavailable because code-mode host is disabled" in w for w in warnings)
     assert bool(result["captures"][0]["format"]) is schema_on
@@ -251,8 +266,9 @@ def test_pinned_sol_exposes_counter_only_inside_unavailable_code_mode(runtime_pr
 
 
 @pytest.mark.parametrize("schema_on", [False, True])
-def test_classic_model_direct_counter_roundtrip_keeps_final_schema(runtime_probe, schema_on):
-    result = runtime_probe(model="gpt-5.5", schema_on=schema_on, reply="counter")
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.5"])
+def test_direct_counter_roundtrip_keeps_final_schema(runtime_probe, schema_on, model):
+    result = runtime_probe(model=model, schema_on=schema_on, reply="counter")
     assert len(result["captures"]) == 2
     for request in result["captures"]:
         assert any(t["name"] == TOOL_NAME for t in flatten_inventory(request["inventory"]))
@@ -261,7 +277,7 @@ def test_classic_model_direct_counter_roundtrip_keeps_final_schema(runtime_probe
         else:
             assert request["format"] is None
     assert len(result["callbacks"]) == len(result["receipts"]) == 1
-    assert result["callbacks"][0]["params"]["namespace"] is None
+    assert result["callbacks"][0]["params"]["namespace"] == TOOL_NAMESPACE
     assert result["receipts"][0]["word_count"] == 3
     output = result["captures"][1]["tool_outputs"][0]["output"]
     assert json.loads(output)["word_count"] == 3
@@ -274,13 +290,13 @@ def test_classic_model_direct_counter_roundtrip_keeps_final_schema(runtime_probe
     assert json.loads(final[-1]) == {"ok": True}
 
 
-def test_boolean_feature_override_does_not_override_sol_tool_mode(runtime_probe):
-    result = runtime_probe(model="gpt-5.6-sol", schema_on=True, boolean_override=True)
+def test_removed_namespace_override_restores_unusable_code_mode_exposure(runtime_probe):
+    result = runtime_probe(model="gpt-5.6-sol", schema_on=True, direct_only=False)
     inventory = flatten_inventory(result["captures"][0]["inventory"])
     assert not any(t["name"] == TOOL_NAME for t in inventory)
-    assert any(t["name"] == "exec" for t in inventory)
+    assert any(t["name"] == "exec" and t["counter_in_description"] for t in inventory)
 
 
-def test_explicit_deferred_counter_is_rejected_with_search_disabled(runtime_probe):
-    with pytest.raises(CodexLocalError, match="rejected the requested operation"):
-        runtime_probe(model="gpt-5.6-sol", schema_on=True, deferred=True)
+def test_explicit_deferred_counter_stays_direct_under_namespace_override(runtime_probe):
+    result = runtime_probe(model="gpt-5.6-sol", schema_on=True, deferred=True)
+    assert any(t["name"] == TOOL_NAME for t in flatten_inventory(result["captures"][0]["inventory"]))

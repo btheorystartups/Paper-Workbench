@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     research_executor_command: list[str] = Field(default_factory=list)
     research_codex_home: str = ""
     research_codex_account_email: str = ""
-    research_codex_model: str = "gpt-5.5"
+    research_codex_model: str = "gpt-5.6-sol"
     research_codex_reasoning_effort: str = "low"
     research_codex_role_policy: dict[Role, ModelSelection] = Field(default_factory=default_role_policy)
 

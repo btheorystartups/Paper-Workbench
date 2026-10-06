@@ -58,6 +58,7 @@ def main():
         parser.error("choose either finite-partition manuscript or narrow lifting acceptance")
     if args.allow_public_discovery and not args.manuscript_finite_partitions:
         parser.error("public discovery requires the finite-partition manuscript acceptance")
+    attempt_started = time.monotonic()
     output = args.output.resolve()
     profile = args.profile.resolve(strict=True)
     if not profile.is_dir():
@@ -77,7 +78,7 @@ def main():
         WB_RESEARCH_EXECUTOR_ENABLED="true",
         WB_RESEARCH_EXECUTOR_COMMAND=json.dumps([sys.executable, str(worker)]),
         WB_RESEARCH_CODEX_HOME=str(profile),
-        WB_RESEARCH_CODEX_MODEL="gpt-5.5",
+        WB_RESEARCH_CODEX_MODEL="gpt-5.6-sol",
         WB_RESEARCH_CODEX_REASONING_EFFORT="low",
     )
     sys.path.insert(0, str(root / "src"))
@@ -103,6 +104,9 @@ def main():
     if args.manuscript_finite_partitions:
         question, selected = finite_partition_inputs()
     db.upgrade_to_head()
+    remaining_seconds = int(args.time_limit_seconds - (time.monotonic() - attempt_started))
+    if remaining_seconds <= 0:
+        raise TimeoutError("acceptance setup exhausted the time budget")
     with db.session_factory()() as session:
         workspace = research.create_workspace(session, "Live acceptance")
         project = research.create_project(session, workspace.id, "Paper Writer — live acceptance")
@@ -152,7 +156,7 @@ def main():
                 executor="process",
                 allow_best_effort_tokens=True,
                 token_limit=args.token_limit,
-                time_limit_seconds=args.time_limit_seconds,
+                time_limit_seconds=remaining_seconds,
                 max_children=3 if args.manuscript_finite_partitions else args.max_children,
             ),
         )
@@ -174,7 +178,7 @@ def main():
         "completed", "limit_reached_partial", "failed_partial",
         "cancelled_partial", "interrupted_partial",
     }
-    until = time.monotonic() + args.time_limit_seconds + 30
+    until = attempt_started + args.time_limit_seconds
     state = None
     try:
         while time.monotonic() < until:

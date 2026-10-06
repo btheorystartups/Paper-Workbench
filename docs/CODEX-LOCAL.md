@@ -18,7 +18,7 @@ ChatGPT account authenticated in that instance's Codex profile.
    uv sync --extra codex-local
    ```
 
-   The lockfile pins `openai-codex` and its runtime to `0.154.0`. Upgrades require a new
+   The lockfile pins `openai-codex` and its runtime to `0.160.1`. Upgrades require a new
    capability review. The adapter uses the documented stdio JSON-RPC API with the
    SDK's bundled executable, and starts a fresh process and ephemeral thread for
    each generation. It never reads Codex credential files or OS credential stores.

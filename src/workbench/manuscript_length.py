@@ -6,6 +6,7 @@ from .models import stable_hash
 from .research_contract import ContractModel, Key, Text
 
 TOOL_NAME = "check_manuscript_length"
+TOOL_NAMESPACE = "paper_counter"
 MAX_CHECKS = 4
 
 
@@ -51,4 +52,13 @@ def tool_spec():
         "exact whitespace word counts, inclusive bounds and a content "
         "hash. No files or code execution. At most four calls per author turn.",
         "inputSchema": LengthInput.model_json_schema(),
+    }
+
+
+def namespaced_tool_spec():
+    return {
+        "type": "namespace",
+        "name": TOOL_NAMESPACE,
+        "description": "In-memory manuscript length measurement only.",
+        "tools": [tool_spec()],
     }
