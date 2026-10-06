@@ -40,7 +40,9 @@ for line in sys.stdin:
         "model": "controlled-test-only",
     }
     emit(aid, "turn_started", provenance=provenance)
-    if op == "integrate":
+    if op == "discover":
+        result = reply(op, m)
+    elif op == "integrate":
         result = {
             "summary": "Controlled handoff",
             "report_ids": list(m["reports"]),
@@ -157,7 +159,7 @@ for line in sys.stdin:
                 result["assessments"][0]["verification_ids"] = ["invented"]
     emit(
         aid,
-        {"audit": "specialist_report", "integrate": "synthesis"}.get(op, "draft"),
+        {"audit": "specialist_report", "integrate": "synthesis", "discover": "literature_plan"}.get(op, "draft"),
         result=result,
         provenance=provenance,
         usage={"tokens": (m["token_limit"] - 1

@@ -27,6 +27,17 @@ class LiteratureQuery(ContractModel):
     count: int = Field(default=5, ge=1, le=10)
 
 
+class DiscoveryQuery(LiteratureQuery):
+    count: int = Field(default=5, ge=1, le=5)
+
+
+class LiteraturePlan(ContractModel):
+    queries: list[DiscoveryQuery] = Field(max_length=4)
+    rationale: Text
+    coverage_notes: list[Text] = Field(max_length=12)
+    remaining_gaps: list[Text] = Field(max_length=20)
+
+
 class ManuscriptLength(ContractModel):
     min_words: int = Field(ge=1, le=200000, strict=True)
     max_words: int = Field(ge=1, le=200000, strict=True)
@@ -65,6 +76,9 @@ class TaskBrief(ContractModel):
     manuscript_length: ManuscriptLength | None = None
     literature_queries: list[LiteratureQuery] = Field(default_factory=list, max_length=4)
     allow_public_search: bool = False
+    agent_literature_discovery: bool = False
+    discovery_rounds: int = Field(default=2, ge=1, le=2)
+    discovery_query_limit: int = Field(default=8, ge=1, le=8)
     verification_routines: list[Literal["finite_partitions_v1"]] = Field(default_factory=list, max_length=1)
     compute_run_ids: list[Key] = Field(default_factory=list, max_length=10)
 
@@ -74,6 +88,9 @@ class TaskBrief(ContractModel):
             raise ValueError("manuscript length bounds require a manuscript task")
         if self.task_type == "manuscript" and self.max_children < 3:
             raise ValueError("manuscript production requires capacity for three specialist reviewers")
+        if self.agent_literature_discovery and (
+                not self.allow_public_search or self.task_type != "manuscript"):
+            raise ValueError("agent discovery requires a manuscript and explicit public search permission")
         if self.literature_queries and not self.allow_public_search:
             raise ValueError("public literature queries require explicit permission")
         return self
@@ -380,4 +397,5 @@ class SpecialistReport(ContractModel):
 
 
 OPERATION_MODELS = {"plan": Plan, "research": AgentReport, "integrate": Synthesis,
-                    "draft": ManuscriptDraft, "revise": ManuscriptDraft, "audit": SpecialistReport}
+                    "draft": ManuscriptDraft, "revise": ManuscriptDraft, "audit": SpecialistReport,
+                    "discover": LiteraturePlan}

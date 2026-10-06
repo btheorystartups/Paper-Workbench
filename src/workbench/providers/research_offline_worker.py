@@ -35,8 +35,9 @@ def main():
                     "no_external_writes": True,
                 },
             )
-        elif operation in {"draft", "revise", "audit"}:
-            emit(agent_id, "specialist_report" if operation == "audit" else "draft",
+        elif operation in {"draft", "revise", "audit", "discover"}:
+            emit(agent_id, "literature_plan" if operation == "discover"
+                 else "specialist_report" if operation == "audit" else "draft",
                  result=manuscript_reply(operation, message),
                  usage={"tokens": 0, "kind": "actual", "source": "offline; no model invoked"})
         elif operation == "plan":

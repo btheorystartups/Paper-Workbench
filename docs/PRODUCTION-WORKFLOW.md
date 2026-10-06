@@ -6,6 +6,26 @@ publication packaging operate on the same project and manuscript records. Older 
 worktrees and frozen diagnostics under `working/` remain historical evidence; they are
 not runtime dependencies.
 
+## Role model policy and literature discovery
+
+The local Codex executor routes proof/method and adversarial reviewers to
+`gpt-6-astra` / `xhigh`; source/citation and literature/contribution reviewers use
+`gpt-6-astra` / `high`. Author/general settings remain separate. Override roles
+with operator-owned `WB_RESEARCH_CODEX_ROLE_POLICY` JSON; unknown or missing roles
+and model/effort fallback fail closed. Runtime preflight verifies actual catalog
+availability, so configured defaults are not a claim of account entitlement or
+successful live review. Saved readiness rechecks the model policy receipts.
+
+The manuscript form offers explicit agent literature discovery alongside public
+search permission. The planner receives frozen inputs and prior receipts, then
+proposes Crossref/OpenAlex query refinements. The controller records the plan and
+executes at most eight additional queries over two rounds, with at most five
+results per query. Each planning call has at most a 10,000-token allowance within
+the original task ceiling; author, review, repair and handoff reserves are protected.
+Duplicate/oversized plans stop safely, and cancellation/deadlines apply between
+operations. Metadata stays discovery evidence; full texts still need acquisition
+and review. See [current capability status](CAPABILITY-STATUS.md).
+
 ## Normal production path
 
 The delegated-research task defaults to at most three child researchers under one

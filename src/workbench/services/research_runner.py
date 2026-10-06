@@ -16,6 +16,7 @@ from sqlalchemy import update
 from .. import db
 from ..models import ResearchAgent, ResearchTask, Turn, new_id, stable_hash, utcnow
 from ..providers.codex_diagnostics import RuntimeErrorInfo, StreamActivity, activity_summary
+from ..providers.codex_rpc import RUNTIME_VERSION
 from ..providers.counter_compatibility import COUNTER_FAILURE_REASONS
 from ..providers.research_executor import ExecutorError, ProcessResearchExecutor
 from ..providers.research_validation import normalize_validation_diagnostics
@@ -371,7 +372,8 @@ class Runner:
         self.check()
         span = research_trace.record(self, "spawn_started", agent=agent)
         try:
-            handle = self.executor.spawn(agent.id, deadline=self.research_deadline)
+            worker_role = agent.assignment.get("specialist_role", agent.assignment.get("role", "research"))
+            handle = self.executor.spawn(agent.id, deadline=self.research_deadline, role=worker_role)
         except (ValueError, OSError):
             research_trace.record(self, "spawn_failed", agent=agent, span_id=span)
             raise
@@ -390,6 +392,8 @@ class Runner:
             "assignment_hash": stable_hash(agent.assignment),
             "source_snapshot_hash": stable_hash(self.task.sources),
         }
+        if self.executor.capabilities["executor"] == "Codex app-server " + RUNTIME_VERSION:
+            agent.provenance["requested_model_policy"] = handle.requested_model_policy
         agent.state = "running"
         self.session.commit()
         research_trace.record(self, "spawn_finished", agent=agent, span_id=span,
@@ -502,6 +506,10 @@ class Runner:
                 for key in ("codex_thread_id", "codex_turn_id", "account_email", "model")
             ):
                 raise ExecutorError("live worker did not identify the started model turn")
+            requested = agent.provenance.get("requested_model_policy")
+            if requested and any(provenance.get(key) != requested[key]
+                                 for key in ("model", "reasoning_effort")):
+                raise ExecutorError("worker started a different model or reasoning effort than requested")
             agent.provenance = {**agent.provenance, "active_model_turn": provenance}
             self.session.commit()
             research_trace.record(self, "model_turn_started", agent=agent,
@@ -594,6 +602,10 @@ class Runner:
                 for key in ("codex_thread_id", "codex_turn_id", "account_email", "model")
             ):
                 raise ExecutorError("live worker did not return verifiable model-agent identity")
+            requested = agent.provenance.get("requested_model_policy")
+            if requested and any(provenance.get(key) != requested[key]
+                                 for key in ("model", "reasoning_effort")):
+                raise ExecutorError("worker returned a different model or reasoning effort than requested")
             started = agent.provenance.get("active_model_turn")
             if started and any(
                 started.get(key) != provenance.get(key)

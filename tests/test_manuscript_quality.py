@@ -43,6 +43,11 @@ WORKER = Path(__file__).parent / "fixtures" / "manuscript_protocol_worker.py"
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
+    # Protocol fixtures use stable synthetic counts, independent of optional tokenizer installation.
+    from workbench.providers import research_codex_worker
+
+    monkeypatch.setattr(research_codex_worker, "prompt_token_count",
+                        lambda text: max(1, len(text.encode("utf-8")) // 4))
     monkeypatch.setenv("WB_DATA_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setenv("WB_LLM_PROVIDER", "openai")
     monkeypatch.setenv("WB_DEPLOYMENT_MODE", "local")
@@ -1559,3 +1564,24 @@ def test_runtime_diagnostics_survive_package_without_retry_or_release(session, p
         data = b"\n".join(archive.read(name) for name in archive.namelist() if name.endswith(".json"))
     assert b"responseStreamDisconnected" in data and b"max_heartbeat_gap_seconds" in data
     assert b"PRIVATE_RUNTIME_MESSAGE" not in data
+
+
+def test_readiness_rechecks_saved_reviewer_model_policy(session, project):
+    task = run(session, project)
+    manuscript_id = task.contract["quality_manuscript_id"]
+    campaign = session.get(ResearchObject, task.synthesis["quality"]["campaign_id"])
+    record = next(r for r in campaign.body["reports"] if r["role"] == "proof_method")
+    from workbench.models import ResearchAgent
+
+    agent = session.get(ResearchAgent, record["agent_id"])
+    model = agent.provenance["specialist_report_model"]
+    agent.provenance = {**agent.provenance,
+        "requested_model_policy": {"role": "proof_method", "model": model["model"], "reasoning_effort": "high"},
+        "specialist_report_model": {**model, "reasoning_effort": "high"}}
+    session.commit()
+    assert quality.assessment(session, manuscript_id)["agent_checks_complete"]
+    agent.provenance = {**agent.provenance, "specialist_report_model": {**model, "reasoning_effort": "low"}}
+    session.commit()
+    state = quality.assessment(session, manuscript_id)
+    assert not state["agent_checks_complete"]
+    assert "specialist model or reasoning effort differs from the required role policy" in state["blockers"]

@@ -105,7 +105,8 @@ def draft_text(candidate):
 def task_requirements(task):
     return {"version": 2, **{key: task.contract.get(key) for key in (
         "question", "paper_type", "success_criteria", "manuscript_length",
-        "verification_routines", "compute_run_ids", "literature_queries", "allow_public_search")}}
+        "verification_routines", "compute_run_ids", "literature_queries", "allow_public_search",
+        "agent_literature_discovery", "discovery_rounds", "discovery_query_limit")}}
 
 
 def source_manifest(task):
@@ -500,6 +501,11 @@ def assessment(session, manuscript_id):
         ):
             blockers.append("specialist identity or original report changed")
             continue
+        requested = agent.provenance.get("requested_model_policy")
+        model_receipt = agent.provenance.get("specialist_report_model", {})
+        if requested and (requested.get("role") != record["role"] or any(
+                model_receipt.get(key) != requested.get(key) for key in ("model", "reasoning_effort"))):
+            blockers.append("specialist model or reasoning effort differs from the required role policy")
         roles.append(record["role"])
         identity = agent.provenance.get("specialist_report_model", {}).get("codex_thread_id", agent.id)
         threads.append(identity)

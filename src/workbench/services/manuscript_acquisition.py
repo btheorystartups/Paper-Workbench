@@ -8,6 +8,7 @@ from pathlib import Path
 from .. import storage
 from ..models import ComputeRun, SavedSearch, stable_hash, utcnow
 from ..providers.scholarly import CrossrefAdapter, OpenAlexAdapter
+from ..research_contract import LiteraturePlan
 from . import compute, literature, manuscript_verification, research_trace
 
 
@@ -40,7 +41,7 @@ def collect(runner, manuscript, campaign):
         }
         session.commit()
 
-    for query in task.contract.get("literature_queries", []):
+    def search(query):
         runner.check()
         if not task.contract.get("allow_public_search"):
             raise ValueError("public searches were not authorized")
@@ -61,7 +62,7 @@ def collect(runner, manuscript, campaign):
                 timeout=max(0.1, min(15, runner.research_deadline - time.monotonic()))
             )
             try:
-                works = adapter.search(query["query"], count=query["count"])
+                works = adapter.search(query["query"], count=query["count"])[:query["count"]]
                 receipt["status"] = "failed" if adapter.last_error else "completed"
                 receipt["error_class"] = adapter.last_error
                 saved = SavedSearch(
@@ -110,6 +111,10 @@ def collect(runner, manuscript, campaign):
             status=receipt["status"],
             result_count=len(receipt["results"]),
         )
+    for query in task.contract.get("literature_queries", []):
+        search({**query, "origin": "user"})
+    if task.contract.get("agent_literature_discovery"):
+        discover(runner, campaign, searches, search)
     for name in task.contract.get("verification_routines", []):
         runner.check()
         span = research_trace.record(runner, "verification_started", routine=name)
@@ -165,3 +170,61 @@ def collect(runner, manuscript, campaign):
             }
         )
     persist()
+
+
+def discover(runner, campaign, searches, search):
+    """A separately routed planner selects queries; only the controller executes them."""
+    from .manuscript_quality_runner import _revision_budget
+    from .research_runner import StopResearch
+
+    contract = runner.task.contract
+    if not contract.get("allow_public_search"):
+        raise ValueError("agent discovery public searches were not authorized")
+    remaining = contract["discovery_query_limit"]
+    seen = {(r["provider"], " ".join(r["query"].casefold().split())) for r in searches}
+    agent = runner.new_agent("discovery", {"role": "literature_discovery"})
+    handle = None
+    try:
+        handle = runner.spawn(agent)
+        for round_number in range(1, contract["discovery_rounds"] + 1):
+            runner.check()
+            # Discovery may not spend the author minimum, review wave, repair or handoff reserves.
+            budget = _revision_budget(runner)
+            reserve = budget["review_reserve"] + budget["repair_reserve"] + budget["handoff_reserve"] + 15000
+            allowance = min(10000, runner.remaining_tokens() - reserve)
+            if allowance < 2000:
+                raise StopResearch("limit_reached_partial",
+                                   "insufficient tokens for discovery and manuscript reserves")
+            payload = {
+                "contract": contract, "sources": runner.task.sources,
+                "search_receipts": deepcopy(searches), "discovery_round": round_number,
+                "remaining_query_limit": min(4, remaining),
+            }
+            allocation = runner.send(handle, agent, "discover", allowance, payload)
+            raw = runner.wait_parent(handle, agent, allocation, "literature_plan")
+            plan = LiteraturePlan.model_validate(raw).model_dump()
+            if len(plan["queries"]) > min(4, remaining):
+                raise ValueError("discovery query allowance exceeded")
+            keys = [(q["provider"], " ".join(q["query"].casefold().split())) for q in plan["queries"]]
+            if len(set(keys)) != len(keys) or any(key in seen for key in keys):
+                raise ValueError("discovery repeated a previous or duplicate query")
+            record = {"round": round_number, "plan": plan, "plan_sha256": stable_hash(plan),
+                      "input_sha256": stable_hash(payload), "agent_id": agent.id}
+            campaign.body = {**campaign.body, "discovery_plans": [
+                *campaign.body.get("discovery_plans", []), record]}
+            runner.session.commit()
+            research_trace.record(runner, "literature_plan_received", agent=agent,
+                                  round=round_number, plan_sha256=record["plan_sha256"])
+            for query in plan["queries"]:
+                search({**query, "origin": "agent", "discovery_round": round_number,
+                        "plan_sha256": record["plan_sha256"]})
+            seen.update(keys)
+            remaining -= len(keys)
+            if not keys or remaining == 0:
+                break
+        agent.state = "completed"
+        runner.session.commit()
+    finally:
+        if handle:
+            handle.close()
+            research_trace.record(runner, "worker_closed", agent=agent, pid=handle.pid)

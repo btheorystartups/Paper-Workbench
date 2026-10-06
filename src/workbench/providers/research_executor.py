@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ..config import get_settings
 from ..research_contract import Capabilities
+from .research_model_policy import role_selection
 
 MAX_MESSAGE = 2_000_000
 MAX_TRANSCRIPT = 8_000_000
@@ -153,11 +154,14 @@ class ProcessResearchExecutor:
             raise ExecutorError("research execution v1 requires a persistent local application")
         self.mode = mode
         self.allow_best_effort_tokens = allow_best_effort_tokens
+        self.role_policy = {role: (selection.model_dump() if hasattr(selection, "model_dump") else selection)
+                            for role, selection in settings.research_codex_role_policy.items()}
         self.worker_config = {
             "WB_RESEARCH_CODEX_HOME": settings.research_codex_home,
             "WB_RESEARCH_CODEX_ACCOUNT_EMAIL": settings.research_codex_account_email,
             "WB_RESEARCH_CODEX_MODEL": settings.research_codex_model,
             "WB_RESEARCH_CODEX_REASONING_EFFORT": settings.research_codex_reasoning_effort,
+            "WB_RESEARCH_CODEX_ROLE_POLICY": json.dumps(self.role_policy),
         } if mode == "process" else {}
         if mode == "offline":
             self.command = [sys.executable, str(Path(__file__).with_name("research_offline_worker.py"))]
@@ -173,8 +177,12 @@ class ProcessResearchExecutor:
         self.handles: list[AgentProcess] = []
         self.capabilities: dict = {}
 
-    def spawn(self, agent_id: str, *, deadline: float) -> AgentProcess:
-        handle = AgentProcess(self.command, agent_id, self.worker_config)
+    def spawn(self, agent_id: str, *, deadline: float, role="research") -> AgentProcess:
+        selection = role_selection(role, self.role_policy,
+            model=self.worker_config.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.5"),
+            effort=self.worker_config.get("WB_RESEARCH_CODEX_REASONING_EFFORT", "low"))
+        handle = AgentProcess(self.command, agent_id, {**self.worker_config, "WB_RESEARCH_CODEX_ROLE": role})
+        handle.requested_model_policy = {"role": role, **selection}
         self.handles.append(handle)
         handle.send("hello", {})
         until = min(deadline, time.monotonic() + 20)

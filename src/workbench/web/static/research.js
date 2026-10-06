@@ -135,7 +135,8 @@ async function tabResearch(el, pid, sub) {
       '<p>Set both bounds to enforce length. Counts all section text, including equations and references; excludes title and headings.</p>' +
       '<label>Maximum revision cycles<input name="max_revision_cycles" type="number" value="2" min="0" max="2"></label>' +
       '<label>Public literature queries (one per line, up to four; five Crossref results each)<textarea name="public_queries"></textarea></label>' +
-      '<label><input type="checkbox" name="allow_public_search"> Allow these bounded public literature searches</label>' +
+      '<label><input type="checkbox" name="allow_public_search"> Allow bounded public literature searches</label>' +
+      '<label><input type="checkbox" name="agent_literature_discovery"> Let the literature agent refine searches (two rounds; up to eight additional queries and forty results)</label>' +
       '<label><input type="checkbox" name="finite_partitions"> Run the reviewed finite-partition verification (sizes 1–5)</label>' +
       '<p>Manuscript production requires four review roles, with at most three concurrent reviewers. Drafts remain available when checks cannot finish. Human publication approval is a separate step.</p></details>');
     createForm.elements.question.closest('.field').insertAdjacentHTML('afterend',
@@ -203,6 +204,7 @@ async function tabResearch(el, pid, sub) {
         const body = Object.fromEntries(data);
         body.deliverables = data.getAll('deliverables'); body.source_ids = data.getAll('source_ids');
         body.allow_public_search = data.has('allow_public_search');
+        body.agent_literature_discovery = data.has('agent_literature_discovery');
         body.literature_queries = String(data.get('public_queries') || '').split('\n').map(s => s.trim()).filter(Boolean).map(query => ({provider: 'crossref', query, count: 5}));
         body.verification_routines = data.has('finite_partitions') ? ['finite_partitions_v1'] : [];
         delete body.public_queries; delete body.finite_partitions;

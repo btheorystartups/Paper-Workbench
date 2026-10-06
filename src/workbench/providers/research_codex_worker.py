@@ -31,6 +31,7 @@ from workbench.providers.counter_compatibility import (
     CounterCompatibilityError,
     counter_capability,
 )
+from workbench.providers.research_model_policy import default_role_policy, role_selection
 from workbench.providers.research_validation import validation_diagnostics
 from workbench.research_contract import OPERATION_MODELS, STREAM_FAILURE_CODES, ManuscriptLength
 from workbench.research_contract import AgentReport as AgentReport
@@ -90,14 +91,19 @@ def settings_from_environment():
     profile = os.environ.get("WB_RESEARCH_CODEX_HOME", "").strip()
     if not profile or not Path(profile).is_absolute() or not Path(profile).is_dir():
         raise ValueError("a dedicated absolute Codex profile is required")
+    role = os.environ.get("WB_RESEARCH_CODEX_ROLE", "research")
+    policy_text = os.environ.get("WB_RESEARCH_CODEX_ROLE_POLICY", "")
+    policy = json.loads(policy_text) if policy_text else default_role_policy()
+    selected = role_selection(role, policy,
+        model=os.environ.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.5"),
+        effort=os.environ.get("WB_RESEARCH_CODEX_REASONING_EFFORT", "low"))
     return SimpleNamespace(
+        worker_role=role,
         codex_local_home=profile,
         codex_local_account_email=os.environ.get("WB_RESEARCH_CODEX_ACCOUNT_EMAIL", "").strip(),
         codex_local_workspace_id="",
-        codex_local_model=os.environ.get("WB_RESEARCH_CODEX_MODEL", "gpt-5.5"),
-        codex_local_reasoning_effort=os.environ.get(
-            "WB_RESEARCH_CODEX_REASONING_EFFORT", "low"
-        ),
+        codex_local_model=selected["model"],
+        codex_local_reasoning_effort=selected["reasoning_effort"],
     )
 
 
@@ -144,6 +150,17 @@ def json_prompt(operation, message):
         "use bmatrix/pmatrix and aligned for matrices and derivations. Escape backslashes for JSON. "
         "Use standard base/AMS commands, not custom macros, document commands, links or external resources."
     )
+    if operation == "discover":
+        instructions += (
+            " Propose precise Crossref/OpenAlex queries for prior-art discovery. Identify alternate "
+            "terminology, foundational work, close competing claims, and gaps in the supplied results. "
+            "Use at most the remaining_query_limit and four queries, each with at most five results. "
+            "Do not repeat previous queries. The controller executes authorized searches, not you. "
+            "Only supplied search receipts establish what was actually searched. Metadata and abstracts "
+            "are discovery leads, not full-text evidence or proof of novelty. Propose targeted refinements "
+            "on subsequent rounds. Return no queries when the remaining bounded searches add no value; "
+            "record coverage limitations and unresolved gaps. Never claim exhaustive coverage."
+        )
     if operation in {"draft", "revise"}:
         instructions += (
             " Write the COMPLETE manuscript, not an outline. Use full sections with stable IDs and "
@@ -690,6 +707,14 @@ class CodexResearchWorker:
         self.stream_measurement = None
         self.call_span_id = message.get("call_span_id")
         self.stage = "input_check"
+        role = getattr(self.settings, "worker_role", "research")
+        if role == "author" and operation not in {"draft", "revise", "integrate"}:
+            raise ValueError("operation does not match the assigned research worker role")
+        if role not in {"research", "author"}:
+            if ((role == "literature_discovery" and operation != "discover")
+                    or (role != "literature_discovery"
+                        and (operation != "audit" or message.get("packet", {}).get("role") != role))):
+                raise ValueError("operation does not match the assigned research worker role")
         capability = counter_capability(self.settings.codex_local_model, RUNTIME_VERSION) if bounds else None
         allowance = message.get("token_limit")
         wall_seconds = message.get("time_limit_seconds")
@@ -744,7 +769,7 @@ class CodexResearchWorker:
                     or previous.get("evidence_sha256") != author_evidence_hash(message)):
                 raise ValueError("author revision previous candidate binding denied")
             context_policy = "fresh_author_revision"
-        if (correction or author_correction or author_revision
+        if (operation == "discover" or correction or author_correction or author_revision
                 or operation == "integrate" and "reviewed_candidate" in message
                 or bounds is not None and not getattr(self, "thread_has_length_tool", False)):
             # Fresh repair receives the original return, frozen packet and defects.
@@ -987,7 +1012,8 @@ class CodexResearchWorker:
         emit(
             agent_id,
             {"plan": "plan", "research": "report", "integrate": "synthesis",
-             "draft": "draft", "revise": "draft", "audit": "specialist_report"}[operation],
+             "draft": "draft", "revise": "draft", "audit": "specialist_report",
+             "discover": "literature_plan"}[operation],
             result=result,
             usage=usage,
             provenance={**provenance, "rpc_calls": getattr(self, "rpc_calls", [])},

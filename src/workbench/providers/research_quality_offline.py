@@ -2,6 +2,14 @@
 
 
 def reply(operation, message):
+    if operation == "discover":
+        return {
+            "queries": [{"provider": "crossref", "query": "OFFLINE discovery round "
+                         + str(message["discovery_round"]), "count": 2}],
+            "rationale": "Controlled discovery protocol only.",
+            "coverage_notes": ["Simulated search; no scientific coverage established."],
+            "remaining_gaps": ["Live search and full-text review remain required."],
+        }
     if operation in {"draft", "revise"}:
         return {
             "title": "OFFLINE manuscript protocol demonstration",

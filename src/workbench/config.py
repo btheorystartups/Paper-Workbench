@@ -12,6 +12,8 @@ from pathlib import Path
 from pydantic import Field, PositiveInt, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .providers.research_model_policy import ModelSelection, Role, default_role_policy
+
 
 def _load_dotenv() -> None:
     """Best-effort .env loader (cwd upward, 3 levels). setdefault only: real env wins."""
@@ -57,6 +59,7 @@ class Settings(BaseSettings):
     research_codex_account_email: str = ""
     research_codex_model: str = "gpt-5.5"
     research_codex_reasoning_effort: str = "low"
+    research_codex_role_policy: dict[Role, ModelSelection] = Field(default_factory=default_role_policy)
 
     # Discovery / search
     brave_rate_limit_seconds: float = 1.1

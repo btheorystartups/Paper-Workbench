@@ -30,22 +30,39 @@ manuscript acceptance run.
 The application provides Crossref/OpenAlex searches, saved searches, literature
 screening and matrices, novelty coverage notes, and bounded citation discovery.
 The manuscript acquisition stage executes authorized, task-specified literature
-queries and records their results. Novelty claims without completed, nonempty
-literature searches are blocking findings.
+queries and records their results. Opt-in agent literature discovery adds a
+separately routed Astra High planner that selects and refines queries using the
+actual previous search receipts. The controller executes them through
+Crossref/OpenAlex: at most two rounds, eight additional queries, five results per
+query, and 10,000 reserved model tokens per planning round. Discovery draws from
+the existing task budget and protects manuscript author/review/repair/handoff
+reserves. Duplicate, unsupported, oversized and unauthorized plans are rejected.
+Novelty claims without completed, nonempty searches remain blocking findings.
 
-Specialist workers review the supplied evidence packet. They do not currently
-conduct an autonomous, expanding literature search or independently retrieve all
-relevant full texts. Search results and metadata alone do not establish source
-entailment. A comprehensive prior-art investigation requires deliberate query
-coverage, source acquisition, and review; exhaustive coverage is not guaranteed.
+Search plans, coverage notes, remaining gaps, usage and search receipts are
+preserved. Public discovery requires both `allow_public_search` and
+`agent_literature_discovery`; neither grants web browsing or external write tools
+to a worker. Full texts are not automatically acquired by this workflow. Metadata
+is a discovery lead, not a source-entailment receipt or proof of novelty.
+Comprehensive prior-art investigation still requires deliberate coverage and
+full-text acquisition/review; exhaustive coverage is not guaranteed.
 
 ## Models and scientific checking
 
-The local launcher currently defaults research workers to GPT-5.5/low. A shared
-research model/effort setting applies to author and reviewer workers. The
-requested Astra High/Extra High reviewer policy and per-role model routing are
-not implemented in this configuration. Having four reviewer roles does not
-establish that those requested models were used.
+Author and ordinary research workers retain GPT-5.5/low. Manuscript specialists
+now have an operator-owned policy: Astra Extra High (`xhigh`) for proof/method and
+adversarial review; Astra High for source/citation and literature/contribution.
+The discovery planner also uses Astra High. Each process selects its role before
+runtime preflight. The model catalog and effective thread settings are verified;
+model/effort fallback is rejected at turn start, return and manuscript readiness.
+
+`WB_RESEARCH_CODEX_ROLE_POLICY` is a JSON object keyed by `proof_method`,
+`source_citation`, `literature_contribution`, `adversarial`, and
+`literature_discovery`, each with `model` and `reasoning_effort`. Missing required
+roles fail closed. Author settings remain separate. These changes have controlled
+offline verification. Read-only account/catalog preflight passed for both Astra
+High and Extra High without a model turn; live manuscript acceptance is still
+required.
 
 Proof/method and adversarial agents do perform substantive correctness checks.
 Their acceptance is an AI review result, not a proof of scientific truth.
@@ -63,10 +80,10 @@ See [OpenAI model documentation](https://learn.chatgpt.com/docs/models).
 
 ## Remaining acceptance work
 
-1. Implement and validate the requested per-role Astra review policy and its
-   compatibility with bounded author/counter execution.
-2. Run one complete live manuscript production/revision acceptance with a
-   separately authorized budget; do not repeat the already passed research run
-   merely to change the chat coordinator model.
-3. Expand agent-directed literature discovery if comprehensive prior-art search
-   is required; keep coverage and source-access limitations explicit.
+1. Run one complete live manuscript production/revision acceptance, including
+   Astra role/effort receipts and agent discovery, with a separately authorized
+   budget. Do not repeat the already passed ordinary research run.
+2. Review a replacement for the GPT-5.5 bounded author/counter before the documented
+   sign-in retirement; newer models are not implicitly counter-compatible.
+3. Acquire and review relevant full texts for comprehensive prior-art claims;
+   bounded query refinement alone does not establish exhaustive coverage.

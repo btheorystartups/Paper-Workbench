@@ -843,7 +843,8 @@ def test_stream_measurements_reset_and_preserve_content_free_terminal_snapshot(m
     for row in snapshots:
         assert row["delta_count"] == 1 and row["characters"] == 2 and row["utf8_bytes"] == 6
         assert 0 <= row["first_delta_seconds"] <= row["last_delta_seconds"] <= row["elapsed_seconds"]
-        assert row["prompt_tokens"] > 0 and row["prompt_counting_policy"] == "o200k_base"
+        assert row["prompt_tokens"] > 0
+        assert row["prompt_counting_policy"] == worker_module.prompt_token_measurement("probe")[1]
         assert (row["completed_text_characters"] > 0) is not fail
     assert "秘密" not in json.dumps(snapshots, ensure_ascii=False)
     assert "PRIVATE_FAILURE" not in json.dumps(snapshots)
@@ -1135,3 +1136,20 @@ def test_child_prompt_states_cross_reference_contract_without_fabricating_eviden
     assert "IDs must be unique within findings, citations and verification_artifacts" in prompt
     assert "citation_ids and verification_ids must reference entries in this report" in prompt
     assert "Never invent evidence or change a failed/not_run outcome" in prompt
+
+
+def test_prompt_measurement_without_optional_tokenizer_is_conservative(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def without_tokenizer(name, *args, **kwargs):
+        if name == "tiktoken":
+            raise ImportError("controlled missing optional dependency")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_tokenizer)
+    text = "Frozen evidence 秘密"
+    assert worker_module.prompt_token_measurement(text) == (
+        len(text.encode("utf-8")), "utf8-byte-upper-estimate")
+    assert worker_module.prompt_token_count(text) == len(text.encode("utf-8"))
