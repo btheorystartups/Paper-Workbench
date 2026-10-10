@@ -47,10 +47,11 @@ Terminal actual-usage receipts may exceed an individual best-effort slice only
 by the bounded terminal tolerance and only when the shared, original task ceiling
 still contains the exact charge. This is receipt grace, not new inference:
 estimated usage, hard-limit tasks, pending reservations, unbound identities and
-shared-cap overages still stop partial and retain the reservation. The worker
-stream-side emission and continuation/editorial controller changes from the saved
-clone remain pending reconciliation, so this group does not claim live recovery
-or accepted continuation behavior.
+shared-cap overages still stop partial and retain the reservation. Author length-tool
+receipts now emit a controller-bound checkpoint, but the broader clone stream-side
+raw-output emission and continuation/editorial controller changes remain pending
+reconciliation, so this group does not claim live recovery or accepted continuation
+behavior.
 
 The canonical focused integrity/literature regression has 12 passing tests. The
 saved clone's synthetic optional-PDF recovery regression passes against the

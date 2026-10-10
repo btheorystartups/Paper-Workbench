@@ -645,6 +645,9 @@ class CodexResearchWorker:
         else:
             self.length_tool_receipts.append(result)
             success = True
+            if getattr(self, "active_author_agent_id", None):
+                emit(self.active_author_agent_id, "manuscript_checkpoint",
+                     call_span_id=self.call_span_id, sections=sections, length_check=result)
         from workbench.services.research_trace import stack
 
         self.length_tool_events = [*getattr(self, "length_tool_events", []), {
@@ -702,6 +705,7 @@ class CodexResearchWorker:
         self.thread_has_length_tool = length_tool
 
     def run(self, agent_id, operation, message):
+        self.active_author_agent_id = agent_id if operation in {"draft", "revise"} else None
         self.stream_activity = None
         self.length_tool_active = None
         self.length_tool_receipts = []
