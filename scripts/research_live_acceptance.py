@@ -84,7 +84,13 @@ def main():
     sys.path.insert(0, str(root / "src"))
     from workbench import db
     from workbench.research_contract import TaskBrief
-    from workbench.services import research, research_runner, research_tasks
+    from workbench.services import research, research_results, research_runner, research_tasks
+
+    # Packaging is required for acceptance. Probe the real offline renderer before
+    # spending a model allowance, including MathJax's ignored local dependencies.
+    research_results.render_sections(
+        "Acceptance export preflight", [("Math rendering", r"Offline check: \(1+1=2\).")]
+    )
 
     pilot_path = root / "tests/fixtures/research-task-pilot-2026-09-30.zip"
     with zipfile.ZipFile(pilot_path) as pilot:

@@ -566,6 +566,8 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
         add(f"agents/{aid}/report.json", agent["report"])
         add(f"agents/{aid}/report.md", report_markdown(agent))
         add(f"agents/{aid}/checkpoints.json", agent["checkpoints"])
+        for index, output in enumerate(agent["provenance"].get("output_checkpoints", []), start=1):
+            add(f"agents/{aid}/unaccepted-output/output-{index}.txt", output["text"])
         if agent["role"] != "child":
             continue
         report = agent["report"] or (agent["checkpoints"][-1]["report"] if agent["checkpoints"] else {})
@@ -600,9 +602,17 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
     if include_results_pdf:
         from .research_results import render_results
 
-        rendered = render_results(data)
-        files["results.pdf"] = rendered.data
-        add("results-rendering.json", rendered.manifest())
+        try:
+            rendered = render_results(data)
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
+            # This optional derived view cannot erase the durable JSON/Markdown handoff.
+            # Exception messages can contain source text or private paths.
+            add("results-rendering.json", {"status": "failed", "error_class": type(exc).__name__,
+                                           "results_pdf_included": False,
+                                           "saved_evidence_retained": True})
+        else:
+            files["results.pdf"] = rendered.data
+            add("results-rendering.json", rendered.manifest())
     add(
         "package_manifest.json",
         {

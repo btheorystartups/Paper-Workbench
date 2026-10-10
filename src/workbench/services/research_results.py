@@ -67,6 +67,20 @@ def saved_report(agent: dict) -> tuple[dict, str]:
     checkpoints = agent.get("checkpoints", [])
     if checkpoints:
         return checkpoints[-1].get("report", {}), "last saved checkpoint (partial)"
+    provenance = agent.get("provenance", {})
+    retained = provenance.get("returned_outputs", [])
+    outputs = provenance.get("output_checkpoints", [])
+    if retained or outputs:
+        from ..research_contract import OPERATION_MODELS
+
+        row = retained[-1] if retained else outputs[-1]
+        try:
+            raw = row.get("result") if retained else json.loads(row["text"])
+            model = OPERATION_MODELS[row["operation"]]
+            report = model.model_validate(raw).model_dump()
+        except (ValueError, TypeError, KeyError):
+            return {}, "saved output (unaccepted; incomplete or invalid)"
+        return report, "saved output (unaccepted)"
     return {}, "no report saved"
 
 

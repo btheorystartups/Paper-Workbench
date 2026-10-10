@@ -10,7 +10,14 @@ from .. import storage
 from ..manuscript_length import measure
 from ..models import Claim, ClaimEvidence, ResearchAgent, ResearchObject, ResearchTask, stable_hash, utcnow
 from ..research_contract import ADVERSARIAL_CRITERIA, SPECIALIST_ROLES, ManuscriptDraft, SpecialistReport
-from . import authoring, evidence_basis, research, revision_review
+from . import (
+    authoring,
+    evidence_basis,
+    manuscript_integrity,
+    manuscript_literature,
+    research,
+    revision_review,
+)
 from .bibliography import bibliography_markers
 from .evaluation import Denied
 from .evidence_availability import _ambiguous_flags, _availability_rows, evidence_inventory
@@ -103,10 +110,11 @@ def draft_text(candidate):
 
 
 def task_requirements(task):
-    return {"version": 2, **{key: task.contract.get(key) for key in (
+    return {"version": 3, **{key: task.contract.get(key) for key in (
         "question", "paper_type", "success_criteria", "manuscript_length",
         "verification_routines", "compute_run_ids", "literature_queries", "allow_public_search",
-        "agent_literature_discovery", "discovery_rounds", "discovery_query_limit")}}
+        "agent_literature_discovery", "discovery_rounds", "discovery_query_limit")},
+        "required_literature_comparisons": task.contract.get("required_literature_comparisons") or []}
 
 
 def source_manifest(task):
@@ -117,8 +125,13 @@ def source_manifest(task):
 
 def requirements_match(recorded, task):
     expected = task_requirements(task)
-    if recorded.get("version") == 2:
+    if recorded.get("version") == 3:
         return recorded == expected
+    if expected["required_literature_comparisons"]:
+        return False
+    if recorded.get("version") == 2:
+        return recorded == {**{k: v for k, v in expected.items()
+                               if k != "required_literature_comparisons"}, "version": 2}
     # Pre-v2 packets bound only these two fields. Retain their historical scope.
     return recorded == {key: expected[key] for key in ("success_criteria", "manuscript_length")}
 
@@ -142,7 +155,7 @@ def validate_draft(task, campaign, raw, *, expected_response_ids=None):
         ]) from None
     sources = {s["source_id"] for s in task.sources if s.get("source_id")}
     checks = {r["id"] for r in campaign.body["verification_receipts"]}
-    issues = []
+    issues = manuscript_integrity.candidate_issues(draft)
     measured = length_check(draft, task.contract.get("manuscript_length"))
     if measured["status"] == "out_of_bounds":
         issues.append({"code": "manuscript_length", "path": "/sections",
@@ -270,6 +283,9 @@ def packet_for(task, campaign, candidate_hash, role, prior_comments):
         "admitted_original_evidence": {s["source_id"]: s["text"] for s in task.sources if s.get("source_id")},
         "source_manifest": source_manifest(task),
         "search_receipts": campaign.body["search_receipts"],
+        "literature_coverage": manuscript_literature.coverage_status(
+            task.contract, task.sources, campaign.body["search_receipts"], candidate=candidate),
+        "escaping_integrity": manuscript_integrity.report(candidate),
         "verification_receipts": campaign.body["verification_receipts"],
         "prior_comments": prior_comments,
         "earlier_packet_manifests": campaign.body["packets"],
@@ -329,6 +345,11 @@ def validate_report(raw, packet):
         corrections=corrections,
     )
     blockers = list(report["coverage_flags"])
+    comparison_issues, comparison_blockers = manuscript_literature.comparison_checks(report, packet)
+    issues.extend(comparison_issues)
+    blockers.extend(comparison_blockers)
+    if manuscript_integrity.candidate_issues(packet["candidate"]):
+        blockers.append("candidate has suspected escaping damage")
     if report["role"] == "adversarial":
         checks = report["adversarial_checks"]
         if len(checks) != len(ADVERSARIAL_CRITERIA) or {c["criterion"] for c in checks} != set(
@@ -462,6 +483,11 @@ def assessment(session, manuscript_id):
     task = session.get(ResearchTask, campaign.body["quality_task_id"])
     current = revision_review.candidate_hash(session, manuscript_id)
     sections = authoring.manuscript_sections(session, manuscript_id)
+    integrity = manuscript_integrity.report({"title": manuscript.title, "sections": [
+        {"id": section.id, "heading": section.title, "text": section.body.get("text", "")}
+        for section in sections], "claims": manuscript.body.get("quality_claims", [])})
+    if integrity["issues"]:
+        blockers.append("candidate has suspected escaping damage")
     measured = length_check({"sections": [{"text": section.body.get("text", "")} for section in sections]},
                             task.contract.get("manuscript_length") if task else None)
     if measured["status"] == "out_of_bounds":
@@ -519,7 +545,9 @@ def assessment(session, manuscript_id):
                 packet["candidate"] != campaign.body["drafts"][-1]["candidate"]
                 or ("task_requirements" in packet
                     and not requirements_match(packet["task_requirements"], task))
-                or (task.contract.get("manuscript_length") and "task_requirements" not in packet)
+                or ((task.contract.get("manuscript_length")
+                     or task.contract.get("required_literature_comparisons"))
+                    and "task_requirements" not in packet)
                 or ("length_check" in packet and packet["length_check"] != measured)
                 or packet.get("task_specification") != task.contract.get("instructions", "")
                 or packet["source_manifest"] != source_manifest(task)
@@ -586,6 +614,11 @@ def assessment(session, manuscript_id):
         "candidate_sha256": current,
         "length_check": measured,
         "task_requirements": task_requirements(task) if task else None,
+        "escaping_integrity": integrity,
+        "literature_coverage": manuscript_literature.coverage_status(
+            task.contract, task.sources, campaign.body["search_receipts"],
+            candidate=campaign.body["drafts"][-1]["candidate"] if campaign.body["drafts"] else None,
+            reports=campaign.body["reports"], candidate_sha256=current) if task else None,
         "release_review_flags": release_flags,
         "blockers": list(dict.fromkeys(blockers)),
     }

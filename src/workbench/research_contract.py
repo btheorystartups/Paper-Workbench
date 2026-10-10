@@ -77,6 +77,11 @@ class TaskBrief(ContractModel):
     literature_queries: list[LiteratureQuery] = Field(default_factory=list, max_length=4)
     allow_public_search: bool = False
     agent_literature_discovery: bool = False
+    required_literature_comparisons: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+    ] = Field(default_factory=list, max_length=12, description=
+        "Explicit manuscript comparison obligations, independent of novelty and search permission. "
+        "Existing frozen primary passages may suffice; this does not authorize search.")
     discovery_rounds: int = Field(default=2, ge=1, le=2)
     discovery_query_limit: int = Field(default=8, ge=1, le=8)
     verification_routines: list[Literal["finite_partitions_v1"]] = Field(default_factory=list, max_length=1)
@@ -84,6 +89,10 @@ class TaskBrief(ContractModel):
 
     @model_validator(mode="after")
     def production_limits(self):
+        if self.required_literature_comparisons and self.task_type != "manuscript":
+            raise ValueError("required literature comparisons require a manuscript task")
+        if len(set(self.required_literature_comparisons)) != len(self.required_literature_comparisons):
+            raise ValueError("required literature comparisons must be unique")
         if self.manuscript_length is not None and self.task_type != "manuscript":
             raise ValueError("manuscript length bounds require a manuscript task")
         if self.task_type == "manuscript" and self.max_children < 3:
@@ -331,6 +340,15 @@ class ClaimAssessment(ContractModel):
     verification_ids: list[Key] = Field(max_length=20)
 
 
+class LiteratureComparisonAssessment(ContractModel):
+    requirement: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+    status: Literal["supported_within_scope", "unresolved"]
+    rationale: Text = Field(description=
+        "Compare hypotheses, target, timing, scope and conclusions; distinguish inherited results, "
+        "standard consequences, synthesis and unresolved priority. A quotation alone is not entailment.")
+    passages: list[PassageEvidence] = Field(max_length=8)
+
+
 class QualityObjection(ContractModel):
     id: Key
     objection: Text
@@ -391,10 +409,10 @@ class SpecialistReport(ContractModel):
     coverage_flags: list[Text] = Field(max_length=20)
     adversarial_checks: list[AdversarialCheck] = Field(default_factory=list, max_length=5)
     contribution_comparison: Text
+    literature_comparisons: list[LiteratureComparisonAssessment] = Field(default_factory=list, max_length=12)
     summary: Text
     evidence_assertions: list[AvailabilityAssertion] = Field(default_factory=list, max_length=50)
     historical_corrections: list[HistoricalCorrection] = Field(default_factory=list, max_length=50)
-
 
 OPERATION_MODELS = {"plan": Plan, "research": AgentReport, "integrate": Synthesis,
                     "draft": ManuscriptDraft, "revise": ManuscriptDraft, "audit": SpecialistReport,

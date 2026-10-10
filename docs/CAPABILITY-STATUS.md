@@ -1,4 +1,4 @@
-# Capability status — 2026-10-06
+# Capability status — 2026-10-11
 
 Paper-Workbench runs as a local web application on Windows. The local Codex
 provider communicates with Codex app-server using ChatGPT account sign-in.
@@ -21,9 +21,11 @@ source/citation, literature/contribution, and adversarial review. Review receipt
 bind the candidate hash and distinct reviewer threads. The adversarial reviewer
 must formulate challenges with acceptance criteria; unresolved blocking
 objections prevent acceptance. These checks are implemented and covered by
-controlled tests. Historical live manuscript evidence is recorded in the audit
-directory; the latest accumulated implementation still needs a complete live
-manuscript acceptance run.
+controlled tests. The October 6 Sol acceptance exercised the author counter,
+four distinct Astra reviewers, bounded discovery and finite verification. Review
+objections and insufficient revision capacity stopped it before revision and
+handoff; it did not establish release eligibility. See the
+[live acceptance audit](audit/2026-10-06-sol-live-acceptance.md).
 
 ## Literature coverage
 
@@ -49,7 +51,7 @@ full-text acquisition/review; exhaustive coverage is not guaranteed.
 
 ## Models and scientific checking
 
-Author and ordinary research workers retain GPT-5.5/low. Manuscript specialists
+Author and ordinary research workers default to GPT-5.6-Sol/low. Manuscript specialists
 now have an operator-owned policy: Astra Extra High (`xhigh`) for proof/method and
 adversarial review; Astra High for source/citation and literature/contribution.
 The discovery planner also uses Astra High. Each process selects its role before
@@ -59,10 +61,9 @@ model/effort fallback is rejected at turn start, return and manuscript readiness
 `WB_RESEARCH_CODEX_ROLE_POLICY` is a JSON object keyed by `proof_method`,
 `source_citation`, `literature_contribution`, `adversarial`, and
 `literature_discovery`, each with `model` and `reasoning_effort`. Missing required
-roles fail closed. Author settings remain separate. These changes have controlled
-offline verification. Read-only account/catalog preflight passed for both Astra
-High and Extra High without a model turn; live manuscript acceptance is still
-required.
+roles fail closed. Author settings remain separate. The saved live acceptance
+records the authenticated Sol/low author and all four Astra role/effort selections;
+the complete production/revision cycle still needs acceptance.
 
 Proof/method and adversarial agents do perform substantive correctness checks.
 Their acceptance is an AI review result, not a proof of scientific truth.
@@ -71,19 +72,25 @@ what can be accepted, but cannot independently establish every scientific claim.
 Formal proofs, reproducible computations, independent experiments, and human
 expert review remain necessary where the claim requires them.
 
-The restricted manuscript length counter currently admits only the tested
-GPT-5.5/runtime combination. Selecting another model is not sufficient to
-establish its counter compatibility. Review replacement compatibility before
-another complete live manuscript test. OpenAI documents GPT-5.5 retirement from
-ChatGPT, Work, and Codex sign-in on October 14, 2026; API availability is separate.
-See [OpenAI model documentation](https://learn.chatgpt.com/docs/models).
+The restricted manuscript length counter uses the pinned 0.160.1 runtime's
+direct `paper_counter` namespace. Offline tests cover Sol and GPT-5.5 without
+enabling the Code Mode host, shell, browsing or other worker tools. The saved
+Sol acceptance includes two successful counter calls and an exact final-text
+receipt match. A compatibility record alone does not establish live compliance
+or scientific clearance. See the
+[counter transport audit](audit/2026-10-06-sol-counter-transport.md).
 
 ## Remaining acceptance work
 
-1. Run one complete live manuscript production/revision acceptance, including
-   Astra role/effort receipts and agent discovery, with a separately authorized
-   budget. Do not repeat the already passed ordinary research run.
-2. Review a replacement for the GPT-5.5 bounded author/counter before the documented
-   sign-in retirement; newer models are not implicitly counter-compatible.
+1. Continue reconciling the remaining continuation, evidence-package and
+   editorial-closure controller work in the saved acceptance clone before
+   selecting a new live acceptance target. The canonical checkout now has the
+   integrity/literature guards and a bounded controller-side checkpoint/terminal
+   receipt preservation group, but it does not yet claim the clone's full
+   recovery or closure workflow. Preserve both dirty checkouts and historical
+   artifacts.
+2. Complete manuscript production/revision acceptance with a separately
+   authorized budget. The October 6 attempt consumed its one-run allowance;
+   its counter and specialist calls passed, but scientific review did not.
 3. Acquire and review relevant full texts for comprehensive prior-art claims;
    bounded query refinement alone does not establish exhaustive coverage.

@@ -246,6 +246,13 @@ whether a receipt matches the final text. Compatibility review is not live model
 compliance or scientific clearance. Unknown usage retains conservative reservation
 charging. Word-count bounds, repair limits and release blockers are unchanged.
 
+The live acceptance launcher first renders a synthetic math PDF using the real
+offline export path. Missing Node.js, MathJax or PDF-renderer dependencies stop
+setup before database initialization or model dispatch. Setup time remains part
+of the same attempt deadline. The saved October 6 Sol run verified the counter
+and four specialist calls, but stopped before revision/handoff with unresolved
+scientific objections; see `docs/audit/2026-10-06-sol-live-acceptance.md`.
+
 Before the first specialist dispatch, the campaign records a conditional capacity
 plan for the first review plus one scientific revision, all four re-reviews, format
 repair pools and handoff. It includes known historical-inventory growth without

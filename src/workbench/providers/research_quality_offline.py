@@ -1,6 +1,5 @@
 """Explicit transport fixtures for manuscript operations; never scientific evidence."""
 
-
 def reply(operation, message):
     if operation == "discover":
         return {
@@ -68,6 +67,11 @@ def reply(operation, message):
             for c in packet["prior_comments"]
         ],
         "contribution_comparison": "Offline demonstration; no scientific contribution.",
+        "literature_comparisons": [
+            {"requirement": item, "status": "unresolved", "passages": [],
+             "rationale": "Offline transport fixture; primary comparison not performed."}
+            for item in packet.get("task_requirements", {}).get("required_literature_comparisons", [])
+        ] if packet["role"] == "literature_contribution" else [],
         "summary": "OFFLINE simulation: no specialist model review performed.",
         "evidence_assertions": [],
         "historical_corrections": [],
