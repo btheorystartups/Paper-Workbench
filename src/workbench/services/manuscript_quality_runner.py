@@ -5,17 +5,37 @@ import time
 from types import SimpleNamespace
 
 from ..models import ResearchObject, stable_hash
-from ..research_contract import MANUSCRIPT_HANDOFF_TOKEN_RESERVE, SPECIALIST_ROLES, Synthesis
+from ..providers.research_executor import ExecutorError
+from ..research_contract import (
+    MANUSCRIPT_HANDOFF_TOKEN_RESERVE,
+    MAX_REVISION_COMMENTS,
+    SPECIALIST_ROLES,
+    Synthesis,
+)
 from . import manuscript_acquisition, research_trace, revision_review
 from . import manuscript_quality as quality
+from .research_recovery import (
+    ReplayHandle,
+    normalization_authority,
+    normalize_review_report,
+    retained_reviews,
+)
 from .research_runner import StopResearch, allocation_charge
 
 FINAL_HANDOFF_RESERVE = MANUSCRIPT_HANDOFF_TOKEN_RESERVE
 
 
+def _historical(runner, field):
+    return [item for run in getattr(runner.task, "ledger", {}).get("previous_runs", [])
+            for item in run["ledger"].get(field, [])]
+
+
 def _cycle_timing(runner):
-    calls = research_trace.summary(getattr(runner.task, "ledger", {}).get("call_trace", []))["calls"]
-    kinds = {a.get("span_id"): a.get("operation_kind") for a in runner.allocations}
+    events = [*_historical(runner, "call_trace"),
+              *getattr(runner.task, "ledger", {}).get("call_trace", [])]
+    calls = research_trace.summary(events)["calls"]
+    kinds = {a.get("span_id"): a.get("operation_kind")
+             for a in [*_historical(runner, "allocations"), *runner.allocations]}
     durations, author, author_repairs, report_repairs = {}, None, [], []
     for call in calls:
         if call["status"] != "return":
@@ -40,7 +60,6 @@ def _cycle_timing(runner):
     cycle = author + review if author is not None and review is not None else None
     # Dispatch-to-return includes worker RPC setup. New reviewer process startup
     # happens before dispatch; budget four serial launches using observed spans.
-    events = getattr(runner.task, "ledger", {}).get("call_trace", [])
     starts = {e["span_id"]: e["elapsed_seconds"] for e in events if e["event"] == "spawn_started"}
     spawns = [max(0, e["elapsed_seconds"] - starts[e["span_id"]]) for e in events
               if e["event"] == "spawn_finished" and e["span_id"] in starts]
@@ -135,6 +154,8 @@ def _revision_budget(runner, campaign=None):
     input_tokens = prompt_token_count(json.dumps(getattr(runner.task, "sources", []), default=str))
     repair_input_tokens = input_tokens
     author_input_tokens = 0
+    author_payload = {}
+    role_inputs = dict.fromkeys(SPECIALIST_ROLES, input_tokens)
     if campaign and campaign.body.get("drafts"):
         digest = campaign.body["drafts"][-1]["candidate_sha256"]
         prompts, repair_prompts = [], []
@@ -142,6 +163,7 @@ def _revision_budget(runner, campaign=None):
             packet = quality.packet_for(
                 runner.task, campaign, digest, role, _prior(runner.session, campaign, role))
             prompts.append(json_prompt("audit", {"packet": packet}))
+            role_inputs[role] = prompt_token_count(prompts[-1])
             for agent in runner.agents:
                 if agent.assignment.get("specialist_role") != role:
                     continue
@@ -156,17 +178,27 @@ def _revision_budget(runner, campaign=None):
                     "report_corrections": issues}))
         input_tokens = max(map(prompt_token_count, prompts))
         repair_input_tokens = max([input_tokens, *map(prompt_token_count, repair_prompts)])
-        author_input_tokens = prompt_token_count(json_prompt(
-            "revise", _author_payload(runner, campaign, revision=True)))
-    floor = max(20000, input_tokens + 6000)
+        author_payload = _author_payload(runner, campaign, revision=True)
+        author_input_tokens = prompt_token_count(json_prompt("revise", author_payload))
+    length = runner.task.contract.get("manuscript_length") or {}
+    declared_max_words = length.get("max_words", 0)
+    review_output_headroom = max(6000, declared_max_words + 4000)
     repair_reserve = max(20000, repair_input_tokens + 6000)
-    review_usage = dict.fromkeys(SPECIALIST_ROLES, floor)
+    review_usage = {role: max(25000, (role_inputs[role] + review_output_headroom) * 5 // 4)
+                    for role in SPECIALIST_ROLES}
     observed_reviews = {}
     author_usage = 0
+    revision_usage = 0
+    recovery_author_usage = 0
     seen_audits = set()
     roles = {a.id: a.assignment.get("specialist_role") for a in runner.agents}
-    for allocation in runner.allocations:
-        if not allocation.get("final_actual"):
+    prompt_counts = {s["call_span_id"]: s["prompt_tokens"] for a in runner.agents
+                     for s in getattr(a, "provenance", {}).get("codex_streams", [])}
+    for run in getattr(runner.task, "ledger", {}).get("previous_runs", []):
+        prompt_counts.update({s["call_span_id"]: s["prompt_tokens"] for a in run.get("agents", [])
+                              for s in a.get("provenance", {}).get("codex_streams", [])})
+    for allocation in [*_historical(runner, "allocations"), *runner.allocations]:
+        if not allocation.get("final_actual") and allocation.get("usage_kind") != "actual":
             continue
         observed = allocation.get("actual_tokens") or 0
         legacy_repair = (allocation["phase"] == "audit"
@@ -179,20 +211,46 @@ def _revision_budget(runner, campaign=None):
             # charged but cannot forecast a future fresh correction or review.
             continue
         if allocation.get("operation_kind") in {"report_correction", "draft_correction"}:
-            repair_reserve = max(repair_reserve, (observed * 5 + 3) // 4)
+            if (allocation.get("operation_kind") == "report_correction"
+                    or not author_payload.get("section_recovery")):
+                repair_reserve = max(repair_reserve, (observed * 5 + 3) // 4)
+            if allocation["operation_kind"] == "draft_correction":
+                recovery_author_usage = max(recovery_author_usage, (observed * 5 + 3) // 4)
             continue
         if allocation["phase"] == "audit" and roles.get(allocation["agent_id"]) in review_usage:
             role = roles[allocation["agent_id"]]
-            observed_reviews[role] = max(observed_reviews.get(role, 0), (observed * 5 + 3) // 4)
+            supplied = allocation.get("prompt_tokens", prompt_counts.get(allocation.get("span_id")))
+            if supplied is None and campaign:
+                old_packet = next((r["packet"] for r in campaign.body.get("reports", [])
+                                   if r["agent_id"] == allocation["agent_id"]), None)
+                if old_packet:
+                    old_input = prompt_token_count(json_prompt("audit", {"packet": old_packet}))
+                    observed += max(0, role_inputs[role] - old_input)
+            forecast = ((role_inputs[role] + max(review_output_headroom, observed - supplied)) * 5 // 4
+                        if supplied is not None else (observed * 5 + 3) // 4)
+            observed_reviews[role] = max(observed_reviews.get(role, 0), forecast,
+                                         25000 if observed >= 10000 else 0)
         elif allocation["phase"] in {"draft", "revise"}:
             author_usage = max(author_usage, (observed * 5 + 3) // 4)
-    review_usage.update({role: max(input_tokens + 6000, amount)
+            if allocation["phase"] == "revise":
+                revision_usage = max(revision_usage, (observed * 5 + 3) // 4)
+    review_usage.update({role: max((role_inputs[role] + review_output_headroom) * 5 // 4, amount)
                          for role, amount in observed_reviews.items()})
     review_reserve = sum(review_usage.values())
     remaining = runner.remaining_tokens()
-    minimum_author = max(12000, author_usage, author_input_tokens + 6000)
+    minimum_author = (max(20000, (author_input_tokens + 12000) * 5 // 4)
+                      if author_payload.get("section_recovery") else
+                      max(12000, recovery_author_usage if getattr(runner, "recoverable_author_return", None)
+                          else author_usage, author_input_tokens + 6000,
+                          2 * author_usage if campaign and campaign.body.get("rounds")
+                          and not revision_usage else 12000))
+    if (campaign and campaign.body.get("drafts")
+            and campaign.body["drafts"][-1].get("local_revision")
+            and runner.task.ledger.get("continuation", {}).get("max_report_corrections") == 0):
+        repair_reserve = 0  # Explicitly disabled calls require no reservation.
     required = review_reserve + FINAL_HANDOFF_RESERVE + repair_reserve + minimum_author
-    author_grant = max(0, min(limit // 4,
+    # Fund the author from capacity left after protecting the complete review cycle.
+    author_grant = min(minimum_author, max(0,
         remaining - review_reserve - FINAL_HANDOFF_RESERVE - repair_reserve))
     return {
         "candidate_sha256": campaign.body["drafts"][-1]["candidate_sha256"]
@@ -207,16 +265,18 @@ def _revision_budget(runner, campaign=None):
         "input_token_estimate": input_tokens,
         "repair_input_token_estimate": repair_input_tokens,
         "author_input_token_estimate": author_input_tokens,
+        "review_output_headroom": review_output_headroom,
         "minimum_author_grant": minimum_author,
         "author_grant": author_grant,
+        "unallocated_contingency": max(0, remaining - author_grant - review_reserve
+                                       - FINAL_HANDOFF_RESERVE - repair_reserve),
         "required_remaining_tokens": required,
         "shortfall_tokens": max(0, required - remaining),
-        "author_slice_shortfall_tokens": max(0, minimum_author - limit // 4),
-        "minimum_total_token_limit": max(limit - remaining + required, 4 * minimum_author),
-        "capacity_status": "funded" if author_grant >= minimum_author else (
-            "insufficient_tokens" if remaining < required else "author_slice_below_minimum"),
+        "author_slice_shortfall_tokens": 0,
+        "minimum_total_token_limit": limit - remaining + required,
+        "capacity_status": "funded" if author_grant >= minimum_author else "insufficient_tokens",
         "timing": _cycle_timing(runner),
-        "policy": "fresh-operation-usage-with-25-percent-margin",
+        "policy": "operation-input-and-observed-overhead-v2",
     }
 
 
@@ -250,10 +310,8 @@ def _initial_capacity_plan(runner, campaign):
             "additional_cycles_not_forecast": max(0, runner.task.contract["max_revision_cycles"] - revisions),
             "required_without_format_repairs": base, "required_remaining_tokens": required,
             "shortfall_tokens": max(0, required - remaining),
-            "minimum_total_token_limit": max(runner.task.contract["token_limit"] - remaining + required,
-                                             4 * future["minimum_author_grant"] if revisions else 0),
-            "capacity_status": "estimated_funded" if remaining >= required and (
-                not revisions or future["author_slice_shortfall_tokens"] == 0) else "capacity_risk",
+        "minimum_total_token_limit": runner.task.contract["token_limit"] - remaining + required,
+        "capacity_status": "estimated_funded" if remaining >= required else "capacity_risk",
             "policy": "conditional-one-revision-with-fresh-context",
             "unknowns": ["future candidate size", "reviewer objections and responses",
                          "model overhead and reasoning", "actual usage", "wall time"]}
@@ -285,7 +343,7 @@ def _prior(session, campaign, role=None):
 def _author_payload(runner, campaign, *, revision=False):
     prior = _prior(runner.session, campaign) if revision else []
     previous = campaign.body["drafts"][-1]["candidate"] if revision else None
-    return {
+    payload = {
         "contract": runner.task.contract,
         "sources": [
             {k: v for k, v in s.items() if k not in {"artifact", "extracted_artifact"}}
@@ -299,18 +357,99 @@ def _author_payload(runner, campaign, *, revision=False):
         "previous_candidate": previous,
         "previous_candidate_sha256": stable_hash(previous) if previous else None,
     }
+    if revision and getattr(runner, "author_checkpoint", None):
+        from ..providers.research_codex_worker import author_evidence_hash
+
+        payload["author_checkpoint"] = {
+            "checkpoint_sha256": runner.author_checkpoint,
+            "draft_sha256": stable_hash(previous),
+            "evidence_sha256": author_evidence_hash(payload),
+        }
+        original = getattr(runner, "recoverable_author_return", None)
+        if original:
+            from ..research_contract import MAX_MANUSCRIPT_CLAIMS
+
+            raw = original["result"]
+            identifiers = sorted({claim["id"] for claim in raw["claims"]} | {
+                identifier for section in raw["sections"] for identifier in section["claim_ids"]})
+            if len(identifiers) > MAX_MANUSCRIPT_CLAIMS:
+                raise StopResearch("failed_partial", "retained claim inventory exceeds recovery capacity")
+            measured = quality.length_check(raw, runner.task.contract.get("manuscript_length"))
+            payload.update(
+                original_draft=raw, original_draft_sha256=original["result_sha256"],
+                recovery_claim_ids=identifiers,
+                draft_corrections=[
+                    {"code": "claim_inventory", "required_claim_ids": identifiers,
+                     "message": "Declare every required claim ID; add the missing source-grounded inventory "
+                                "entries. Keep all section IDs and all required reviewer response IDs."},
+                    {"code": "manuscript_length", **measured,
+                     "message": "Extend the retained analysis with source-grounded substance to the "
+                                "declared word range with a margin above its lower edge. "
+                                "Check ALL final sections together; minimize repeated "
+                                "length-tool calls because each resends context."},
+                ],
+                author_return_checkpoint={
+                    "checkpoint_sha256": runner.author_checkpoint,
+                    "draft_sha256": original["result_sha256"],
+                    "evidence_sha256": author_evidence_hash(payload),
+                },
+                length_check_limit=1,
+            )
+            payload["draft_corrections"].extend(quality.manuscript_integrity.candidate_issues(raw))
+            old_sections = {section["id"]: section for section in previous["sections"]}
+            new_sections = {section["id"]: section for section in raw["sections"]}
+            missing = set(old_sections) - set(new_sections)
+            references = [s for s in new_sections.values() if s["heading"].strip().lower() == "references"]
+            missing_references = [s for s in old_sections.values()
+                                  if s["id"] in missing and s["heading"].strip().lower() == "references"]
+            bounds = runner.task.contract.get("manuscript_length") or {}
+            minimum = max(1000, bounds.get("min_words", 0) - measured["word_count"])
+            maximum = min(1300, bounds.get("max_words", 0) - measured["word_count"])
+            if (len(missing) == len(missing_references) == len(references) == 1
+                    and references[0]["id"] in old_sections
+                    and old_sections[references[0]["id"]]["heading"].strip().lower() != "references"
+                    and set(identifiers) == {claim["id"] for claim in raw["claims"]}
+                    and minimum <= maximum and len(new_sections) < 24):
+                payload["section_recovery"] = {
+                    "discussion_id": references[0]["id"], "reference_id": missing_references[0]["id"],
+                    "discussion_heading": old_sections[references[0]["id"]]["heading"],
+                    "base_sha256": original["result_sha256"], "min_words": minimum, "max_words": maximum,
+                }
+                parent = next(a for a in runner.agents if a.role == "parent")
+                invalid = next((r for r in reversed(parent.provenance.get("invalid_returns", []))
+                                if r.get("base_sha256") == original["result_sha256"]
+                                and r.get("identity_verified")), None)
+                if invalid:
+                    payload["prior_section_return"] = invalid["result"]
+    return payload
 
 
-def _author(runner, parent, handle, manuscript, campaign, allowance, *, revision=False):
+def _author(
+    runner, parent, handle, manuscript, campaign, allowance, *, revision=False,
+    protected_after_author=None,
+):
     if allowance < 1000:
         raise StopResearch("limit_reached_partial", "final specialist review reservation preserved")
     operation = "revise" if revision else "draft"
     payload = _author_payload(runner, campaign, revision=revision)
-    prior = payload["prior_comments"]
-    reserved_after_author = runner.remaining_tokens() - allowance
-    for attempt in range(2):
+    if protected_after_author is None:
+        protected_after_author = runner.remaining_tokens() - allowance
+    protected_after_author = max(0, protected_after_author)
+    initial_allowance = allowance
+    for attempt in range(1 if getattr(runner, "recoverable_author_return", None) else 0, 2):
         runner.check()
-        allowance = runner.remaining_tokens() - reserved_after_author
+        available = runner.remaining_tokens() - protected_after_author
+        allowance = min(initial_allowance, available)
+        research_trace.record(
+            runner,
+            "author_budget_planned",
+            agent=parent,
+            operation=operation,
+            attempt=attempt,
+            remaining_tokens=runner.remaining_tokens(),
+            protected_after_author=protected_after_author,
+            allowance=allowance,
+        )
         if allowance < 1000:
             raise StopResearch("limit_reached_partial", "draft correction exceeds author allowance")
         if revision or attempt:
@@ -328,6 +467,13 @@ def _author(runner, parent, handle, manuscript, campaign, allowance, *, revision
                 "draft_sha256": stable_hash(raw), "draft": raw,
             }]}
         try:
+            if payload.get("recovery_claim_ids") and {
+                claim.get("id") for claim in raw.get("claims", [])
+            } != set(payload["recovery_claim_ids"]):
+                raise quality.DraftValidationError([{
+                    "code": "recovery_inventory", "path": "/claims",
+                    "message": "The repaired inventory must declare every retained required claim ID.",
+                }])
             draft, digest = quality.apply_draft(
                 runner.session, runner.task, manuscript, campaign, raw, parent.id,
                 expected_response_ids=payload["expected_response_ids"])
@@ -348,9 +494,23 @@ def _author(runner, parent, handle, manuscript, campaign, allowance, *, revision
                        "original_draft": raw, "original_draft_sha256": stable_hash(raw)}
         else:
             break
-    responses = {r["comment_id"]: r for r in draft["responses"]}
-    for comment in prior:
-        response = responses[comment["id"]]
+    _restore_responses(runner, parent, campaign, draft, digest)
+    runner.author_checkpoint = None
+    runner.recoverable_author_return = None
+    return digest
+
+
+def _restore_responses(runner, parent, campaign, draft, digest):
+    """Finish the accepted-draft checkpoint if a crash preceded its response events."""
+    comments = {c["id"]: c for c in _prior(runner.session, campaign)}
+    for response in draft["responses"]:
+        comment = comments[response["comment_id"]]
+        recorded = comment.get("response")
+        if recorded and all(recorded.get(key) == value for key, value in {
+            "author": parent.id, "response": response["response"],
+            "changes": response["changes"], "candidate_hash": digest,
+        }.items()):
+            continue
         revision_review.respond(
             runner.session,
             comment["round_id"],
@@ -360,38 +520,88 @@ def _author(runner, parent, handle, manuscript, campaign, allowance, *, revision
             changes=response["changes"],
         )
     runner.session.commit()
-    return digest
+
+
+def _report_correction_payload(child, packet, issues):
+    original = child.provenance["report_attempts"][-1]
+    return {"packet": packet, "report_corrections": issues,
+            "original_report": original["report"],
+            "original_report_sha256": original["report_sha256"]}
+
+
+def _correction_grants(corrections, available, target):
+    from ..providers.research_codex_worker import json_prompt, prompt_token_count
+
+    minimums = []
+    for child, _handle, packet, issues in corrections:
+        payload = _report_correction_payload(child, packet, issues)
+        input_tokens = prompt_token_count(json_prompt("audit", payload))
+        output = prompt_token_count(json.dumps(payload["original_report"], ensure_ascii=False))
+        # Repairs return the same report shape. Protect measured output plus a
+        # 25% margin, rather than applying a large uniform floor to tiny reports.
+        minimums.append(input_tokens + max(1000, (output * 5 + 3) // 4) + 400)
+    required = sum(minimums)
+    if required > available:
+        raise StopResearch("limit_reached_partial",
+                           f"report correction capacity requires {required} tokens; "
+                           f"{available} available; retained reports were not re-dispatched")
+    pool = max(required, min(target, available))
+    extra, remainder = divmod(pool - required, len(minimums))
+    return [minimum + extra + (index < remainder) for index, minimum in enumerate(minimums)]
 
 
 def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
     pending, results = [], []
+    # Accepted reports are committed individually, so interrupted waves can fill only missing roles.
+    saved = [r for r in campaign.body["reports"]
+             if r["candidate_sha256"] == digest and r["iteration"] == iteration]
+    for record in saved:
+        child = next(a for a in runner.agents if a.id == record["agent_id"])
+        report, blockers, _flags = quality.validate_report(child.report, record["packet"])
+        results.append((child, report, blockers))
+    accepted_roles = {r["role"] for r in saved}
+    pending.extend(retained_reviews(runner, campaign, digest, iteration, accepted_roles))
+    remaining_roles = [role for role in SPECIALIST_ROLES if role not in accepted_roles]
+    approved = getattr(runner.task, "ledger", {}).get("continuation", {}).get("normalization_approvals", {})
+    available_sources = {stable_hash(handle.event["result"])
+                         for _child, handle, _allocation, _packet in pending
+                         if isinstance(handle, ReplayHandle)} | {
+        row["normalization"]["source_report_sha256"] for row in saved if row.get("normalization")}
+    if approved and (remaining_roles or set(approved) != available_sources):
+        raise StopResearch("failed_partial",
+                           "approved normalization returns missing; no fresh audit dispatched")
+    role_count = max(1, len(remaining_roles))
     corrections, rejected, attempts = [], [], {}
     # Complete specialist review has priority over optional later revisions/synthesis.
     # The original sixth-of-task slice rejected an observed 19,555-token review
     # despite ample unallocated task capacity. All review grants share one ledger.
     tokens = min(runner.task.contract["token_limit"] // 4,
-                 (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE) // len(SPECIALIST_ROLES))
-    if tokens < 1000:
+                 (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE) // role_count)
+    if remaining_roles and tokens < 1000:
         raise StopResearch("limit_reached_partial", "insufficient allowance for all specialist reviewers")
     budget = _revision_budget(runner, campaign)
+    review_reserve = sum(budget["review_role_reserves"][role] for role in remaining_roles)
     # Initial reviews have priority; protect the available repair pool without
     # lowering forecasted review grants merely to fill an unfunded repair target.
     repair_reserve = min(budget["repair_reserve"], max(0,
-        runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - budget["review_reserve"]))
+        runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - review_reserve))
+    if (remaining_roles and not iteration and runner.remaining_tokens()
+            >= FINAL_HANDOFF_RESERVE + 20000 * role_count + 1000):
+        repair_reserve = max(1000, repair_reserve)
     tokens = min(runner.task.contract["token_limit"] // 4,
-        (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - repair_reserve) // len(SPECIALIST_ROLES))
-    role_grants = dict.fromkeys(SPECIALIST_ROLES, tokens)
+        (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - repair_reserve) // role_count)
+    role_grants = {role: min(tokens, budget["review_role_reserves"][role]) for role in remaining_roles}
     repair_allocations = []
-    if iteration:
+    if iteration and remaining_roles:
         repair_reserve = budget["repair_reserve"]
         spare = (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
-                 - budget["review_reserve"] - budget["repair_reserve"])
+                 - review_reserve - budget["repair_reserve"])
         if spare < 0:
             raise StopResearch("limit_reached_partial",
                                "observed specialist re-review reservation unavailable")
         # Keep the larger observed role's grant instead of averaging away its reservation.
-        role_grants = {role: amount + spare // len(SPECIALIST_ROLES)
-                       for role, amount in budget["review_role_reserves"].items()}
+        role_grants = {role: budget["review_role_reserves"][role]
+                       for role in remaining_roles}
     plan = {"iteration": iteration, "remaining_tokens": runner.remaining_tokens(),
             "review_role_grants": role_grants, "repair_reserve": repair_reserve,
             "repair_forecast": budget["repair_reserve"], "handoff_reserve": FINAL_HANDOFF_RESERVE}
@@ -417,6 +627,11 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
             parent,
         )
         handle = runner.spawn(child)
+        policy = packet.get("operator_model_policy")
+        if policy and handle.requested_model_policy != {"role": role, **policy}:
+            handle.close()
+            raise StopResearch("failed_partial",
+                "reviewer policy mismatch denied before model dispatch")
         quality.update_campaign(campaign, dispatches=[*campaign.body.get("dispatches", []),
             {"agent_id": child.id, "iteration": iteration, "packet": packet}])
         runner.session.commit()
@@ -427,11 +642,20 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
     # slot; waiting correction workers occupy slots until their repair finishes.
     # Deferred roles keep their token grants and can start before other roles finish.
     concurrent = 3
-    deferred = list(SPECIALIST_ROLES[concurrent:])
-    for role in SPECIALIST_ROLES[:concurrent]:
+    deferred = list(remaining_roles[concurrent:])
+    abort_deadline = None
+    for role in remaining_roles[:concurrent]:
         dispatch(role, role_grants[role])
     while pending or corrections or deferred:
         runner.check()
+        if rejected:
+            corrections, deferred = [], []
+            if abort_deadline is None:
+                abort_deadline = min(runner.research_deadline, time.monotonic() + 10)
+            if time.monotonic() >= abort_deadline:
+                break
+        if not pending and not corrections and not deferred:
+            break
         if (deferred and not corrections and len(pending) < concurrent
                 and not any(attempts.get(child.id, 0) for child, _, _, _ in pending)):
             if rejected:
@@ -443,30 +667,53 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                      - sum(role_grants[r] for r in deferred))
             if grant < role_grants[role]:
                 raise StopResearch("limit_reached_partial", "deferred specialist reservation unavailable")
-            if not iteration:
-                grant = role_grants[role]
+            grant = role_grants[role]
             dispatch(role, grant)
         if not pending:
             # Gather the whole wave's defects first. Each existing specialist may
             # correct its report once, using the original deadline and ledger.
-            tokens = min(runner.task.contract["token_limit"] // 3,
-                         (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
-                          - sum(role_grants[role] for role in deferred)) // len(corrections))
-            if tokens < 1000:
-                raise StopResearch("limit_reached_partial", "report corrections exceed remaining allowance")
-            for child, handle, packet, issues in corrections:
+            repair_reserve = min(budget["repair_reserve"], max(0,
+                runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                - sum(role_grants[role] for role in deferred)))
+            if campaign.body["drafts"][-1].get("local_revision") and corrections and (
+                    len(corrections) + len(repair_allocations) > runner.task.ledger.get(
+                        "continuation", {}).get("max_report_corrections", 1)):
+                raise StopResearch("limit_reached_partial",
+                    "local review permits only one shared format correction by default; "
+                    "operator correction limit reached")
+            grants = _correction_grants(corrections,
+                max(0, runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                    - sum(role_grants[role] for role in deferred)),
+                (max(0, runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                     - sum(role_grants[role] for role in deferred))
+                 if campaign.body["drafts"][-1].get("local_revision") else
+                 max(0, repair_reserve - sum(allocation_charge(a) for a in repair_allocations))))
+            for (child, handle, packet, issues), tokens in zip(corrections, grants, strict=True):
                 attempts[child.id] = 1
                 child.state = "running"
-                allocation = runner.send(handle, child, "audit", tokens, {
-                    "packet": packet, "report_corrections": issues,
-                    "original_report": child.provenance["report_attempts"][-1]["report"],
-                    "original_report_sha256": child.provenance["report_attempts"][-1]["report_sha256"],
-                })
+                if isinstance(handle, ReplayHandle):
+                    # Replay is read-only; a correction needs a new live worker,
+                    # not a send to the exhausted in-memory saved-return handle.
+                    handle.close()
+                    handle = runner.spawn(child)
+                allocation = runner.send(handle, child, "audit", tokens,
+                                         _report_correction_payload(child, packet, issues))
                 repair_allocations.append(allocation)
                 pending.append((child, handle, allocation, packet))
             corrections = []
         for child, handle, allocation, packet in list(pending):
-            raw = runner.event(handle, child, allocation, "specialist_report")
+            try:
+                raw = runner.event(handle, child, allocation, "specialist_report")
+            except (ExecutorError, StopResearch) as exc:
+                if isinstance(exc, StopResearch) and exc.scope != "call":
+                    raise
+                rejected.append(child.id)
+                child.state = "failed"
+                handle.close()
+                pending.remove((child, handle, allocation, packet))
+                research_trace.record(runner, "worker_closed", agent=child, pid=handle.pid)
+                runner.session.commit()
+                continue
             if raw is None:
                 continue
             child.provenance = {**child.provenance, "original_return": raw,
@@ -476,8 +723,9 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                     "report_sha256": stable_hash(raw), "packet_sha256": packet["packet_sha256"],
                 }]}
             runner.session.commit()
+            normalized, normalization = normalize_review_report(raw, normalization_authority(runner.task))
             try:
-                report, blockers, flags = quality.validate_report(raw, packet)
+                report, blockers, flags = quality.validate_report(normalized, packet)
             except quality.ReportValidationError as exc:
                 child.state = "report_needs_correction"
                 quality.update_campaign(campaign, rejected_reports=[
@@ -501,7 +749,8 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                 continue
             # Worker identities are obtained from the executor, never from reviewer prose.
             identity = child.provenance.get("specialist_report_model", {}).get("codex_thread_id")
-            author_threads = quality.author_model_threads(parent)
+            author_threads = set().union(*(quality.author_model_threads(a)
+                                          for a in runner.agents if a.role == "parent"))
             other_threads = {
                 a.provenance.get("specialist_report_model", {}).get("codex_thread_id")
                 for a in runner.agents
@@ -511,6 +760,9 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                 raise ValueError("specialist reused an author or reviewer thread")
             child.report, child.state = report, "completed"
             child.provenance = {**child.provenance, "report_hash": stable_hash(report)}
+            if normalization:
+                child.provenance = {**child.provenance, "review_normalization": normalization}
+                research_trace.record(runner, "review_normalized", agent=child, **normalization)
             for resolution in report["resolutions"]:
                 comment = next(c for c in packet["prior_comments"] if c["id"] == resolution["comment_id"])
                 review = runner.session.get(ResearchObject, comment["round_id"])
@@ -525,6 +777,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                     **resolution,
                 )
             record = {
+                "validation_version": "manuscript-recovery-v2",
                 "agent_id": child.id,
                 "role": report["role"],
                 "iteration": iteration,
@@ -532,6 +785,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                 "packet": packet,
                 "report_sha256": stable_hash(report),
                 "blockers": blockers,
+                **({"normalization": normalization} if normalization else {}),
                 **flags,
             }
             quality.update_campaign(campaign, reports=[*campaign.body["reports"], record])
@@ -545,15 +799,19 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
         raise StopResearch("failed_partial",
             f"{len(rejected)} specialist report(s) still invalid after one bounded correction; "
             "evidence retained")
+    current_records = [r for r in campaign.body["reports"]
+                       if r["candidate_sha256"] == digest and r["iteration"] == iteration]
     manifests = [
         {
-            "role": f"{r[1]['role']}-{iteration}",
+            "role": f"{rec['role']}-{iteration}",
             "packet_sha256": rec["packet"]["packet_sha256"],
             "evidence_artifacts": rec["packet"]["evidence_artifacts"],
         }
-        for r, rec in zip(results, campaign.body["reports"][-len(SPECIALIST_ROLES):], strict=True)
+        for rec in current_records
     ]
-    quality.update_campaign(campaign, packets=[*campaign.body["packets"], *manifests])
+    unique_manifests = {(m["role"], m["packet_sha256"]): m
+                        for m in [*campaign.body["packets"], *manifests]}
+    quality.update_campaign(campaign, packets=list(unique_manifests.values()))
     comments = []
     for child, report, blockers in results:
         issues = [
@@ -577,13 +835,24 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                     "acceptance_criterion": criterion,
                 }
             )
-    if len(comments) > 60:
-        raise ValueError("too many specialist objections; return a partial handoff")
+    if len(comments) > MAX_REVISION_COMMENTS:
+        raise StopResearch("failed_partial",
+            f"specialist wave produced {len(comments)} revision comments; "
+            f"capacity is {MAX_REVISION_COMMENTS}; all reports retained")
     if comments:
-        review = revision_review.open_round(
-            runner.session, manuscript.id, comments=comments, reviewer="specialist-controller"
-        )
-        quality.update_campaign(campaign, rounds=[*campaign.body["rounds"], review.id])
+        review = next((r for rid in campaign.body["rounds"]
+                       if (r := runner.session.get(ResearchObject, rid)).body["candidate_hash"] == digest
+                       and r.body["comments"] == comments), None)
+        if review is None:
+            review = revision_review.open_round(
+                runner.session, manuscript.id, comments=comments, reviewer="specialist-controller")
+            quality.update_campaign(campaign, rounds=[*campaign.body["rounds"], review.id])
+    if not comments:
+        from .manuscript_local_revision import verify_controller_completion
+        verified = verify_controller_completion(runner.session, runner.task, campaign, digest)
+        if verified:
+            research_trace.record(runner, "controller_completion_verified",
+                                  candidate_sha256=digest, comment_ids=verified)
     all_resolved = all(
         d in {"resolved", "justified_rejection"}
         for rid in campaign.body["rounds"]
@@ -667,30 +936,102 @@ def _integration_payload(task, campaign, agents):
 
 def execute(runner):
     task, session = runner.task, runner.session
-    manuscript, campaign = quality.create_campaign(session, task)
+    continuation = task.ledger.get("continuation")
+    if continuation:
+        from .manuscript_continuation import checkpoint
+        from .research_tasks import agents_for
+
+        current = checkpoint(session, task, active=True)
+        if current["saved_work_sha256"] != continuation["saved_work_sha256"]:
+            raise ValueError("continuation evidence changed before execution")
+        manuscript = session.get(ResearchObject, continuation["manuscript_id"])
+        campaign = session.get(ResearchObject, continuation["campaign_id"])
+        runner.agents = agents_for(session, task.id)
+        runner.author_checkpoint = continuation["checkpoint_sha256"]
+    else:
+        manuscript, campaign = quality.create_campaign(session, task)
     research_trace.record(
         runner, "campaign_started", manuscript_id=manuscript.id, required_roles=list(SPECIALIST_ROLES)
     )
     parent = handle = None
     try:
-        manuscript_acquisition.collect(runner, manuscript, campaign)
-        parent = runner.new_agent("parent", {"question": task.contract["question"], "role": "author"})
-        handle = runner.spawn(parent)
+        if continuation:
+            parent = next(a for a in runner.agents if a.id == continuation["author_id"])
+            if continuation["stage"] == "correct":
+                from .manuscript_continuation import recoverable_return
+
+                runner.recoverable_author_return = recoverable_return(parent, campaign, task)
+                if (not runner.recoverable_author_return
+                        or runner.recoverable_author_return["result_sha256"]
+                        != continuation["recoverable_return_sha256"]):
+                    raise ValueError("retained author return changed before recovery")
+            draft = campaign.body["drafts"][-1]
+            _restore_responses(runner, parent, campaign, draft["candidate"], draft["candidate_sha256"])
+        else:
+            manuscript_acquisition.collect(runner, manuscript, campaign)
+            parent = runner.new_agent("parent", {"question": task.contract["question"], "role": "author"})
+        local_review_only = bool(campaign.body["drafts"]
+                                 and campaign.body["drafts"][-1].get("local_revision"))
+        if local_review_only:
+            policy = task.ledger.get("continuation", {}).get("specialist_policy", {})
+            if policy:
+                runner.executor.role_policy.update(policy)
+                runner.executor.worker_config["WB_RESEARCH_CODEX_ROLE_POLICY"] = json.dumps(
+                    runner.executor.role_policy)
+                research_trace.record(runner, "operator_specialist_policy_bound", policy=policy)
+        handle = None if local_review_only else runner.spawn(parent)
         # Future review cannot be borrowed by the author, even after unused allowances are released.
         initial_budget = _revision_budget(runner)
-        reserve = (len(SPECIALIST_ROLES) * (initial_budget["input_token_estimate"] + 6000)
+        reserve = (len(SPECIALIST_ROLES) * (
+                       initial_budget["input_token_estimate"]
+                       + initial_budget["review_output_headroom"]
+                   )
                    + initial_budget["repair_reserve"] + FINAL_HANDOFF_RESERVE)
         draft_allowance = min(task.contract["token_limit"] // 3, runner.remaining_tokens() - reserve)
-        digest = _author(runner, parent, handle, manuscript, campaign, draft_allowance)
+        if continuation:
+            digest = campaign.body["drafts"][-1]["candidate_sha256"]
+            if continuation["stage"] == "correct":
+                raw = runner.recoverable_author_return["result"]
+                expected_ids = sorted(c["id"] for c in _prior(runner.session, campaign))
+                try:
+                    quality.validate_draft(task, campaign, raw, expected_response_ids=expected_ids)
+                except quality.DraftValidationError:
+                    pass
+                else:
+                    draft, digest = quality.apply_draft(session, task, manuscript, campaign, raw, parent.id,
+                                                       expected_response_ids=expected_ids)
+                    _restore_responses(runner, parent, campaign, draft, digest)
+                    runner.recoverable_author_return = None
+                    runner.author_checkpoint = None
+            if continuation["stage"] == "correct" and runner.recoverable_author_return:
+                budget = _revision_budget(runner, campaign)
+                if budget["author_grant"] < budget["minimum_author_grant"]:
+                    raise StopResearch("limit_reached_partial",
+                                       "retained-return correction cycle is not funded")
+                digest = _author(runner, parent, handle, manuscript, campaign, budget["author_grant"],
+                    revision=True, protected_after_author=(
+                        budget["review_reserve"] + budget["repair_reserve"] + budget["handoff_reserve"]))
+        else:
+            digest = _author(
+                runner, parent, handle, manuscript, campaign, draft_allowance,
+                protected_after_author=reserve,
+            )
         plan = _initial_capacity_plan(runner, campaign)
         quality.update_campaign(campaign, initial_capacity_plans=[
             *campaign.body.get("initial_capacity_plans", []), plan])
         research_trace.record(runner, "initial_capacity_planned", **plan)
         session.commit()
-        completed = False
+        completed = bool(continuation and continuation["stage"] == "integrate")
         previous_failure = None
-        for iteration in range(task.contract["max_revision_cycles"] + 1):
-            completed = _audit_wave(runner, parent, manuscript, campaign, digest, iteration)
+        cycle_limit = (0 if continuation and continuation["stage"] == "correct"
+                       else task.contract["max_revision_cycles"])
+        for iteration in range(cycle_limit + 1):
+            if completed:
+                break
+            if not (continuation and iteration == 0 and continuation["stage"] == "revise"):
+                completed = _audit_wave(
+                    runner, parent, manuscript, campaign, digest, len(campaign.body["drafts"]) - 1
+                )
             _save_handoff(runner, manuscript, campaign)
             if completed:
                 break
@@ -706,7 +1047,7 @@ def execute(runner):
             if failure == previous_failure:
                 break
             previous_failure = failure
-            if iteration == task.contract["max_revision_cycles"]:
+            if iteration == cycle_limit:
                 break
             # Original deadline and ledger apply to every revision; no fresh task grant.
             budget = _revision_budget(runner, campaign)
@@ -716,22 +1057,34 @@ def execute(runner):
             session.commit()
             allowance = budget["author_grant"]
             if allowance < budget["minimum_author_grant"]:
-                if budget["capacity_status"] == "author_slice_below_minimum":
-                    raise StopResearch("limit_reached_partial",
-                        f"revision author slice cap {task.contract['token_limit'] // 4} below "
-                        f"required {budget['minimum_author_grant']}; review and handoff reserves preserved")
                 raise StopResearch("limit_reached_partial",
                     f"revision needs at least {budget['minimum_author_grant']} tokens after reserving "
                     f"{budget['review_reserve']} for specialist re-review and "
                     f"{budget['handoff_reserve']} for final handoff and "
                     f"{budget['repair_reserve']} for repair; {budget['remaining_tokens']} remain")
-            digest = _author(runner, parent, handle, manuscript, campaign, allowance, revision=True)
+            digest = _author(
+                runner, parent, handle, manuscript, campaign, allowance, revision=True,
+                protected_after_author=(
+                    budget["review_reserve"] + budget["handoff_reserve"]
+                    + budget["repair_reserve"]
+                ),
+            )
         _save_handoff(runner, manuscript, campaign)
         # A final summary has a safety margin for best-effort usage telemetry.
         # The complete candidate/reports stay in the evidence graph, not repeated
         # in the parent's final message context.
-        final_allowance = runner.remaining_tokens() - 1000
-        if completed and final_allowance >= 6000:
+        final_allowance = min(FINAL_HANDOFF_RESERVE, runner.remaining_tokens() - 1000)
+        if completed and local_review_only:
+            payload = _integration_payload(task, campaign, runner.agents)
+            task.synthesis = {**task.synthesis,
+                "integration": "controller_no_model_review_handoff",
+                "controller_handoff_receipt": {"candidate_sha256": digest,
+                    "report_hashes": {key: row["sha256"]
+                                      for key, row in payload["reports"].items()},
+                    "worker_calls": 0, "human_publication_approval": False}}
+            task.ledger = {**task.ledger, "parent_integration_received": True,
+                "child_handoff_received": True, "live_handoff_verified": True}
+        elif completed and final_allowance >= 6000:
             payload = _integration_payload(task, campaign, runner.agents)
             reports = payload["reports"]
             allocation = runner.send(handle, parent, "integrate", final_allowance, payload)

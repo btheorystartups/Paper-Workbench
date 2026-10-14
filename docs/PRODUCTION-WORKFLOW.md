@@ -153,6 +153,47 @@ complete prior comments/responses and expected response IDs. The worker binds th
 candidate to its own latest return, including any corrected draft. Historical author
 thread identities remain excluded from independent reviewer identities.
 
+The initial author grant remains capped, but a bounded correction recomputes its grant
+from current task-wide headroom after subtracting the original protected reviewer,
+repair and handoff reserve. Final actual usage from the first attempt therefore
+releases capacity that a correction may use; an arbitrary fixed author envelope does
+not strand it. The protected reserve, task-wide ceiling, deadline, single-correction
+limit and best-effort worker stopping remain unchanged. When only protected capacity
+remains, the correction stops before dispatch.
+
+### Explicit manuscript continuation
+
+Stopped manuscript tasks with a preserved accepted candidate can continue through
+`GET /projects/{project_id}/research-tasks/{task_id}/continuation` followed by
+`POST /projects/{project_id}/research-tasks/{task_id}/continue`. The UI offers
+**Inspect saved work for continuation** on eligible stopped manuscripts. Inspection
+is read-only; continuation requires a new token allowance, wall-time allowance,
+maximum additional revision cycles, the returned `expected_checkpoint_sha256`, and
+`acknowledge_live_execution: true` for a live executor. An ordinary `/start` still
+rejects stopped tasks. Nothing automatically renews a budget or restarts after a crash.
+
+The original manuscript, scientific requirements, source snapshots, search and
+verification receipts, reviewer identities, and review rounds remain bound to the
+same task. Continuation skips acquisition and drafting, fills missing reviews for
+the current candidate, or proceeds to revision or final integration. Completed
+reviews are reusable only for their bound candidate; a revision requires a new
+review wave. Failed/incomplete model output is retained but its unfinished operation
+must run again. A task that never saved an accepted candidate requires a fresh run.
+
+Every grant archives the preceding contract, ledger, synthesis, and agent provenance
+under `ledger.previous_runs`. Current usage and limits describe only the new attempt;
+prior actual usage and unresolved reservations remain in those archived ledgers and
+the result package. The new deadline starts on explicit continuation. Use a new
+checkpoint preview after any state change; duplicate or stale requests fail closed.
+Candidate/evidence changes, missing artifacts, changed reports, and failed reviewer
+identity checks block reuse before a worker starts. Human acceptance and publication
+approval remain separate.
+
+Reviewer output headroom scales with the declared maximum manuscript length (with a
+6,000-token minimum). The same expanded review reserve is protected before the first
+author dispatch, so a long-draft correction cannot consume capacity already forecast
+for its specialist review wave.
+
 Returned reports with coverage, quotation, receipt or availability defects retain all
 detected validation issues and the original return. The controller finishes the wave
 before offering each affected specialist **one** correction turn on the same packet
@@ -310,9 +351,20 @@ recorded in the campaign and call trace.
 
 Each specialist may correct one rejected report in a fresh model thread. The same
 logical worker receives the frozen packet, original report and precise defects.
+The native output schema binds the assigned role and candidate/packet hashes.
+Only the literature/contribution reviewer can populate `literature_comparisons`;
+only the adversarial reviewer can populate `adversarial_checks` (exactly five).
+Other reviewers retain scientific concerns in their assessments and objections.
 Original returns, hashes, allocations and old/new model identities remain auditable;
 the task ledger and deadline continue unchanged. Author revisions and intake
 corrections use the fresh bound context described above.
+
+An app-server error notification with `willRetry=true` means the provider is
+recovering the existing turn. The worker keeps listening within the original
+deadline and token allowance; it does not start a new model turn or reset usage.
+Successful reports retain bounded, sanitized retry diagnostics. A final failed
+turn, an error without that explicit retry flag, or an exhausted deadline/allowance
+still stops the call. Missing final usage keeps its full reservation charged.
 
 Allowlisted finite checks freeze their exact implementation as a publication-bound
 artifact and include standard-library dependencies, a hash-checked installed-module

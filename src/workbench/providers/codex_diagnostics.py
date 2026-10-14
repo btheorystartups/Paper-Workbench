@@ -1,5 +1,6 @@
 """Content-free diagnostics for the pinned app-server protocol; never retry policy."""
 
+import re
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, model_validator
@@ -43,6 +44,10 @@ class RuntimeErrorInfo(ContractModel):
     category: ErrorCategory
     http_status_code: int | None = Field(default=None, ge=100, le=599, strict=True)
     will_retry: bool | None = Field(default=None, strict=True)
+    diagnostic: Literal[
+        "output_schema", "context_capacity", "connection", "authentication", "timeout"
+    ] | None = None
+    request_id: str | None = Field(default=None, pattern=r"^req_[A-Za-z0-9_-]{1,100}$")
 
     @model_validator(mode="after")
     def consistent_status(self):
@@ -70,12 +75,30 @@ def normalize_runtime_error(error, *, source, will_retry=None):
             and info[name].get("turnKind") in ("review", "compact")
         ):
             category = name
+    details = {}
+    if isinstance(error, dict):
+        message = error.get("message")
+        # Recognize bounded explanations without retaining arbitrary provider text,
+        # source excerpts, credentials, URLs, or hidden reasoning.
+        if isinstance(message, str):
+            for diagnostic, pattern in (("output_schema", r"\b(?:schema|regex|regular expression)\b"),
+                ("context_capacity", r"\bcontext (?:window|length)\b"),
+                ("connection", r"\b(?:connection|disconnected)\b"),
+                ("authentication", r"\b(?:unauthorized|authentication)\b"),
+                ("timeout", r"\b(?:timeout|timed out)\b")):
+                if re.search(pattern, message[:4000], re.I):
+                    details["diagnostic"] = diagnostic
+                    break
+        request_id = error.get("requestId", error.get("request_id"))
+        if isinstance(request_id, str) and re.fullmatch(r"req_[A-Za-z0-9_-]{1,100}", request_id):
+            details["request_id"] = request_id
     return RuntimeErrorInfo(
         source=source,
         category=category,
         http_status_code=status,
         will_retry=will_retry if type(will_retry) is bool else None,
-    ).model_dump()
+        **details,
+    ).model_dump(exclude_unset=True)
 
 
 Count = Annotated[int, Field(ge=0, le=100_000_000, strict=True)]

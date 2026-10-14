@@ -2,6 +2,7 @@
 
 import io
 import json
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -114,11 +115,15 @@ def test_research_routes_enforce_tenant_boundaries(tenant_client):
     root = f"/projects/{project['id']}/research-tasks"
     task = client.post(root, headers=headers, json={"question": "Private research"}).json()
     url = root + "/" + task["id"]
-    for suffix in ("", "/download", "/call-trace"):
+    for suffix in ("", "/download", "/call-trace", "/continuation"):
         assert client.get(url + suffix, headers=other_headers).status_code == 404
         assert client.get(url + suffix).status_code == 401
     for suffix, body in (("/start", {}), ("/cancel", None), ("/reviews", {}), ("/promote", {})):
         assert client.post(url + suffix, json=body, headers=other_headers).status_code == 404
+    grant = {"expected_checkpoint_sha256": "a" * 64, "token_limit": 240000,
+             "time_limit_seconds": 120, "max_revision_cycles": 1}
+    assert client.post(url + "/continue", json=grant, headers=other_headers).status_code == 404
+    assert client.post(url + "/continue", json=grant).status_code == 401
     wrong = f"/projects/{other['id']}/research-tasks/{task['id']}"
     assert client.get(wrong, headers=other_headers).status_code == 422
     assert (
@@ -141,3 +146,57 @@ def test_manuscript_length_contract_round_trips_and_rejects_reversed_bounds(clie
         "min_words": 900, "max_words": 1200, "counting_policy": "section-text-whitespace-v1"}
     request["manuscript_length"] = {"min_words": 1200, "max_words": 900}
     assert client.post(root, json=request).status_code == 422
+
+
+def test_manuscript_continuation_http_requires_grant_and_rejects_duplicate(client, monkeypatch):
+    worker = Path(__file__).parent / "fixtures" / "manuscript_protocol_worker.py"
+    monkeypatch.setenv("WB_RESEARCH_EXECUTOR_ENABLED", "true")
+    monkeypatch.setenv("WB_RESEARCH_EXECUTOR_COMMAND", json.dumps([sys.executable, str(worker), "fail"]))
+    config.get_settings.cache_clear()
+    ws = client.post("/workspaces", json={"name": "Continuation fixture"}).json()
+    project = client.post("/projects", json={"workspace_id": ws["id"], "name": "Continuation"}).json()
+    root = f"/projects/{project['id']}/research-tasks"
+    task = client.post(root, json={"question": "Resume controlled manuscript", "task_type": "manuscript",
+                                  "executor": "process", "token_limit": 240000}).json()
+    url = root + "/" + task["id"]
+    client.post(url + "/attachments", files={"file": ("source.txt", b"Controlled frozen evidence")})
+    assert client.post(url + "/start", json={"acknowledge_live_execution": True}).status_code == 202
+
+    def stopped():
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            value = client.get(url).json()
+            if value["state"] in {"completed", "failed_partial", "limit_reached_partial"}:
+                return value
+            time.sleep(0.05)
+        pytest.fail("controlled task did not finish")
+
+    assert stopped()["state"] == "failed_partial"
+    preview = client.get(url + "/continuation")
+    assert preview.status_code == 200, preview.text
+    authority = {"token_ceiling": 2_000_000, "time_ceiling_seconds": 7200,
+                 "reason": "Explicit controlled-test continuation authority"}
+    denied = client.post(url + "/authorization", json={"expected_checkpoint_sha256": "0" * 64,
+                                                       "authorization": authority})
+    assert denied.status_code == 422
+    trace_before = client.get(url).json()["ledger"]["call_trace"]
+    authorized = client.post(url + "/authorization", json={
+        "expected_checkpoint_sha256": preview.json()["checkpoint_sha256"], "authorization": authority})
+    assert authorized.status_code == 200, authorized.text
+    assert client.get(url).json()["ledger"]["call_trace"] == trace_before
+    preview = client.get(url + "/continuation")
+    grant = {"expected_checkpoint_sha256": preview.json()["checkpoint_sha256"],
+             "token_limit": 240000, "time_limit_seconds": 120, "max_revision_cycles": 1}
+    assert client.post(url + "/continue", json={}).status_code == 422
+    assert client.post(url + "/continue", json=grant).status_code == 422
+    grant["acknowledge_live_execution"] = True
+    grant["authorization"] = {"token_ceiling": 2_000_000, "time_ceiling_seconds": 7200,
+                              "reason": "Explicit controlled-test continuation authority"}
+    monkeypatch.setenv("WB_RESEARCH_EXECUTOR_COMMAND", json.dumps([sys.executable, str(worker)]))
+    config.get_settings.cache_clear()
+    assert client.post(url + "/continue", json=grant).status_code == 202
+    assert client.post(url + "/continue", json=grant).status_code == 422
+    result = stopped()
+    assert result["state"] == "completed", result["ledger"].get("stop_reason")
+    assert len(result["ledger"]["previous_runs"]) == 1
+    assert client.post(url + "/start", json={"acknowledge_live_execution": True}).status_code == 422

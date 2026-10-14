@@ -11,6 +11,7 @@ MAX_ERRORS = 20
 CUSTOM_CODES = frozenset({
     "citation_target", "citation_url", "report_duplicate_ids", "report_missing_evidence",
     "report_unverified_result", "report_uncited_prior_art", "report_unrecorded_search",
+    "manuscript_duplicate_ids", "manuscript_claim_coverage", "manuscript_duplicate_responses",
 })
 ERROR_CODES = frozenset(ErrorType.__args__) | CUSTOM_CODES
 

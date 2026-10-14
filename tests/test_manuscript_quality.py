@@ -381,7 +381,7 @@ def test_report_corrections_wait_for_whole_wave_and_are_bounded(session, project
 def test_report_corrections_cannot_reset_or_exceed_task_budget(session, project):
     task = run(session, project, "report_repair_budget")
     assert task.state == "limit_reached_partial"
-    assert "report corrections exceed remaining allowance" in task.ledger["stop_reason"]
+    assert "report correction capacity requires" in task.ledger["stop_reason"]
     calls = task.ledger["trace_summary"]["calls"]
     assert len([c for c in calls if c["operation"] == "audit"]) == 3
     assert task.ledger["charged_tokens"] <= task.contract["token_limit"] == 96000
@@ -433,13 +433,39 @@ def test_author_correction_uses_same_worker_and_preserves_rejected_draft(session
         "agent_checks_complete"] is not stuck
 
 
-def test_author_correction_cannot_borrow_review_reservation(session, project):
-    task = run(session, project, "draft_repair_budget")
+def test_author_correction_reclaims_unused_author_capacity_without_borrowing_reserve(
+    session, project,
+):
+    task = run(session, project, "draft_repair_budget", token_limit=240000)
+    assert task.state == "completed", task.ledger.get("stop_reason")
+    allocations = task.ledger["allocations"]
+    assert [a["operation_kind"] for a in allocations[:2]] == ["draft", "draft_correction"]
+    assert allocations[1]["reserved"] > (
+        allocations[0]["reserved"] - allocations[0]["actual_tokens"]
+    )
+    author_plans = [
+        event for event in task.ledger["call_trace"]
+        if event["event"] == "author_budget_planned"
+    ]
+    assert len(author_plans) >= 2
+    correction = author_plans[1]
+    assert correction["allowance"] <= (
+        correction["remaining_tokens"] - correction["protected_after_author"]
+    )
+    assert correction["protected_after_author"] > 0
+    assert task.ledger["charged_tokens"] <= task.contract["token_limit"]
+    assert quality.assessment(session, task.contract["quality_manuscript_id"])[
+        "agent_checks_complete"]
+
+
+def test_author_correction_still_stops_when_only_protected_reserve_remains(
+    session, project,
+):
+    task = run(session, project, "draft_repair_budget", token_limit=80000)
     assert task.state == "limit_reached_partial"
     assert task.ledger["stop_reason"] == "draft correction exceeds author allowance"
     assert task.ledger["charged_tokens"] == task.ledger["allocations"][0]["reserved"] - 1
     assert len(task.ledger["allocations"]) == 1
-    assert len(research_tasks.agents_for(session, task.id)) == 1
     assert not quality.assessment(session, task.contract["quality_manuscript_id"])[
         "agent_checks_complete"]
 
@@ -556,7 +582,7 @@ def test_review_dispatch_reuses_freed_slots_without_exceeding_three_workers(sess
     assert planned < first_review
 
 
-@pytest.mark.parametrize("cycles,expected", [(0, 110000), (2, 222000)])
+@pytest.mark.parametrize("cycles,expected", [(0, 130000), (2, 262000)])
 def test_initial_capacity_is_conditional_records_history_growth_and_does_not_mutate_packet(session, project, cycles, expected):
     task, _, campaign, _, _ = candidate_packet(session, project)
     task.contract = {**task.contract, "max_revision_cycles": cycles, "token_limit": 240000}
@@ -698,7 +724,7 @@ def test_insufficient_revision_correction_time_preserves_accepted_candidate_and_
     assert not any(e["kind"] == "response" for e in review.body["events"])
 
 
-def test_capacity_floor_accounts_for_author_slice_cap_separately(session, project, monkeypatch):
+def test_capacity_floor_funds_author_after_preserving_review_reserves(session, project, monkeypatch):
     from workbench.providers import research_codex_worker
 
     task, _, campaign, _, _ = candidate_packet(session, project)
@@ -707,16 +733,17 @@ def test_capacity_floor_accounts_for_author_slice_cap_separately(session, projec
     monkeypatch.setattr(research_codex_worker, "json_prompt", lambda op, message: op)
     monkeypatch.setattr(research_codex_worker, "prompt_token_count", lambda text: 70000 if text == "revise" else 0)
     plan = _revision_budget(runner, campaign)
-    assert plan["minimum_author_grant"] == 76000 and plan["author_grant"] == 60000
-    assert plan["capacity_status"] == "author_slice_below_minimum"
-    assert plan["shortfall_tokens"] == 0 and plan["author_slice_shortfall_tokens"] == 16000
-    assert plan["minimum_total_token_limit"] == 304000
+    assert plan["minimum_author_grant"] == plan["author_grant"] == 76000
+    assert plan["unallocated_contingency"] > 0
+    assert plan["capacity_status"] == "funded"
+    assert plan["shortfall_tokens"] == 0 and plan["author_slice_shortfall_tokens"] == 0
+    assert plan["minimum_total_token_limit"] == 216000
 
 
 def test_revision_waits_for_specialist_review_budget(session, project):
     task = run(session, project, "revise", "budget_pause")
     assert task.state == "limit_reached_partial"
-    assert "reserving 90000 for specialist re-review and 10000 for final handoff" in task.ledger["stop_reason"]
+    assert "for specialist re-review and 10000 for final handoff" in task.ledger["stop_reason"]
     assert task.ledger["charged_tokens"] == 85411
     assert [c["operation"] for c in task.ledger["trace_summary"]["calls"]] == [
         "draft", "audit", "audit", "audit", "audit"]
@@ -763,7 +790,7 @@ def test_revision_preserves_larger_role_grant_and_final_handoff(session, project
     assert grants["source_citation"] >= 27500
     campaign = quality.campaign_for(session, task.contract["quality_manuscript_id"])
     plan = campaign.body["revision_budget_plans"][0]
-    assert plan["review_role_reserves"]["source_citation"] == 27500
+    assert plan["review_role_reserves"]["source_citation"] >= 27500
     assert plan["handoff_reserve"] == 10000
     assert task.ledger["parent_integration_received"]
     assert task.ledger["charged_tokens"] <= task.contract["token_limit"]
@@ -776,7 +803,9 @@ def test_deferred_review_reuses_final_receipt_capacity_without_borrowing_handoff
     second = {a.assignment["specialist_role"]: a.id for a in agents
               if a.assignment.get("iteration") == 1}
     allocations = {a["agent_id"]: a for a in task.ledger["allocations"] if a["phase"] == "audit"}
-    assert allocations[second["adversarial"]]["reserved"] >= 24000
+    campaign = quality.campaign_for(session, task.contract["quality_manuscript_id"])
+    assert allocations[second["adversarial"]]["reserved"] == (
+        campaign.body["audit_budget_plans"][-1]["review_role_grants"]["adversarial"])
     assert allocations[second["literature_contribution"]]["reserved"] >= 24506
     events = task.ledger["call_trace"]
     launch = next(i for i, e in enumerate(events) if e["event"] == "spawn_finished"
@@ -1235,13 +1264,42 @@ def test_forecast_separates_repairs_and_does_not_scale_with_ceiling():
         allocations=allocations, agents=[SimpleNamespace(id="proof", assignment={
             "specialist_role": "proof_method"})], remaining_tokens=lambda: 150000)
     plan = _revision_budget(runner)
-    assert plan["review_role_reserves"]["proof_method"] == 24382
+    assert plan["review_role_reserves"]["proof_method"] == 25000
     assert plan["repair_reserve"] == 46250
     runner.task.contract["token_limit"] = 420000
     enlarged = _revision_budget(runner)
     assert enlarged["review_reserve"] == plan["review_reserve"]
     assert enlarged["minimum_author_grant"] == plan["minimum_author_grant"]
-    assert plan["author_grant"] + plan["review_reserve"] + plan["repair_reserve"] + plan["handoff_reserve"] <= 150000
+    assert plan["author_grant"] == 0 and plan["capacity_status"] == "insufficient_tokens"
+    assert plan["shortfall_tokens"] == plan["required_remaining_tokens"] - 150000
+
+
+def test_long_manuscript_forecast_expands_first_pass_review_output_headroom():
+    task = SimpleNamespace(contract={"token_limit": 500000}, sources=[{"text": "x" * 108000}])
+    runner = SimpleNamespace(task=task, allocations=[], agents=[], remaining_tokens=lambda: 500000)
+    baseline = _revision_budget(runner)
+    task.contract["manuscript_length"] = {"min_words": 7000, "max_words": 10000}
+    expanded = _revision_budget(runner)
+    assert baseline["review_output_headroom"] == 6000
+    assert expanded["review_output_headroom"] == 14000
+    assert expanded["review_reserve"] == baseline["review_reserve"] + 4 * 10000
+
+
+def test_long_manuscript_author_protects_expanded_review_reserve(session, project):
+    task = run(session, project, "draft_repair_budget", token_limit=300000,
+               manuscript_length={"min_words": 7000, "max_words": 10000})
+    plans = [event for event in task.ledger["call_trace"]
+             if event["event"] == "author_budget_planned"]
+    initial = plans[0]
+    budget = _revision_budget(
+        SimpleNamespace(task=task, allocations=[], agents=[], remaining_tokens=lambda: 300000)
+    )
+    assert budget["review_output_headroom"] == 14000
+    assert initial["protected_after_author"] == (
+        len(budget["review_role_reserves"]) * (
+            budget["input_token_estimate"] + budget["review_output_headroom"]
+        ) + budget["repair_reserve"] + budget["handoff_reserve"]
+    )
 
 
 def test_verifier_reproduction_artifact_is_bound_and_inspectable(session, project):
@@ -1289,7 +1347,7 @@ def test_legacy_retained_context_repair_does_not_forecast_fresh_calls():
         agents=[SimpleNamespace(id="proof", assignment={"specialist_role": "proof_method"})],
         remaining_tokens=lambda: 150000)
     plan = _revision_budget(runner)
-    assert plan["review_role_reserves"]["proof_method"] == 24382
+    assert plan["review_role_reserves"]["proof_method"] == 25000
     assert plan["repair_reserve"] == 20000
 
 
@@ -1367,22 +1425,24 @@ def test_structured_length_reaches_reviewers_and_readiness_and_stale_bounds_bloc
     assert "specialist assignment or evidence changed" in state["blockers"]
 
 
-def test_initial_reviews_preserve_a_bounded_repair_pool_near_their_grants(session, project):
+def test_initial_review_tiny_repair_pool_stops_before_underfunded_correction(session, project):
     task = run(session, project, "report_repair", "initial_review_near_grant")
-    assert task.state == "completed", task.ledger.get("stop_reason")
+    assert task.state == "limit_reached_partial", task.ledger.get("stop_reason")
+    assert "report correction capacity requires" in task.ledger["stop_reason"]
     allocations = task.ledger["allocations"]
     repairs = [a for a in allocations if a.get("operation_kind") == "report_correction"]
-    assert len(repairs) == 1 and repairs[0]["reserved"] >= 1000
-    assert len(research_tasks.agents_for(session, task.id)) == 5
+    assert repairs == []
+    assert len(research_tasks.agents_for(session, task.id)) == 4
     assert task.ledger["charged_tokens"] <= task.contract["token_limit"]
 
 
 def test_spent_repair_pool_is_not_reserved_again_for_deferred_review(session, project):
-    task = run(session, project, "revise", "tight_re_review_repair", token_limit=92000)
+    # The versioned manifest projection adds input overhead to the old boundary.
+    task = run(session, project, "revise", "tight_re_review_repair", token_limit=92100)
     assert task.state == "completed", task.ledger.get("stop_reason")
     campaign = quality.campaign_for(session, task.contract["quality_manuscript_id"])
     repair = next(a for a in task.ledger["allocations"] if a.get("operation_kind") == "report_correction")
-    assert repair["actual_tokens"] >= campaign.body["revision_budget_plans"][0]["repair_reserve"]
+    assert 0 <= campaign.body["revision_budget_plans"][0]["repair_reserve"] - repair["actual_tokens"] <= 1
     assert len(campaign.body["reports"]) == 8 and task.ledger["parent_integration_received"]
     assert task.ledger["charged_tokens"] <= 92000
 

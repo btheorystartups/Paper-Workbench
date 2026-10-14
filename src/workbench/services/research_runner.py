@@ -7,6 +7,7 @@ reservation conservatively and is labelled estimated, never fabricated actual us
 
 import json
 import math
+import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -20,14 +21,15 @@ from ..providers.codex_diagnostics import RuntimeErrorInfo, StreamActivity, acti
 from ..providers.codex_rpc import RUNTIME_VERSION
 from ..providers.counter_compatibility import COUNTER_FAILURE_REASONS
 from ..providers.research_budget import terminal_overrun_allowance
-from ..providers.research_executor import ExecutorError, ProcessResearchExecutor
+from ..providers.research_executor import ExecutorError, NotDispatched, ProcessResearchExecutor
 from ..providers.research_validation import normalize_validation_diagnostics
 from ..research_contract import STREAM_FAILURE_CODES, AgentReport, Plan, Synthesis, Usage
-from . import research_retrieval, research_trace
+from . import research_recovery, research_retrieval, research_trace
 from . import research_tasks as tasks
 
 _jobs: dict[str, tuple[threading.Thread, threading.Event]] = {}
 _lock = threading.Lock()
+_OWNER_ID = new_id()
 _PROGRESS_STAGES = {
     "setup", "account_preflight", "thread_creation", "input_check", "account_recheck",
     "prompt_preparation", "turn_start", "turn_stream", "report_validation",
@@ -129,7 +131,13 @@ class StopResearch(Exception):
         self.state, self.reason, self.scope = state, reason, scope
 
 
-def start(session, task: ResearchTask, *, acknowledge_live_execution: bool = False) -> dict:
+def start(session, task: ResearchTask, *, acknowledge_live_execution: bool = False,
+          continuation=None) -> dict:
+    request_id = getattr(continuation, "request_id", None)
+    if request_id and task.ledger.get("start_request_id") == request_id:
+        if task.ledger.get("start_request_sha256") != stable_hash(continuation.model_dump()):
+            raise tasks.TaskError("request ID was reused with different continuation parameters")
+        return {"id": task.id, "state": task.state, "run_id": task.ledger.get("run_id")}
     if task.contract["executor"] != "offline" and not acknowledge_live_execution:
         raise tasks.TaskError("live execution requires explicit acknowledgement of the configured executor")
     # Construction validates configuration only; it does not start a worker or a model.
@@ -137,25 +145,47 @@ def start(session, task: ResearchTask, *, acknowledge_live_execution: bool = Fal
         task.contract["executor"],
         allow_best_effort_tokens=task.contract.get("allow_best_effort_tokens", False),
     )
+    extra_ledger = {}
+    contract = task.contract
+    expected_state = "draft"
+    if continuation is not None:
+        from .manuscript_continuation import prepare
+
+        with _lock:
+            if task.id in _jobs:
+                raise tasks.TaskError("previous worker is still shutting down; retry after it exits")
+        contract, extra_ledger = prepare(session, task, continuation)
+        expected_state = task.state
     now = utcnow()
+    run_id = new_id()
     changed = session.execute(
         update(ResearchTask)
         .where(
             ResearchTask.id == task.id,
-            ResearchTask.state == "draft",
+            ResearchTask.state == expected_state,
             ResearchTask.revision == task.revision,
         )
         .values(
             state="planning",
             started_at=now,
+            finished_at=None,
+            cancel_requested=False,
+            contract=contract,
             revision=task.revision + 1,
             ledger={
+                **extra_ledger,
+                "authorization": (extra_ledger.get("authorization")
+                                  or research_recovery.initial_authorization(task)),
+                "run_id": run_id, "owner_id": _OWNER_ID, "owner_pid": os.getpid(),
+                "start_request_id": request_id,
+                "start_request_sha256": stable_hash(continuation.model_dump()) if request_id else None,
+                "pipeline_version": research_recovery.PIPELINE_VERSION,
                 "allocations": [],
                 "actual_tokens": 0,
                 "estimated_tokens": 0,
                 "charged_tokens": 0,
                 "usage_complete": True,
-                "deadline": (now + timedelta(seconds=task.contract["time_limit_seconds"])).isoformat(),
+                "deadline": (now + timedelta(seconds=contract["time_limit_seconds"])).isoformat(),
                 "handoff_token_reserve": task.contract["handoff_token_reserve"],
                 "executor": task.contract["executor"],
                 "token_limit_mode": "pending_worker_capability",
@@ -167,7 +197,10 @@ def start(session, task: ResearchTask, *, acknowledge_live_execution: bool = Fal
     if changed.rowcount != 1:
         raise tasks.TaskError("task has already started or changed; a stopped task cannot resume")
     session.expire(task)
-    tasks.audit(session, task, "start_research_task", {"executor": task.contract["executor"]})
+    tasks.audit(session, task, "continue_research_task" if continuation else "start_research_task",
+                {"executor": task.contract["executor"], **extra_ledger.get("continuation", {}),
+                 "token_limit": contract["token_limit"],
+                 "time_limit_seconds": contract["time_limit_seconds"]})
     session.commit()
     cancel = threading.Event()
     thread = threading.Thread(
@@ -184,7 +217,7 @@ def start(session, task: ResearchTask, *, acknowledge_live_execution: bool = Fal
         task.ledger = {**task.ledger, "stop_reason": "local worker could not start"}
         session.commit()
         raise tasks.TaskError("local research runner could not start") from None
-    return {"id": task.id, "state": "planning"}
+    return {"id": task.id, "state": "planning", "run_id": run_id}
 
 
 def cancel(session, task: ResearchTask):
@@ -216,7 +249,12 @@ def recover_expired(session, task: ResearchTask):
     if task.state in tasks.TERMINAL or task.state == "draft" or not task.started_at:
         return
     start_time = task.started_at.replace(tzinfo=UTC) if task.started_at.tzinfo is None else task.started_at
-    if utcnow() < start_time + timedelta(seconds=task.contract["time_limit_seconds"] + 10):
+    orphan = (task.ledger.get("owner_id") != _OWNER_ID
+              and research_recovery.owner_is_gone(task.ledger.get("owner_pid")))
+    unstarted = (task.ledger.get("owner_id") == _OWNER_ID and task.state == "planning"
+                 and not task.ledger.get("allocations") and utcnow() > start_time + timedelta(seconds=5))
+    if (not (orphan or unstarted)
+            and utcnow() < start_time + timedelta(seconds=task.contract["time_limit_seconds"] + 10)):
         return
     with _lock:
         if task.id in _jobs:
@@ -224,7 +262,7 @@ def recover_expired(session, task: ResearchTask):
     task.state, task.finished_at = "interrupted_partial", utcnow()
     task.ledger = {
         **task.ledger,
-        "stop_reason": "runner interrupted; hard deadline passed; no research resumed",
+        "stop_reason": "runner ownership lost or deadline passed; no research resumed",
     }
     for agent in tasks.agents_for(session, task.id):
         if agent.state not in {"completed", "failed", "cancelled", "limit_reached"}:
@@ -287,15 +325,24 @@ class Runner:
         self.research_deadline = self.deadline - task.contract["handoff_time_reserve_seconds"]
         self.agents: list[ResearchAgent] = []
         self.allocations = list(task.ledger.get("allocations", []))
+        self.run_id = task.ledger.get("run_id")
         self.active_calls = {}
         self.terminal = "completed"
         self.reason = "All bounded assignments returned; human scientific review is still required."
         self.trace_started = time.monotonic()
 
     def check(self, *, research_phase=True):
-        self.session.refresh(self.task, attribute_names=["cancel_requested"])
+        self.session.refresh(self.task, attribute_names=["cancel_requested", "state", "ledger"])
+        if self.run_id and (self.task.ledger.get("run_id") != self.run_id
+                            or self.task.state in tasks.TERMINAL):
+            raise StopResearch("interrupted_partial", "runner no longer owns the active task")
         if self.cancel_event.is_set() or self.task.cancel_requested:
             raise StopResearch("cancelled_partial", "cancelled; further research stopped")
+        authority = self.task.ledger.get("authorization")
+        if authority and (research_recovery.accounting(self.task, self.allocations)["known_tokens"]
+                          >= authority["token_ceiling"] or research_recovery.elapsed_seconds(self.task)
+                          >= authority["time_ceiling_seconds"]):
+            raise StopResearch("limit_reached_partial", "aggregate authorization exhausted")
         if sum(a.get("actual_tokens") or 0 for a in self.allocations) >= self.task.contract["token_limit"]:
             mode = self.task.ledger.get("token_limit_mode")
             detail = "observed token limit" if mode == "best_effort" else "hard token limit"
@@ -317,17 +364,25 @@ class Runner:
             "estimated_tokens": estimated,
             "charged_tokens": actual + estimated,
             "usage_complete": all(a.get("final_actual") for a in self.allocations),
+            "aggregate_accounting": research_recovery.accounting(self.task, self.allocations),
         }
 
     def remaining_tokens(self):
         # Only completed phases with final actual usage release unused capacity.
         # In-flight work and missing telemetry retain their entire reservation.
         committed = sum(allocation_charge(a) for a in self.allocations)
-        return max(0, self.task.contract["token_limit"] - committed)
+        remaining = self.task.contract["token_limit"] - committed
+        authority = self.task.ledger.get("authorization")
+        if authority:
+            remaining = min(remaining, authority["token_ceiling"]
+                            - research_recovery.accounting(self.task, self.allocations)["charged_tokens"])
+        return max(0, remaining)
 
     def allocate(self, agent, phase, tokens):
         if tokens <= 0 or tokens > self.remaining_tokens():
             raise StopResearch("limit_reached_partial", "token allocation limit reached")
+        if isinstance(self.task, ResearchTask):
+            tasks.lock_revision(self.session, self.task)
         allocation = {
             "agent_id": agent.id,
             "phase": phase,
@@ -421,8 +476,10 @@ class Runner:
 
     def send(self, handle, agent, phase, allowance, payload):
         self.check(research_phase=phase != "integrate")
+        key = research_recovery.admit_operation(self.task, phase, payload, self.allocations)
         allocation = self.allocate(agent, phase, allowance)
         allocation["span_id"] = new_id()
+        allocation.update(operation_key=key, dispatch_state="intent", run_id=getattr(self, "run_id", None))
         allocation["operation_kind"] = (
             "report_correction" if phase == "audit" and payload.get("report_corrections")
             else "draft_correction" if payload.get("draft_corrections")
@@ -448,7 +505,19 @@ class Runner:
         agent.provenance = {**agent.provenance, phase + "_request_hash": stable_hash(message)}
         self.session.commit()
         self.active_calls[allocation["span_id"]] = (handle, agent, allocation)
-        handle.send(phase, message)
+        try:
+            handle.send(phase, message)
+        except NotDispatched:
+            # AgentProcess.send rejects oversized input before scheduling any write.
+            allocation.update(dispatch_state="not_attempted", final_actual=True, actual_tokens=0,
+                              usage_kind="actual",
+                              usage_source="controller rejected input before worker send")
+            self.save_ledger()
+            self.session.commit()
+            raise
+        allocation["dispatch_state"] = "sent"
+        self.save_ledger()
+        self.session.commit()
         return allocation
 
     def validate_report(self, agent, raw):
@@ -458,10 +527,16 @@ class Runner:
         return report.model_dump()
 
     def event(self, handle, agent, allocation, expected):
+        if getattr(self, "run_id", None):
+            self.session.refresh(self.task, attribute_names=["ledger", "state"])
+            if self.task.ledger.get("run_id") != self.run_id or self.task.state in tasks.TERMINAL:
+                raise StopResearch("interrupted_partial", "stale runner cannot accept worker events")
         event = handle.poll()
         if event is None:
             return None
         kind = event.get("type")
+        if event.get("call_span_id") is not None and event["call_span_id"] != allocation.get("span_id"):
+            raise ExecutorError("worker event belongs to another operation")
         if kind == "turn_usage_receipt":
             if (not allocation.get("span_id") or event.get("call_span_id") != allocation["span_id"]
                     or event.get("usage", {}).get("kind") != "actual"
@@ -486,16 +561,28 @@ class Runner:
             except ExecutorError:
                 self.usage(allocation, {**event, "terminal_result": False})
                 raise
+            records = agent.provenance["returned_outputs"]
+            agent.provenance = {**agent.provenance, "returned_outputs": [
+                {**r, "identity_verified": True} if r["call_span_id"] == allocation.get("span_id") else r
+                for r in records]}
+            self.session.commit()
+        if kind == "turn_usage_receipt":
+            if (event.get("call_span_id") != allocation.get("span_id")
+                    or event.get("operation") != allocation.get("phase")):
+                raise ExecutorError("completed usage receipt binding denied")
+            self.validate_result_identity(agent, event, expected)
         self.usage(allocation, {**event, "terminal_result": kind in {expected, "turn_usage_receipt"}})
         if kind == "turn_usage_receipt":
             return None
         if (kind in {"error", "limit"} and event.get("model_dispatch") == "not_attempted"
+                and event.get("call_span_id") == allocation.get("span_id")
                 and event.get("stage") in {"input_check", "account_recheck", "thread_creation",
                                             "prompt_preparation"}
                 and event.get("usage") == {"tokens": 0, "kind": "actual",
                                            "source": "local rejection before turn/start"}):
             allocation["final_actual"] = True
             allocation["model_dispatch"] = "not_attempted"
+            allocation["dispatch_state"] = "not_attempted"
             self.save_ledger()
             self.session.commit()
         if kind == "progress":
@@ -545,6 +632,9 @@ class Runner:
                 },
             }
             if measured is not None:
+                allocation["prompt_tokens"] = measured["prompt_tokens"]
+                if hasattr(self, "save_ledger"):
+                    self.save_ledger()
                 agent.provenance = {**agent.provenance, "codex_streams": [
                     *[row for row in agent.provenance.get("codex_streams", [])
                       if row["call_span_id"] != measured["call_span_id"]], measured,
@@ -568,6 +658,8 @@ class Runner:
                                  for key in ("model", "reasoning_effort")):
                 raise ExecutorError("worker started a different model or reasoning effort than requested")
             agent.provenance = {**agent.provenance, "active_model_turn": provenance}
+            allocation["dispatch_state"] = "started"
+            self.save_ledger()
             self.session.commit()
             research_trace.record(self, "model_turn_started", agent=agent,
                                   span_id=allocation.get("span_id"),
@@ -580,19 +672,39 @@ class Runner:
             text = event.get("text")
             if (not allocation.get("span_id") or event.get("call_span_id") != allocation["span_id"]
                     or event.get("operation") != allocation.get("phase")
-                    or not isinstance(text, str) or not 0 < len(text) <= 250_000
+                    or not isinstance(text, str) or not 0 < len(text) <= 400_000
                     or event.get("text_sha256") != stable_hash(text)
                     or type(event.get("complete_message")) is not bool):
                 raise ExecutorError("worker output checkpoint binding denied")
+            if self.task.contract["executor"] != "offline":
+                self.validate_result_identity(agent, event, "output_checkpoint")
             records = agent.provenance.get("output_checkpoints", [])
             agent.provenance = {**agent.provenance, "output_checkpoints": [
                 *[r for r in records if r["call_span_id"] != allocation["span_id"]], {
                     "call_span_id": allocation["span_id"], "operation": allocation["phase"],
                     "text": text, "text_sha256": event["text_sha256"],
                     "complete_message": event["complete_message"], "status": "unaccepted_output",
+                    "identity_verified": True, "provenance": event.get("provenance", {}),
                     "at": utcnow().isoformat()}]}
             self.session.commit()
             return None
+        if kind == "invalid_return":
+            if (event.get("call_span_id") != allocation.get("span_id")
+                    or event.get("operation") != allocation["phase"]):
+                raise ExecutorError("invalid return binding denied")
+            self.validate_result_identity(agent, event, "invalid_return")
+            raw = event.get("result")
+            agent.provenance = {**agent.provenance, "invalid_returns": [
+                *agent.provenance.get("invalid_returns", []), {"call_span_id": allocation["span_id"],
+                 "operation": allocation["phase"], "result": raw, "result_sha256": stable_hash(raw),
+                 "base_sha256": event.get("base_sha256"), "diagnostics": event.get("diagnostics"),
+                 "identity_verified": True}]}
+            allocation["dispatch_state"] = "returned_invalid"
+            self.save_ledger()
+            self.session.commit()
+            if expected == "specialist_report" and isinstance(raw, dict):
+                return raw
+            raise ExecutorError("completed invalid output saved for bounded recovery")
         if kind == "manuscript_checkpoint":
             from ..manuscript_length import MAX_CHECKS, LengthInput, measure
 
@@ -627,6 +739,9 @@ class Runner:
             raise StopResearch("limit_reached_partial",
                                "worker reached its assigned token or time limit", scope="call")
         if kind == "error":
+            allocation["dispatch_state"] = "failed"
+            if hasattr(self, "save_ledger"):
+                self.save_ledger()
             runtime_info = None
             stage = event.get("stage")
             if stage in {"setup", "account_preflight", "thread_creation", "input_check",
@@ -654,7 +769,8 @@ class Runner:
                         "runtime_error"
                     ):
                         try:
-                            info = RuntimeErrorInfo.model_validate(event["runtime_error"]).model_dump()
+                            info = RuntimeErrorInfo.model_validate(event["runtime_error"]).model_dump(
+                                exclude_unset=True)
                         except ValidationError:
                             pass
                         else:
@@ -692,6 +808,7 @@ class Runner:
             raise ExecutorError("worker failed or returned an unexpected protocol event")
         self.validate_result_identity(agent, event, expected)
         allocation.setdefault("final_actual", False)
+        allocation["dispatch_state"] = "returned"
         if allocation["final_actual"]:
             allocation["released_tokens"] = max(0, allocation["reserved"] - allocation["actual_tokens"])
         self.save_ledger()
@@ -728,6 +845,29 @@ class Runner:
                 return result
             time.sleep(0.02)
 
+    def drain_saved_outputs(self):
+        """Save queued events only; never dispatch work during failure shutdown."""
+        if self.cancel_event.is_set() or self.task.cancel_requested:
+            return
+        if self.run_id and self.task.ledger.get("run_id") != self.run_id:
+            return
+        expected = {"audit": "specialist_report", "draft": "draft", "revise": "draft",
+                    "integrate": "synthesis", "plan": "plan", "research": "report",
+                    "discover": "literature_plan"}
+        until = min(self.deadline, time.monotonic() + 2)
+        for handle, agent, allocation in self.active_calls.values():
+            for _ in range(100):
+                if time.monotonic() >= until:
+                    return
+                try:
+                    result = self.event(handle, agent, allocation, expected[allocation["phase"]])
+                except (StopResearch, ValueError, OSError):
+                    break
+                if result is not None:
+                    break
+                # No blocking reads or new calls: a missing event ends this drain.
+                if getattr(handle, "events", None) is not None and handle.events.empty():
+                    break
     def execute(self):
         contract = self.task.contract
         parent = self.new_agent("parent", {"question": contract["question"]})
@@ -879,6 +1019,8 @@ class Runner:
         self.session.commit()
 
     def finish(self):
+        if self.run_id and self.task.ledger.get("run_id") != self.run_id:
+            return
         returned = {e["span_id"] for e in self.task.ledger.get("call_trace", [])
                     if e["event"] == "return"}
         for allocation in self.allocations:
@@ -1002,10 +1144,18 @@ def run_task(task_id: str, cancel_event: threading.Event, *, executor_factory=Pr
                             runner.integrate(parent, executor.handles[0])
                         except (StopResearch, ValueError, TypeError):
                             pass
+            except tasks.TaskError as exc:
+                runner.terminal, runner.reason = "failed_partial", str(exc)
             except (ValueError, TypeError, OSError):
                 runner.terminal, runner.reason = "failed_partial", "executor or report validation failed"
+            except Exception:
+                session.rollback()
+                session.refresh(task)
+                runner.allocations = list(task.ledger.get("allocations", []))
+                runner.terminal, runner.reason = "failed_partial", "controller failure; durable work retained"
             finally:
                 if executor:
+                    runner.drain_saved_outputs()
                     executor.close()
                     closed = {e["agent_id"] for e in task.ledger.get("call_trace", [])
                               if e["event"] == "worker_closed"}

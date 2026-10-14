@@ -29,6 +29,10 @@ class ExecutorError(ValueError):
     pass
 
 
+class NotDispatched(ExecutorError):
+    """Input rejected before any worker write was scheduled."""
+
+
 class AgentProcess:
     def __init__(self, command: list[str], agent_id: str, worker_config: dict[str, str]):
         self.agent_id = agent_id
@@ -99,7 +103,7 @@ class AgentProcess:
     def send(self, operation: str, payload: dict):
         data = (json.dumps({"op": operation, "agent_id": self.agent_id, **payload}) + "\n").encode()
         if len(data) > MAX_MESSAGE:
-            raise ExecutorError("research context exceeds the worker message limit; narrow the sources")
+            raise NotDispatched("research context exceeds the worker message limit; narrow the sources")
 
         def write():
             try:

@@ -97,6 +97,8 @@ def author_model_threads(agent):
                   if k.endswith("_model") and isinstance(p, dict)]
     identities += [row.get("model_thread_id") for row in agent.provenance.get("draft_attempts", [])]
     identities += [row.get("codex_thread_id") for row in agent.provenance.get("codex_streams", [])]
+    identities += [row.get("prepared_by_thread_id")
+                   for row in agent.provenance.get("local_candidate_admissions", [])]
     return {identity for identity in identities if identity}
 
 
@@ -198,7 +200,8 @@ def validate_draft(task, campaign, raw, *, expected_response_ids=None):
     return draft
 
 
-def apply_draft(session, task, manuscript, campaign, raw, author_id, *, expected_response_ids=None):
+def apply_draft(session, task, manuscript, campaign, raw, author_id, *,
+                expected_response_ids=None, commit=True):
     draft = validate_draft(task, campaign, raw, expected_response_ids=expected_response_ids)
     claim_map = dict(manuscript.body.get("quality_claim_map", {}))
     excerpts = dict(manuscript.body.get("quality_source_excerpt_map", {}))
@@ -267,7 +270,8 @@ def apply_draft(session, task, manuscript, campaign, raw, author_id, *, expected
         ],
         status="draft_produced",
     )
-    session.commit()
+    if commit:
+        session.commit()
     return draft, candidate_hash
 
 
@@ -290,6 +294,15 @@ def packet_for(task, campaign, candidate_hash, role, prior_comments):
         "prior_comments": prior_comments,
         "earlier_packet_manifests": campaign.body["packets"],
     }
+    selected = campaign.body["drafts"][-1].get("local_revision", {}).get(
+        "controller_completion_comments", {})
+    if selected:
+        packet["controller_completion_comment_ids"] = [c["id"] for c in prior_comments
+            if selected.get(c["id"]) == stable_hash({k: v for k, v in c.items()
+                if k not in {"round_id", "reviewed_candidate_sha256", "response"}})]
+    policy = task.ledger.get("continuation", {}).get("specialist_policy", {})
+    if policy:
+        packet["operator_model_policy"] = policy[role]
     packet["evidence_artifacts"] = evidence_inventory(packet)
     packet["packet_sha256"] = stable_hash(packet)
     return packet
@@ -329,6 +342,14 @@ def validate_report(raw, packet):
     expected = {c["id"] for c in packet["prior_comments"]}
     if {r["comment_id"] for r in report["resolutions"]} != expected:
         invalid("resolutions", "/resolutions", "every prior objection requires an independent disposition")
+    for index, resolution in enumerate(report["resolutions"]):
+        # Match the final verifier before applying any review events. These are
+        # repairable report contradictions, not fatal controller errors.
+        if (resolution["disposition"] in {"resolved", "justified_rejection"}
+                and not (resolution["criterion_met"] and resolution["regression_passed"])):
+            invalid("resolution_closure", f"/resolutions/{index}/disposition",
+                    "Closure requires both criterion_met and regression_passed=true. "
+                    "Otherwise retain an open or regressed disposition; do not invent evidence.")
     if any(not set(o["claim_ids"]) <= set(claims) for o in report["objections"]):
         invalid("objection_claim", "/objections", "objection references unknown claim")
     assertions, corrections = [], []
@@ -515,6 +536,7 @@ def assessment(session, manuscript_id):
     authors = [session.get(ResearchAgent, aid) for aid in author_ids]
     author_threads = set().union(*(author_model_threads(a) for a in authors))
     roles, threads = [], []
+    coverage_reports = []
     for record in latest:
         agent = session.get(ResearchAgent, record["agent_id"])
         if (
@@ -527,6 +549,7 @@ def assessment(session, manuscript_id):
         ):
             blockers.append("specialist identity or original report changed")
             continue
+        coverage_reports.append({**record, "report": agent.report})
         requested = agent.provenance.get("requested_model_policy")
         model_receipt = agent.provenance.get("specialist_report_model", {})
         if requested and (requested.get("role") != record["role"] or any(
@@ -566,9 +589,19 @@ def assessment(session, manuscript_id):
             attempts = agent.provenance.get("report_attempts", [])
             if attempts:
                 original = attempts[-1]
+                from .research_recovery import (
+                    normalization_authority,
+                    normalize_review_report,
+                )
+
+                derived, normalization = normalize_review_report(
+                    original["report"], normalization_authority(task))
                 if (stable_hash(original["report"]) != original["report_sha256"]
                         or original["packet_sha256"] != packet["packet_sha256"]
-                        or SpecialistReport.model_validate(original["report"]).model_dump() != agent.report):
+                        or SpecialistReport.model_validate(derived).model_dump() != agent.report
+                        or (normalization and (
+                            agent.provenance.get("review_normalization") != normalization
+                            or record.get("normalization") != normalization))):
                     blockers.append("accepted specialist report differs from its original return")
         except (ValueError, KeyError, TypeError):
             blockers.append("specialist evidence or coverage is invalid")
@@ -618,7 +651,7 @@ def assessment(session, manuscript_id):
         "literature_coverage": manuscript_literature.coverage_status(
             task.contract, task.sources, campaign.body["search_receipts"],
             candidate=campaign.body["drafts"][-1]["candidate"] if campaign.body["drafts"] else None,
-            reports=campaign.body["reports"], candidate_sha256=current) if task else None,
+            reports=coverage_reports, candidate_sha256=current) if task else None,
         "release_review_flags": release_flags,
         "blockers": list(dict.fromkeys(blockers)),
     }

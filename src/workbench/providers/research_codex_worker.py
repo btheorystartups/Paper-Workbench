@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,10 +42,21 @@ from workbench.providers.counter_compatibility import (
 )
 from workbench.providers.research_model_policy import default_role_policy, role_selection
 from workbench.providers.research_validation import validation_diagnostics
-from workbench.research_contract import OPERATION_MODELS, STREAM_FAILURE_CODES, ManuscriptLength
+from workbench.research_contract import (
+    MAX_MANUSCRIPT_CLAIMS,
+    MAX_REVISION_COMMENTS,
+    OPERATION_MODELS,
+    STREAM_FAILURE_CODES,
+    ManuscriptDraft,
+    ManuscriptLength,
+    SectionRecoveryText,
+)
 from workbench.research_contract import AgentReport as AgentReport
 
 MAX_LINE = 2_000_000
+BASE_RESPONSE_TEXT_LIMIT = 250_000
+MAX_MANUSCRIPT_RESPONSE_TEXT_LIMIT = 400_000
+MANUSCRIPT_RESPONSE_CHARS_PER_WORD = 40
 ALLOWED_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning"}
 PROGRESS_STAGES = {
     "setup", "account_preflight", "thread_creation", "input_check", "account_recheck",
@@ -89,7 +101,8 @@ def failure_metadata(exc):
         result["failure_code"] = exc.code
         if exc.code in {"runtime_error", "turn_incomplete"} and exc.runtime_error is not None:
             try:
-                result["runtime_error"] = RuntimeErrorInfo.model_validate(exc.runtime_error).model_dump()
+                result["runtime_error"] = RuntimeErrorInfo.model_validate(exc.runtime_error).model_dump(
+                    exclude_unset=True)
             except ValidationError:
                 pass
     return result
@@ -129,6 +142,21 @@ def prompt_token_measurement(prompt):
         return len(prompt.encode("utf-8")), "utf8-byte-upper-estimate"
 
 
+def response_text_limit(operation, message):
+    """Bound structured streams while allowing declared full-length manuscripts."""
+    if operation not in {"draft", "revise"} or not isinstance(message, dict):
+        return BASE_RESPONSE_TEXT_LIMIT
+    contract = message.get("contract")
+    length = contract.get("manuscript_length") if isinstance(contract, dict) else None
+    max_words = length.get("max_words") if isinstance(length, dict) else None
+    if isinstance(max_words, bool) or not isinstance(max_words, int) or max_words <= 0:
+        return BASE_RESPONSE_TEXT_LIMIT
+    return min(
+        MAX_MANUSCRIPT_RESPONSE_TEXT_LIMIT,
+        max(BASE_RESPONSE_TEXT_LIMIT, max_words * MANUSCRIPT_RESPONSE_CHARS_PER_WORD),
+    )
+
+
 def author_packet_hash(message):
     return stable_hash({key: message.get(key) for key in (
         "contract", "sources", "verification_receipts", "search_receipts",
@@ -142,9 +170,35 @@ def author_evidence_hash(message):
     )})
 
 
+def prompt_projection(operation, message):
+    """A lossless view of evidence inventories; frozen controller packets remain intact."""
+    view = deepcopy(message)
+    if operation in {"draft", "revise"} and message.get("section_recovery"):
+        view.pop("previous_candidate", None)
+        view.pop("author_checkpoint", None)
+        view["original_draft"].pop("responses", None)
+        view["prior_comments"] = [{k: v for k, v in c.items()
+                                  if k not in {"response", "round_id", "reviewed_candidate_sha256"}}
+                                 for c in message.get("prior_comments", [])]
+        view.pop("expected_response_ids", None)
+    if operation == "audit" and "packet" in view:
+        packet = view["packet"]
+        inventories, manifests = {}, []
+        for row in packet.get("earlier_packet_manifests", []):
+            inventory = row.get("evidence_artifacts", [])
+            key = stable_hash(inventory)
+            inventories[key] = inventory
+            manifests.append({k: v for k, v in row.items() if k != "evidence_artifacts"}
+                             | {"evidence_set_sha256": key})
+        packet["earlier_packet_manifests"] = manifests
+        packet["historical_evidence_sets"] = inventories
+    return view
+
+
 def json_prompt(operation, message):
     if operation not in OPERATION_MODELS:
         raise ValueError("unknown research operation")
+    message = prompt_projection(operation, message)
     instructions = (
         "You are an independent research agent in Paper Workbench. Your "
         "FINAL response must be one JSON object "
@@ -158,6 +212,20 @@ def json_prompt(operation, message):
         "use bmatrix/pmatrix and aligned for matrices and derivations. Escape backslashes for JSON. "
         "Use standard base/AMS commands, not custom macros, document commands, links or external resources."
     )
+    if operation in {"draft", "revise"} and message.get("section_recovery"):
+        specification = message["section_recovery"]
+        instructions += (
+            f" Write ONLY the requested discussion section as SectionRecoveryText, using "
+            f"{specification.get('min_words', 1000)}-{specification.get('max_words', 1300)} "
+            "whitespace-delimited words. The controller preserves the existing manuscript, claims, "
+            "responses and references. Explain the bounded findings, matched-information controls, "
+            "resource admissibility, proper-score interpretation, literature scope and limitations. "
+            "Add source-grounded analytical substance; avoid new experiments, unsupported generalizations, "
+            "workflow status or new theorems. Map all substantive discussion to supplied existing claim IDs. "
+            "Return only text and claim_ids. The controller checks the word count and assembled manuscript."
+        )
+        return instructions + "\nUse the runtime-supplied outputSchema.\n" + json.dumps(
+            message, ensure_ascii=False)
     if operation == "discover":
         instructions += (
             " Propose precise Crossref/OpenAlex queries for prior-art discovery. Identify alternate "
@@ -169,6 +237,11 @@ def json_prompt(operation, message):
             "on subsequent rounds. Return no queries when the remaining bounded searches add no value; "
             "record coverage limitations and unresolved gaps. Never claim exhaustive coverage."
         )
+    if operation == "audit":
+        instructions += (" Historical manifest inventories are factored by evidence_set_sha256: "
+                         "look up their complete evidence_artifacts arrays in historical_evidence_sets. "
+                         "Packet scopes and the supplied packet_sha256 refer to the frozen full packet. "
+                         "This input projection does not alter source text or evidence availability.")
     if operation in {"draft", "revise"}:
         instructions += (
             " Write the COMPLETE manuscript, not an outline. Use full sections with stable IDs and "
@@ -235,11 +308,34 @@ def json_prompt(operation, message):
             "Your own proof checking is not independent review."
         )
     elif operation == "audit":
+        controller_ids = message.get("packet", {}).get("controller_completion_comment_ids", [])
+        if controller_ids:
+            instructions += (" The following prior IDs are explicitly controller-owned "
+                "four-review completion checks: " + ", ".join(controller_ids) + ". "
+                "You must still assess them. If this packet does not prove their criterion, "
+                "return disposition=open and criterion_met=false; assess regression honestly. "
+                "Do not use justified_rejection with criterion_met=false merely because peer "
+                "reports are absent. The controller independently verifies these exact checks "
+                "only after all four current reports and all scientific dispositions pass. "
+                "Do not certify future completion or alter scientific judgments. "
+                "Record these pending workflow criteria in prior_objection_assessments. "
+                "Do not duplicate an explicitly classified workflow criterion as a new scientific "
+                "objection or scientific coverage blocker; report any independent scientific defect "
+                "normally. The native controller will block acceptance until the workflow facts "
+                "are established.")
         instructions += (
             " You are a fresh specialist reviewer, not the author. Review the ENTIRE candidate and "
             "all its section/claim dependencies, including material after the first paragraph. Echo the "
             "controller's role, candidate_sha256 and packet_sha256 exactly. Cover every section and assess "
-            "every claim. Flag any substantive assertion missing from the claim inventory, including "
+            "every claim. Only literature_contribution supplies literature_comparisons; all other roles "
+            "must return literature_comparisons=[]. Only adversarial supplies adversarial_checks; "
+            "all other roles must return adversarial_checks=[]. Assess scientific literature concerns "
+            "in claim assessments and objections even when the comparisons list is empty. "
+            "The controller checks the four-role completion and independence after concurrent reviews "
+            "return. Do not block your scientific assessment solely because peer reviews are absent "
+            "from your current packet. Claims in manuscript prose that reviews or approval already "
+            "occurred still require supplied evidence. "
+            "Flag any substantive assertion missing from the claim inventory, including "
             "side remarks, conclusions and limitations that broaden a domain, change a quantifier or "
             "remove an assumption. Check that the mapped statement explicitly covers the asserted scope; "
             "a mathematically true extension can still be missing from the inventory. Ordinary "
@@ -385,13 +481,54 @@ def parse_json(text, model):
 
 def output_schema(operation, message):
     """Constrain generation to the same contract validated on receipt."""
-    model = OPERATION_MODELS[operation]
+    section_only = operation in {"draft", "revise"} and bool(message.get("section_recovery"))
+    model = SectionRecoveryText if section_only else OPERATION_MODELS[operation]
     schema = model.model_json_schema()
-    if operation in {"draft", "revise"} and "expected_response_ids" in message:
+    if section_only:
+        schema["properties"]["text"] = {"type": "string"}
+        schema["properties"]["claim_ids"]["items"]["enum"] = message["recovery_claim_ids"]
+        specification = message["section_recovery"]
+        if not (1000 <= specification.get("min_words", 1000)
+                <= specification.get("max_words", 1300) <= 1300):
+            raise ValueError("section repair bounds cannot satisfy the output contract")
+    if operation == "audit" and "packet" in message:
+        packet = message["packet"]
+        role = packet["role"]
+        candidate = packet.get("candidate", {})
+        identifiers = [claim["id"] for claim in candidate.get("claims", [])]
+        if len(identifiers) > MAX_MANUSCRIPT_CLAIMS or len(candidate.get("sections", [])) > 24:
+            raise ValueError("review inventory exceeds native contract capacity")
+        if identifiers:
+            schema["properties"]["assessments"].update(minItems=len(identifiers), maxItems=len(identifiers))
+            schema["$defs"]["ClaimAssessment"]["properties"]["claim_id"]["enum"] = identifiers
+            for definition in ("QualityObjection", "AdversarialCheck"):
+                schema["$defs"][definition]["properties"]["claim_ids"]["items"]["enum"] = identifiers
+        sections = [section["id"] for section in candidate.get("sections", [])]
+        if sections:
+            schema["properties"]["covered_section_ids"].update(minItems=len(sections), maxItems=len(sections))
+            schema["properties"]["covered_section_ids"]["items"]["enum"] = sections
+        for key in ("role", "candidate_sha256", "packet_sha256"):
+            schema["properties"][key]["enum"] = [packet[key]]
+        for field, owner in (("literature_comparisons", "literature_contribution"),
+                             ("adversarial_checks", "adversarial")):
+            if role != owner:
+                schema["properties"][field]["maxItems"] = 0
+        if role == "adversarial":
+            schema["properties"]["adversarial_checks"]["minItems"] = 5
+    if not section_only and operation in {"draft", "revise"} and "expected_response_ids" in message:
         identifiers = message["expected_response_ids"]
+        if len(identifiers) > MAX_REVISION_COMMENTS or len(set(identifiers)) != len(identifiers):
+            raise ValueError("response inventory exceeds native contract capacity")
         schema["properties"]["responses"].update(minItems=len(identifiers), maxItems=len(identifiers))
         if identifiers:
             schema["$defs"]["RevisionResponse"]["properties"]["comment_id"]["enum"] = identifiers
+    if not section_only and operation in {"draft", "revise"} and message.get("recovery_claim_ids"):
+        identifiers = message["recovery_claim_ids"]
+        if len(identifiers) > MAX_MANUSCRIPT_CLAIMS or len(set(identifiers)) != len(identifiers):
+            raise ValueError("claim inventory exceeds native contract capacity")
+        schema["properties"]["claims"].update(minItems=len(identifiers), maxItems=len(identifiers))
+        schema["$defs"]["ManuscriptClaim"]["properties"]["id"]["enum"] = identifiers
+        schema["$defs"]["ManuscriptSection"]["properties"]["claim_ids"]["items"]["enum"] = identifiers
     if operation == "integrate":
         if "reports" in message:
             identifiers = list(message["reports"])
@@ -420,7 +557,38 @@ def output_schema(operation, message):
                 close_objects(child)
 
     close_objects(schema)
+    def capacity(value):
+        if isinstance(value, dict):
+            if value.get("minItems", 0) > value.get("maxItems", 1000000):
+                raise ValueError("output schema has contradictory array capacity")
+            for child in value.values():
+                capacity(child)
+        elif isinstance(value, list):
+            for child in value:
+                capacity(child)
+    capacity(schema)
     return schema
+
+
+def assemble_section_recovery(original, section, specification):
+    section = SectionRecoveryText.model_validate(section).model_dump()
+    count = len(section["text"].split())
+    if (specification.get("base_sha256", stable_hash(original)) != stable_hash(original)
+            or not specification.get("min_words", 1000) <= count <= specification.get("max_words", 1300)):
+        raise ValueError("section recovery base or word range changed")
+    draft = deepcopy(original)
+    source = specification["discussion_id"]
+    target = specification["reference_id"]
+    references = next((row for row in draft["sections"] if row["id"] == source), None)
+    if (not references or references["heading"].strip().lower() != "references"
+            or any(row["id"] == target for row in draft["sections"])
+            or not set(section["claim_ids"]) <= {claim["id"] for claim in draft["claims"]}):
+        raise ValueError("section recovery binding denied")
+    moved = {**references, "id": target}
+    discussion = {"id": source, "heading": specification["discussion_heading"], **section}
+    draft["sections"] = [discussion if row["id"] == source else row for row in draft["sections"]]
+    draft["sections"].append(moved)
+    return ManuscriptDraft.model_validate(draft).model_dump()
 
 
 class CodexResearchWorker:
@@ -626,7 +794,8 @@ class CodexResearchWorker:
                 or not isinstance(params.get("callId"), str) or not 1 <= len(params["callId"]) <= 200
                 or params["callId"] in self.length_tool_call_ids):
             return None
-        if len(self.length_tool_call_ids) >= MAX_CHECKS:
+        limit = active.get("max_checks", MAX_CHECKS)
+        if len(self.length_tool_call_ids) >= limit:
             raise WorkerStreamError("unsupported_item")
         self.length_tool_call_ids.add(params["callId"])
         started = time.monotonic()
@@ -639,7 +808,7 @@ class CodexResearchWorker:
         except (ValidationError, ValueError, TypeError):
             result = {
                 "error": "invalid_section_text",
-                "remaining_checks": MAX_CHECKS - len(self.length_tool_call_ids),
+                "remaining_checks": limit - len(self.length_tool_call_ids),
             }
             success = False
         else:
@@ -705,6 +874,7 @@ class CodexResearchWorker:
         self.thread_has_length_tool = length_tool
 
     def run(self, agent_id, operation, message):
+        self.turn_attempted = False
         self.active_author_agent_id = agent_id if operation in {"draft", "revise"} else None
         self.stream_activity = None
         self.length_tool_active = None
@@ -712,13 +882,17 @@ class CodexResearchWorker:
         self.length_tool_events = []
         self.length_tool_call_ids = set()
         bounds = (
-            message.get("contract", {}).get("manuscript_length") if operation in {"draft", "revise"} else None
+            message.get("contract", {}).get("manuscript_length")
+            if operation in {"draft", "revise"} and not message.get("section_recovery") else None
         )
         if bounds is not None:
             bounds = ManuscriptLength.model_validate(bounds).model_dump()
         self.stream_measurement = None
         self.call_span_id = message.get("call_span_id")
         self.stage = "input_check"
+        length_check_limit = message.get("length_check_limit", MAX_CHECKS)
+        if type(length_check_limit) is not int or not 1 <= length_check_limit <= MAX_CHECKS:
+            raise ValueError("length check limit outside bounded capability")
         role = getattr(self.settings, "worker_role", "research")
         if role == "author" and operation not in {"draft", "revise", "integrate"}:
             raise ValueError("operation does not match the assigned research worker role")
@@ -732,9 +906,12 @@ class CodexResearchWorker:
         wall_seconds = message.get("time_limit_seconds")
         if type(allowance) is not int or allowance < 1 or type(wall_seconds) not in {int, float}:
             raise ValueError("invalid worker allowance")
+        schema = output_schema(operation, message)
         deadline = time.monotonic() + max(0, wall_seconds)
         if time.monotonic() >= deadline:
-            emit(agent_id, "limit")
+            emit(agent_id, "limit", stage="input_check", model_dispatch="not_attempted",
+                 call_span_id=self.call_span_id, operation=operation,
+                 usage={"tokens": 0, "kind": "actual", "source": "local rejection before turn/start"})
             return
         self.stage = "account_recheck"
         current_account = self.request(
@@ -762,6 +939,18 @@ class CodexResearchWorker:
         if author_correction:
             original = message.get("original_draft")
             previous = getattr(self, "last_author_return", {})
+            restored = message.get("author_return_checkpoint")
+            if restored is not None and not previous:
+                if (not isinstance(restored, dict) or self.thread_id
+                        or set(restored) != {"checkpoint_sha256", "draft_sha256", "evidence_sha256"}
+                        or not isinstance(restored.get("checkpoint_sha256"), str)
+                        or len(restored["checkpoint_sha256"]) != 64
+                        or any(c not in "0123456789abcdef" for c in restored["checkpoint_sha256"])
+                        or restored.get("draft_sha256") != stable_hash(original)
+                        or restored.get("evidence_sha256") != author_evidence_hash(message)):
+                    raise ValueError("author return recovery binding denied")
+                previous = {"draft_sha256": stable_hash(original), "operation": operation,
+                            "packet_sha256": author_packet_hash(message), "corrected": False}
             if (not isinstance(original, dict)
                     or stable_hash(original) != message.get("original_draft_sha256")
                     or previous.get("draft_sha256") != stable_hash(original)
@@ -775,6 +964,19 @@ class CodexResearchWorker:
         if author_revision:
             candidate = message.get("previous_candidate")
             previous = getattr(self, "last_author_candidate", {})
+            checkpoint = message.get("author_checkpoint")
+            if checkpoint is not None and not previous:
+                # Explicit controller restore, only on a fresh worker. The controller validates
+                # persisted graph/evidence and requires a new grant before sending this receipt.
+                if (not isinstance(checkpoint, dict) or self.thread_id
+                        or set(checkpoint) != {"checkpoint_sha256", "draft_sha256", "evidence_sha256"}
+                        or not isinstance(checkpoint["checkpoint_sha256"], str)
+                        or len(checkpoint["checkpoint_sha256"]) != 64
+                        or any(c not in "0123456789abcdef" for c in checkpoint["checkpoint_sha256"])
+                        or checkpoint["draft_sha256"] != stable_hash(candidate)
+                        or checkpoint["evidence_sha256"] != author_evidence_hash(message)):
+                    raise ValueError("author continuation checkpoint binding denied")
+                previous = checkpoint
             if (not isinstance(candidate, dict)
                     or stable_hash(candidate) != message.get("previous_candidate_sha256")
                     or previous.get("draft_sha256") != stable_hash(candidate)
@@ -808,11 +1010,13 @@ class CodexResearchWorker:
         prompt = json_prompt(operation, prompt_message)
         prompt_tokens, prompt_policy = prompt_token_measurement(prompt)
         if prompt_tokens + 400 >= allowance:
-            emit(agent_id, "limit", usage={
-                "tokens": 0, "kind": "actual", "source": "preflight rejected input; no model call"
+            emit(agent_id, "limit", stage="prompt_preparation", model_dispatch="not_attempted",
+                 call_span_id=self.call_span_id, operation=operation, usage={
+                "tokens": 0, "kind": "actual", "source": "local rejection before turn/start"
             })
             return
         self.stage = "turn_start"
+        self.turn_attempted = True
         turn = self.request(
             "turn/start",
             {
@@ -821,7 +1025,7 @@ class CodexResearchWorker:
                 "model": self.settings.codex_local_model,
                 "effort": self.settings.codex_local_reasoning_effort,
                 "approvalPolicy": "never",
-                "outputSchema": output_schema(operation, message),
+                "outputSchema": schema,
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
             },
             deadline=deadline,
@@ -830,14 +1034,20 @@ class CodexResearchWorker:
         if not turn_id:
             raise ValueError("Codex did not start a research turn")
         if bounds is not None:
-            self.length_tool_active = {"thread_id": self.thread_id, "turn_id": turn_id, "bounds": bounds}
+            self.length_tool_active = {"thread_id": self.thread_id, "turn_id": turn_id,
+                                       "bounds": bounds, "max_checks": length_check_limit}
+        response_character_limit = response_text_limit(operation, message)
         provenance = {
+            "pipeline_version": "manuscript-recovery-v2", "schema_sha256": stable_hash(schema),
+            "prompt_sha256": stable_hash(prompt), "projection_version": "research-input-v2",
+            "worker_sha256": stable_hash(Path(__file__).read_text(encoding="utf-8")),
             "codex_thread_id": self.thread_id,
             "codex_turn_id": turn_id,
             "account_email": self.account["email"],
             "authentication_mode": "chatgpt",
             "model": self.settings.codex_local_model,
             "reasoning_effort": self.settings.codex_local_reasoning_effort,
+            "response_text_limit_characters": response_character_limit,
             "rpc_calls": getattr(self, "rpc_calls", []),
         }
         if prior_thread_id:
@@ -846,11 +1056,11 @@ class CodexResearchWorker:
         if bounds is not None:
             provenance["length_tool_capability"] = capability
             provenance["length_tool_registration"] = {"registered": bool(self.thread_has_length_tool),
-                "tool": TOOL_NAME, "namespace": TOOL_NAMESPACE, "max_checks": MAX_CHECKS,
+                "tool": TOOL_NAME, "namespace": TOOL_NAMESPACE, "max_checks": length_check_limit,
                 "input_schema_sha256": stable_hash(tool_spec()["inputSchema"])}
         # Record the real model turn even when its in-flight usage crosses the
         # allowance before a structured result can be returned.
-        emit(agent_id, "turn_started", provenance=provenance)
+        emit(agent_id, "turn_started", call_span_id=self.call_span_id, provenance=provenance)
         self.stream_started_monotonic = time.monotonic()
         self.stream_measurement = {
             "call_span_id": self.call_span_id, "codex_thread_id": self.thread_id,
@@ -887,9 +1097,11 @@ class CodexResearchWorker:
         )
         heartbeat_thread.start()
         usage_tokens = None
+        turn_completed = False
         text_parts = []
         text_characters = 0
         final_text = None
+        runtime_retries = []
         self.stage = "turn_stream"
         try:
             while True:
@@ -913,8 +1125,15 @@ class CodexResearchWorker:
                     if (params.get("threadId") not in {None, self.thread_id}
                             or params.get("turnId") not in {None, turn_id}):
                         continue
-                    raise WorkerStreamError("runtime_error", runtime_error=normalize_runtime_error(
-                        params.get("error"), source="error_notification", will_retry=params.get("willRetry")))
+                    info = normalize_runtime_error(
+                        params.get("error"), source="error_notification", will_retry=params.get("willRetry"))
+                    if info["will_retry"] is True:
+                        # The provider is recovering this turn. Keep its original deadline and
+                        # usage counter; starting a new turn would spend a second allowance.
+                        runtime_retries = [*runtime_retries[-19:], info]
+                        self.progress(agent_id, "codex_notification", force=True)
+                        continue
+                    raise WorkerStreamError("runtime_error", runtime_error=info)
                 if params.get("threadId") != self.thread_id:
                     continue
                 if params.get("turnId") not in {None, turn_id}:
@@ -924,12 +1143,12 @@ class CodexResearchWorker:
                     total = raw.get("totalTokens")
                     if type(total) is int and total >= self.total_tokens:
                         usage_tokens = total - self.total_tokens
-                        emit(agent_id, "usage", usage={
+                        emit(agent_id, "usage", call_span_id=self.call_span_id, usage={
                             "tokens": usage_tokens, "kind": "actual",
                             "source": "Codex thread/tokenUsage/updated"
                         })
                         if usage_tokens >= allowance:
-                            emit(agent_id, "limit", usage={
+                            emit(agent_id, "limit", call_span_id=self.call_span_id, usage={
                                 "tokens": usage_tokens, "kind": "actual",
                                 "source": "Codex thread/tokenUsage/updated"
                             })
@@ -958,7 +1177,7 @@ class CodexResearchWorker:
                         if measured["first_delta_seconds"] is None:
                             measured["first_delta_seconds"] = delta_seconds
                         measured["last_delta_seconds"] = delta_seconds
-                    if text_characters > 250_000:
+                    if text_characters > response_character_limit:
                         raise WorkerStreamError("response_text_bound")
                 elif method == "item/completed":
                     item = params.get("item") or {}
@@ -973,8 +1192,15 @@ class CodexResearchWorker:
                     if (params.get("turn") or {}).get("status") != "completed":
                         raise WorkerStreamError("turn_incomplete", runtime_error=normalize_runtime_error(
                             (params.get("turn") or {}).get("error"), source="failed_turn"))
+                    turn_completed = True
                     break
         finally:
+            partial = final_text if final_text is not None else "".join(text_parts)
+            if partial and not turn_completed:
+                partial = partial[:min(response_character_limit, 400000)]
+                emit(agent_id, "output_checkpoint", call_span_id=self.call_span_id,
+                     operation=operation, text=partial, text_sha256=stable_hash(partial),
+                     complete_message=False, provenance=provenance)
             self.length_tool_active = None
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=0.2)
@@ -993,9 +1219,63 @@ class CodexResearchWorker:
             self.total_tokens += usage_tokens
         self.stage = "report_validation"
         output = final_text if final_text is not None else "".join(text_parts)
-        model = OPERATION_MODELS[operation]
-        result = parse_json(output, model)
-        if bounds is not None:
+        usage = (
+            {"tokens": usage_tokens, "kind": "actual", "source": "Codex thread/tokenUsage/updated"}
+            if usage_tokens is not None else
+            {"tokens": prompt_tokens + len(output.encode("utf-8")),
+             "kind": "estimate", "source": "supplied/returned text upper estimate"}
+        )
+        if self.call_span_id:
+            # A completed return remains unaccepted until schema and scientific checks pass.
+            emit(agent_id, "output_checkpoint", call_span_id=self.call_span_id,
+                 operation=operation, text=output, text_sha256=stable_hash(output),
+                 complete_message=True, provenance=provenance)
+            if usage_tokens is not None:
+                emit(agent_id, "turn_usage_receipt", call_span_id=self.call_span_id,
+                     operation=operation, usage=usage, provenance=provenance)
+        section_only = operation in {"draft", "revise"} and bool(message.get("section_recovery"))
+        model = SectionRecoveryText if section_only else OPERATION_MODELS[operation]
+        author_schema_valid = True
+        try:
+            result = parse_json(output, model)
+        except (ValidationError, json.JSONDecodeError) as exc:
+            # The controller's draft gate rejects this raw object and owns the one
+            # bounded correction. Returning it here never admits it as a candidate.
+            raw = output.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                result = raw
+            if operation not in {"draft", "revise"} or section_only or not isinstance(result, dict):
+                emit(agent_id, "invalid_return", call_span_id=self.call_span_id, operation=operation,
+                     result=result, base_sha256=message.get("original_draft_sha256"),
+                     diagnostics=validation_diagnostics(exc), provenance=provenance)
+                if operation not in {"audit", "draft", "revise"}:
+                    raise
+                return
+            author_schema_valid = False
+            provenance["author_schema_diagnostics"] = validation_diagnostics(exc)
+        if section_only:
+            generated = result
+            try:
+                result = assemble_section_recovery(
+                    message["original_draft"], generated, message["section_recovery"])
+            except ValueError:
+                emit(agent_id, "invalid_return", call_span_id=self.call_span_id, operation=operation,
+                     result=generated, base_sha256=message.get("original_draft_sha256"),
+                     diagnostics={"error_count": 1, "errors": [{"code": "value_error", "path": []}]},
+                     provenance=provenance)
+                return
+            provenance["section_recovery"] = {
+                "base_draft_sha256": message["original_draft_sha256"],
+                "generated_section_sha256": stable_hash(generated),
+                "generated_section": generated,
+                "assembled_draft_sha256": stable_hash(result),
+                "policy": "preserve-base-and-move-references",
+            }
+        if bounds is not None and author_schema_valid:
             final_length = measure(result["sections"], bounds)
             provenance["length_tool_capability"] = {
                 **capability, "successful_invocation_received": bool(self.length_tool_receipts),
@@ -1016,20 +1296,16 @@ class CodexResearchWorker:
                 "operation": operation, "draft_sha256": stable_hash(result),
                 "packet_sha256": author_packet_hash(message), "corrected": False,
             }
-        usage = (
-            {"tokens": usage_tokens, "kind": "actual", "source": "Codex thread/tokenUsage/updated"}
-            if usage_tokens is not None else
-            {"tokens": prompt_tokens + len(output.encode("utf-8")),
-             "kind": "estimate", "source": "supplied/returned text upper estimate"}
-        )
         emit(
             agent_id,
             {"plan": "plan", "research": "report", "integrate": "synthesis",
              "draft": "draft", "revise": "draft", "audit": "specialist_report",
              "discover": "literature_plan"}[operation],
             result=result,
+            call_span_id=self.call_span_id,
             usage=usage,
-            provenance={**provenance, "rpc_calls": getattr(self, "rpc_calls", [])},
+            provenance={**provenance, "runtime_retries": runtime_retries,
+                        "rpc_calls": getattr(self, "rpc_calls", [])},
         )
 
 
@@ -1068,8 +1344,16 @@ def main():
                 else:
                     raise ValueError("worker requires hello")
             except Exception as exc:
+                local = bool(worker and not getattr(worker, "turn_attempted", False)
+                             and worker.stage in {"input_check", "account_recheck", "thread_creation",
+                                                  "prompt_preparation"})
                 emit(agent_id, "error", stage=worker.stage if worker else "setup",
-                     **failure_metadata(exc), rpc_calls=getattr(worker, "rpc_calls", []))
+                     **({"call_span_id": worker.call_span_id}
+                        if getattr(worker, "call_span_id", None) else {}),
+                     **failure_metadata(exc), rpc_calls=getattr(worker, "rpc_calls", []),
+                     **({"model_dispatch": "not_attempted",
+                         "operation": operation, "usage": {"tokens": 0, "kind": "actual",
+                         "source": "local rejection before turn/start"}} if local else {}))
                 return
     finally:
         if worker:

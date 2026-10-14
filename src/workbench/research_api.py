@@ -13,10 +13,22 @@ from .providers.research_embeddings import SemanticUnavailable
 from .providers.research_executor import ExecutorError, availability
 from .research_contract import TaskBrief
 from .services import research, research_runner, research_tasks
+from .services.manuscript_continuation import ContinuationGrant, checkpoint
+from .services.manuscript_local_revision import LocalCandidateGrant
+from .services.manuscript_local_revision import admit as admit_local_candidate
+from .services.research_recovery import AuthorizationGrant, accounting, elapsed_seconds, envelope
 
 
 class StartIn(BaseModel):
     acknowledge_live_execution: bool = False
+
+
+class ReconcileUsageIn(BaseModel):
+    expected_checkpoint_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AuthorizationIn(ReconcileUsageIn):
+    authorization: AuthorizationGrant
 
 
 class RetrievalIn(BaseModel):
@@ -174,6 +186,57 @@ def install(app, session_dependency, principal_dependency, require, bounded_uplo
     ):
         task = scoped(session, project_id, task_id, user, "coauthor")
         return research_runner.start(session, task, **body.model_dump())
+
+    @app.get("/projects/{project_id}/research-tasks/{task_id}/continuation")
+    def continuation_preview(
+        project_id: str, task_id: str, session: Session = Depends(session_dependency),
+        user=Depends(principal_dependency),
+    ):
+        task = scoped(session, project_id, task_id, user)
+        return checkpoint(session, task)
+
+    @app.post("/projects/{project_id}/research-tasks/{task_id}/local-candidate")
+    def local_candidate(project_id: str, task_id: str, body: LocalCandidateGrant,
+                        session: Session = Depends(session_dependency),
+                        user=Depends(principal_dependency)):
+        task = scoped(session, project_id, task_id, user, "coauthor")
+        return admit_local_candidate(session, task, body,
+            actor=getattr(user, "id", None) or "authorized-local-user")
+
+    @app.post("/projects/{project_id}/research-tasks/{task_id}/continue", status_code=202)
+    def continue_task(
+        project_id: str, task_id: str, body: ContinuationGrant,
+        session: Session = Depends(session_dependency), user=Depends(principal_dependency),
+    ):
+        task = scoped(session, project_id, task_id, user, "coauthor")
+        return research_runner.start(session, task, continuation=body,
+                                     acknowledge_live_execution=body.acknowledge_live_execution)
+
+    @app.post("/projects/{project_id}/research-tasks/{task_id}/authorization")
+    def authorize_task(project_id: str, task_id: str, body: AuthorizationIn,
+                       session: Session = Depends(session_dependency), user=Depends(principal_dependency)):
+        task = scoped(session, project_id, task_id, user, "coauthor")
+        if checkpoint(session, task)["checkpoint_sha256"] != body.expected_checkpoint_sha256:
+            raise research_tasks.TaskError("checkpoint changed; authorization denied")
+        if (body.authorization.token_ceiling < accounting(task)["charged_tokens"]
+                or body.authorization.time_ceiling_seconds < elapsed_seconds(task)):
+            raise research_tasks.TaskError("authorization cannot omit already consumed or held capacity")
+        research_tasks.lock_revision(session, task)
+        authority = envelope(body.authorization)
+        task.ledger = {**task.ledger, "authorization": authority}
+        research_tasks.audit(session, task, "authorize_research_aggregate", authority)
+        session.commit()
+        return {"authorization": authority, "accounting": accounting(task)}
+
+    @app.post("/projects/{project_id}/research-tasks/{task_id}/reconcile-completed-usage")
+    def reconcile_usage(
+        project_id: str, task_id: str, body: ReconcileUsageIn,
+        session: Session = Depends(session_dependency), user=Depends(principal_dependency),
+    ):
+        from .services.completed_usage_reconciliation import reconcile
+
+        task = scoped(session, project_id, task_id, user, "coauthor")
+        return reconcile(session, task, body.expected_checkpoint_sha256)
 
     @app.post("/projects/{project_id}/research-tasks/{task_id}/cancel")
     def cancel(

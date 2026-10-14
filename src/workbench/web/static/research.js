@@ -117,7 +117,7 @@ async function tabResearch(el, pid, sub) {
       ['research_report', 'paper', 'reviewer_report'].map(name => '<label><input type="checkbox" name="deliverables" value="' + name + '"> ' + esc(name.replaceAll('_', ' ')) + '</label>').join(' ') + '</fieldset>' +
       '<details><summary>Select existing ingested documents (optional)</summary><fieldset><legend>Project sources</legend>' + (sources.length ? sources.map(s =>
         '<label><input type="checkbox" name="source_ids" value="' + esc(s.id) + '"> ' + esc(s.title) + ' · ' + esc(s.id.slice(0, 8)) + '</label><br>').join('') : '<p>No sources yet. You can upload after creating the task.</p>') + '</fieldset></details>' +
-      '<div class="field"><label>Task-wide token limit<input name="token_limit" type="number" value="96000" min="2000" max="1000000" required></label></div>' +
+      '<div class="field"><label>Task-wide token limit<input name="token_limit" type="number" value="96000" min="2000" max="1500000" required></label></div>' +
       '<div class="field"><label>Time limit (seconds)<input name="time_limit_seconds" type="number" value="900" min="10" max="7200" required></label></div>' +
       '<div class="field"><label>Maximum child agents<input name="max_children" type="number" value="3" min="1" max="6" required></label></div>' +
       '<p class="small-text dim">Manuscript budgets cover drafting, four reviews, revisions and re-reviews, corrections and final handoff. The default 96,000 tokens may stop before that cycle completes. Capacity estimates appear after the first draft; maximum revision cycles do not guarantee a funded cycle.</p>' +
@@ -248,7 +248,14 @@ async function tabResearch(el, pid, sub) {
     '<p>Handoff reserve: ' + esc(task.contract.handoff_token_reserve) + ' tokens / ' + esc(task.contract.handoff_time_reserve_seconds) + ' seconds. ' +
     (usage.deadline ? 'Deadline: ' + esc(new Date(usage.deadline).toLocaleString()) + '.' +
       (!finished ? ' Remaining: ' + Math.max(0, Math.ceil((new Date(usage.deadline) - Date.now()) / 1000)) + ' seconds.' : '') : '') + '</p>' +
-    (finished ? '<p class="notice">Research has stopped. ' + esc(usage.stop_reason || '') + ' The package contains work saved before the cutoff. A stopped task cannot resume.</p>' : '') +
+    (finished ? '<p class="notice">Research has stopped. ' + esc(usage.stop_reason || '') + ' The package contains work saved before the cutoff.</p>' : '') +
+    (usage.previous_runs?.length ? '<details><summary>Previous run accounting (' + usage.previous_runs.length + ')</summary><ul>' +
+      usage.previous_runs.map((run, index) => '<li>Run ' + (index + 1) + ': ' + esc(run.state) +
+        ' · Actual tokens: ' + esc(run.ledger.actual_tokens || 0) + ' · Charged including reservations: ' +
+        esc(run.ledger.charged_tokens || 0) + ' · Authorized limit: ' + esc(run.contract.token_limit) + '</li>').join('') +
+      '</ul><p>The figures above describe the current run. Earlier ledgers and provenance remain in the result ZIP.</p></details>' : '') +
+    (finished && task.quality?.draft_produced && !(usage.parent_integration_received && usage.child_handoff_received) ?
+      '<button data-r-action="continue-preview">Inspect saved work for continuation</button><div id="research-continuation"></div>' : '') +
     '<div class="actions"><button data-r-action="download">Download ' + (finished ? 'result' : 'checkpoint') + ' ZIP</button> ' +
     '<button data-r-action="pdf">Download results PDF</button> <a href="#/project/' + esc(pid) + '/research/manuscript-path">Path to manuscript</a> ' +
     (!finished ? '<button data-r-action="cancel">Cancel research</button>' : '') +
@@ -332,6 +339,29 @@ async function tabResearch(el, pid, sub) {
           'research-task-' + task.id + (action === 'pdf' ? '.pdf' : '.zip'));
       } else if (action === 'trace') {
         await researchDownload(url + '/call-trace', 'research-call-trace.json');
+      } else if (action === 'continue-preview') {
+        const saved = await api(url + '/continuation');
+        const target = el.querySelector('#research-continuation');
+        target.innerHTML = '<form class="stack"><p>Continue at: ' + esc(saved.stage) +
+          ' · Completed reviews to reuse: ' + esc(saved.reusable_review_roles.join(', ') || 'none') + '</p>' +
+          '<p>This starts a new bounded run using the saved manuscript. The previous run’s usage remains recorded.</p>' +
+          '<label>New token allowance<input name="token_limit" type="number" min="2000" max="1500000" required></label>' +
+          '<label>New time allowance (seconds)<input name="time_limit_seconds" type="number" min="10" max="7200" required></label>' +
+          '<label>Additional revision cycles<input name="max_revision_cycles" type="number" min="0" max="2" value="1" required></label>' +
+          (task.contract.executor !== 'offline' ? '<label><input name="acknowledge_live_execution" type="checkbox" required> I authorize live execution within this new allowance.</label>' : '') +
+          '<button type="submit">Start continuation</button></form>';
+        const form = target.querySelector('form');
+        form.addEventListener('submit', async event => {
+          event.preventDefault(); const submit = form.querySelector('button'); submit.disabled = true;
+          try {
+            const body = Object.fromEntries(new FormData(form));
+            for (const key of ['token_limit', 'time_limit_seconds', 'max_revision_cycles']) body[key] = Number(body[key]);
+            body.expected_checkpoint_sha256 = saved.checkpoint_sha256;
+            body.acknowledge_live_execution = !!form.elements.acknowledge_live_execution?.checked;
+            await api(url + '/continue', 'POST', body);
+            await tabResearch(el, pid, sub);
+          } catch (error) { message.textContent = error.message; submit.disabled = false; }
+        });
       } else if (action === 'start') {
         await api(url + '/start', 'POST', {acknowledge_live_execution: !!el.querySelector('#research-live-ack')?.checked});
       } else if (action === 'promote') {
@@ -343,7 +373,7 @@ async function tabResearch(el, pid, sub) {
         }
         await api(url + '/promote', 'POST', {agent_id, finding_id, purpose, manuscript_id, expected_hash: task.review_hash});
       } else await api(url + '/cancel', 'POST');
-      if (!['download', 'pdf', 'trace'].includes(action)) await tabResearch(el, pid, sub);
+      if (!['download', 'pdf', 'trace', 'continue-preview'].includes(action)) await tabResearch(el, pid, sub);
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   }));

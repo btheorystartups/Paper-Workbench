@@ -11,6 +11,8 @@ STREAM_FAILURE_CODES = frozenset({
     "unsupported_item", "invalid_message_delta", "response_text_bound", "turn_incomplete",
 })
 MANUSCRIPT_HANDOFF_TOKEN_RESERVE = 10000
+MAX_REVISION_COMMENTS = 256
+MAX_MANUSCRIPT_CLAIMS = 80
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=24000)]
 Key = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
@@ -68,7 +70,7 @@ class TaskBrief(ContractModel):
         default_factory=list, max_length=12)
     executor: Literal["offline", "process"] = "offline"
     allow_best_effort_tokens: bool = False
-    token_limit: int = Field(default=24000, ge=2000, le=1000000)
+    token_limit: int = Field(default=24000, ge=2000, le=1500000)
     time_limit_seconds: int = Field(default=600, ge=10, le=7200)
     max_children: int = Field(default=3, ge=1, le=6)
     max_revision_cycles: int = Field(default=2, ge=0, le=2)
@@ -290,7 +292,7 @@ class ManuscriptSection(ContractModel):
     id: Key
     heading: Text
     text: Text
-    claim_ids: list[Key] = Field(max_length=40, description=
+    claim_ids: list[Key] = Field(max_length=MAX_MANUSCRIPT_CLAIMS, description=
         "Map every substantive assertion in this section to its claim inventory, including "
         "scope extensions, side remarks and assumption changes. Bibliographic metadata needs no claim.")
 
@@ -304,22 +306,38 @@ class RevisionResponse(ContractModel):
 class ManuscriptDraft(ContractModel):
     title: Text
     sections: list[ManuscriptSection] = Field(min_length=1, max_length=24)
-    claims: list[ManuscriptClaim] = Field(min_length=1, max_length=40)
+    claims: list[ManuscriptClaim] = Field(min_length=1, max_length=MAX_MANUSCRIPT_CLAIMS)
     novelty_claim: bool
     limitations: list[Text] = Field(min_length=1, max_length=20)
-    responses: list[RevisionResponse] = Field(default_factory=list, max_length=60)
+    responses: list[RevisionResponse] = Field(default_factory=list, max_length=MAX_REVISION_COMMENTS)
 
     @model_validator(mode="after")
     def coverage(self):
         for rows in (self.sections, self.claims):
             if len({r.id for r in rows}) != len(rows):
-                raise ValueError("candidate IDs must be unique")
+                raise PydanticCustomError("manuscript_duplicate_ids", "candidate IDs must be unique")
         claims = {c.id for c in self.claims}
         covered = {c for section in self.sections for c in section.claim_ids}
         if covered != claims:
-            raise ValueError("each candidate claim must belong to a section; unknown claims are denied")
+            raise PydanticCustomError(
+                "manuscript_claim_coverage",
+                "each candidate claim must belong to a section; unknown claims are denied",
+            )
         if len({r.comment_id for r in self.responses}) != len(self.responses):
-            raise ValueError("duplicate revision response")
+            raise PydanticCustomError("manuscript_duplicate_responses", "duplicate revision response")
+        return self
+
+
+class SectionRecoveryText(ContractModel):
+    text: Annotated[str, StringConstraints(
+        strip_whitespace=True, max_length=24000,
+    )]
+    claim_ids: list[Key] = Field(min_length=1, max_length=MAX_MANUSCRIPT_CLAIMS)
+
+    @model_validator(mode="after")
+    def word_range(self):
+        if not 1000 <= len(self.text.split()) <= 1300:
+            raise ValueError("section must contain 1000-1300 whitespace-delimited words")
         return self
 
 
@@ -354,7 +372,7 @@ class QualityObjection(ContractModel):
     objection: Text
     acceptance_criterion: Text
     severity: Literal["blocking", "advisory"]
-    claim_ids: list[Key] = Field(max_length=40)
+    claim_ids: list[Key] = Field(max_length=MAX_MANUSCRIPT_CLAIMS)
 
 
 class QualityResolution(ContractModel):
@@ -392,7 +410,7 @@ class AdversarialCheck(ContractModel):
     challenge: Text
     outcome: Literal["passed_within_scope", "unresolved"]
     rationale: Text
-    claim_ids: list[Key] = Field(max_length=40, description=
+    claim_ids: list[Key] = Field(max_length=MAX_MANUSCRIPT_CLAIMS, description=
         "For unresolved challenges, list only claims still challenged, not every claim examined. "
         "The linked blocking objection must cover every listed ID. For passed challenges, list checked IDs.")
     objection_id: Key | None = None
@@ -403,9 +421,9 @@ class SpecialistReport(ContractModel):
     candidate_sha256: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
     packet_sha256: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
     covered_section_ids: list[Key] = Field(max_length=24)
-    assessments: list[ClaimAssessment] = Field(max_length=40)
+    assessments: list[ClaimAssessment] = Field(max_length=MAX_MANUSCRIPT_CLAIMS)
     objections: list[QualityObjection] = Field(max_length=20)
-    resolutions: list[QualityResolution] = Field(max_length=60)
+    resolutions: list[QualityResolution] = Field(max_length=MAX_REVISION_COMMENTS)
     coverage_flags: list[Text] = Field(max_length=20)
     adversarial_checks: list[AdversarialCheck] = Field(default_factory=list, max_length=5)
     contribution_comparison: Text

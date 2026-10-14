@@ -6,8 +6,8 @@ Rules (Phase 0 canonical model):
   never mutates or moves user files.
 - Extraction is best-effort and honestly labeled: extractor name/version and a
   confidence tag land in provider_metadata; extracted text is never presented as verified.
-- Ingested files are user-supplied → SourceAccess.FULL_TEXT_USER_SUPPLIED with an
-  acquisition note recording the original path and mtime.
+- Ingested files default to SourceAccess.FULL_TEXT_USER_SUPPLIED. Explicit metadata
+  can describe excerpt access; the acquisition note still records path and mtime.
 """
 
 import csv
@@ -395,6 +395,13 @@ def ingest_file(
     ocr_engine: OcrEngine | None = None,
     original_name: str | None = None,
     acquisition: str | None = None,
+    access: SourceAccess | str = SourceAccess.FULL_TEXT_USER_SUPPLIED,
+    authors: str = "",
+    year: int | None = None,
+    venue: str = "",
+    doi: str | None = None,
+    url: str | None = None,
+    version: str = "unspecified",
 ) -> Source:
     """Copy the file into the artifact store, extract text, register a Source with full
     provenance. Returns the Source; extracted text is stored beside the original."""
@@ -438,17 +445,25 @@ def ingest_file(
         ingest_metadata["artifact_path"] = original_local
     if extracted_local:
         ingest_metadata["extracted_path"] = extracted_local
+    metadata = {"ingest": ingest_metadata}
+    if version != "unspecified":
+        metadata["research_attachment"] = {
+            "version": version,
+            "origin": {"kind": "user_file", "original_name": display_name},
+        }
     source = research.register_source(
         session,
         project_id,
         title=title or display_name,
-        access=SourceAccess.FULL_TEXT_USER_SUPPLIED,
+        access=access,
+        authors=authors,
+        year=year,
+        venue=venue,
+        doi=doi,
         acquisition=acquisition or f"user file ingested from {path} (mtime {mtime})",
         license=license,
-        url=None,
-        provider_metadata={
-            "ingest": ingest_metadata
-        },
+        url=url,
+        provider_metadata=metadata,
     )
     return source
 

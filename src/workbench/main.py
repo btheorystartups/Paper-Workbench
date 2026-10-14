@@ -1092,6 +1092,13 @@ class IngestIn(BaseModel):
     title: str | None = None
     license: str = "author-owned"
     pdf_mode: Literal["auto", "text", "plain", "ocr"] = "auto"
+    access: SourceAccess = SourceAccess.FULL_TEXT_USER_SUPPLIED
+    authors: str = ""
+    year: int | None = None
+    venue: str = ""
+    doi: str | None = None
+    url: str | None = None
+    version: str = Field(default="unspecified", min_length=1, max_length=300)
 
 
 @app.post("/projects/{project_id}/ingest")
@@ -1104,9 +1111,7 @@ def ingest_local_file(project_id: str, body: IngestIn, session: Session = Depend
             session,
             project_id,
             body.path,
-            title=body.title,
-            license=body.license,
-            pdf_mode=body.pdf_mode,
+            **body.model_dump(exclude={"path"}),
         )
     except (IngestError, research.IntegrityError) as exc:
         raise HTTPException(422, str(exc)) from exc

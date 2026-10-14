@@ -101,7 +101,7 @@ def test_controller_does_not_accept_stream_codes_from_other_stages(monkeypatch):
 
 
 @pytest.mark.parametrize("method", ["error", "turn/completed"])
-@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("retry", [False, None])
 def test_worker_keeps_safe_runtime_metadata_and_stops_without_retry(monkeypatch, method, retry):
     client = ControlledCodexClient()
     error = {"message": "PRIVATE_MESSAGE", "additionalDetails": "PRIVATE_DETAILS",
@@ -121,6 +121,76 @@ def test_worker_keeps_safe_runtime_metadata_and_stops_without_retry(monkeypatch,
     assert "PRIVATE" not in str(data)
     assert sum(m == "turn/start" for m, _ in client.calls) == 1
     assert sum(m == "turn/interrupt" for m, _ in client.calls) == 1
+
+
+def retry_notification():
+    return {"method": "error", "params": {"threadId": "parent-thread", "turnId": "plan-turn",
+        "willRetry": True, "error": {"message": "PRIVATE_MESSAGE", "additionalDetails": "PRIVATE_DETAILS",
+            "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 503}}}}}
+
+
+def test_provider_retry_completes_same_turn_without_resetting_usage_or_deadline(monkeypatch):
+    client = ControlledCodexClient()
+    client.events.insert(0, retry_notification())
+    deadlines = []
+    original_event = client.event
+
+    def event(*, deadline):
+        deadlines.append(deadline)
+        return original_event(deadline=deadline)
+
+    client.event = event
+    worker = prepared_worker(client)
+    worker.total_tokens = 100
+    client.events[1]["params"]["tokenUsage"]["total"]["totalTokens"] = 183
+    emitted = []
+    monkeypatch.setattr(worker_module, "emit", lambda *args, **kw: emitted.append((args, kw)))
+    worker.run("parent", "plan", {"token_limit": 4000, "time_limit_seconds": 20, "call_span_id": "span1"})
+    result = next(fields for args, fields in emitted if args[1] == "plan")
+    assert result["usage"]["tokens"] == 83 and worker.total_tokens == 183
+    assert result["provenance"]["codex_turn_id"] == "plan-turn"
+    assert result["provenance"]["runtime_retries"] == [{"source": "error_notification",
+        "category": "responseStreamDisconnected", "http_status_code": 503, "will_retry": True}]
+    assert "PRIVATE" not in json.dumps(result["provenance"])
+    assert len(set(deadlines)) == 1
+    assert sum(method == "turn/start" for method, _ in client.calls) == 1
+
+
+@pytest.mark.parametrize("ending", ["failed", "deadline", "tokens"])
+def test_provider_retry_still_obeys_terminal_failure_deadline_and_token_allowance(monkeypatch, ending):
+    from workbench.providers.codex_rpc import CodexTimeoutError
+
+    client = ControlledCodexClient()
+    client.events = [retry_notification()]
+    if ending == "failed":
+        client.events.append({"method": "turn/completed", "params": {"threadId": "parent-thread",
+            "turn": {"id": "plan-turn", "status": "failed", "error": {"codexErrorInfo": "badRequest"}}}})
+    elif ending == "tokens":
+        client.events.append({"method": "thread/tokenUsage/updated", "params": {
+            "threadId": "parent-thread", "tokenUsage": {"total": {"totalTokens": 4000}}}})
+    else:
+        original_event = client.event
+
+        def event(*, deadline):
+            if not client.events:
+                raise CodexTimeoutError("controlled deadline")
+            return original_event(deadline=deadline)
+
+        client.event = event
+    worker = prepared_worker(client)
+    emitted = []
+    monkeypatch.setattr(worker_module, "emit", lambda *args, **kw: emitted.append((args, kw)))
+    message = {"token_limit": 4000, "time_limit_seconds": 20}
+    if ending == "tokens":
+        worker.run("parent", "plan", message)
+        assert any(args[1] == "limit" for args, _ in emitted)
+    else:
+        expected = worker_module.WorkerStreamError if ending == "failed" else CodexTimeoutError
+        with pytest.raises(expected):
+            worker.run("parent", "plan", message)
+    assert not any(args[1] == "plan" for args, _ in emitted)
+    assert sum(method == "turn/start" for method, _ in client.calls) == 1
+    assert sum(method == "turn/interrupt" for method, _ in client.calls) == 1
 
 
 @pytest.mark.parametrize("params", [{"threadId": "foreign", "turnId": "plan-turn"},
@@ -261,6 +331,16 @@ def test_stream_text_bound_counts_multiple_fragments(monkeypatch, last_size, exc
         worker.run("parent", "plan", {"token_limit": 4000, "time_limit_seconds": 20})
         assert any(args[1] == "plan" for args, _ in emitted)
     assert any(method == "turn/interrupt" for method, _ in client.calls)
+
+
+@pytest.mark.parametrize("operation,message,expected", [
+    ("plan", {}, 250000),
+    ("draft", {"contract": {"manuscript_length": {"max_words": 10000}}}, 400000),
+    ("revise", {"contract": {"manuscript_length": {"max_words": 7000}}}, 280000),
+    ("draft", {"contract": {"manuscript_length": {"max_words": True}}}, 250000),
+])
+def test_response_text_limit_is_operation_aware_and_globally_bounded(operation, message, expected):
+    assert worker_module.response_text_limit(operation, message) == expected
 
 
 class ControlledCodexClient:
@@ -1010,6 +1090,46 @@ def test_scientific_revision_binding_failure_prevents_dispatch(monkeypatch, tamp
     assert not any(method == "thread/start" for method, _ in client.calls)
 
 
+@pytest.mark.parametrize("tamper", [None, "candidate", "evidence", "receipt", "existing_thread"])
+def test_fresh_author_worker_restores_only_bound_controller_checkpoint(monkeypatch, tamper):
+    from workbench.models import stable_hash
+    from workbench.providers.research_quality_offline import reply
+
+    client = AuthorCorrectionClient()
+    worker = prepared_worker(client)
+    worker.thread_id = None
+    worker.scratch = SimpleNamespace(name="synthetic-scratch")
+    monkeypatch.setattr(worker_module, "emit", lambda *args, **kw: None)
+    candidate = reply("draft", {})
+    payload = {"contract": {"question": "Synthetic continuation"}, "sources": [],
+               "verification_receipts": [], "search_receipts": [], "prior_comments": [],
+               "expected_response_ids": [], "previous_candidate": candidate,
+               "previous_candidate_sha256": stable_hash(candidate),
+               "token_limit": 20000, "time_limit_seconds": 20}
+    payload["author_checkpoint"] = {
+        "checkpoint_sha256": "a" * 64, "draft_sha256": stable_hash(candidate),
+        "evidence_sha256": worker_module.author_evidence_hash(payload),
+    }
+    if tamper == "candidate":
+        payload["previous_candidate"] = {**candidate, "title": "Changed"}
+    elif tamper == "evidence":
+        payload["sources"] = [{"source_id": "changed"}]
+    elif tamper == "receipt":
+        payload["author_checkpoint"]["checkpoint_sha256"] = "bad"
+    elif tamper == "existing_thread":
+        worker.thread_id = "existing-author-thread"
+    client.next_thread_id = "restored-author-thread"
+    client.draft_events("revise", payload, "restored-author-thread")
+    if tamper:
+        with pytest.raises(ValueError, match="continuation checkpoint binding denied"):
+            worker.run("author", "revise", payload)
+        assert not any(method == "turn/start" for method, _ in client.calls)
+    else:
+        worker.run("author", "revise", payload)
+        assert sum(method == "turn/start" for method, _ in client.calls) == 1
+        assert worker.last_author_candidate["evidence_sha256"] == worker_module.author_evidence_hash(payload)
+
+
 def synthetic_agent_report():
     return {"summary": "Synthetic bounded report", "findings": [], "citations": [],
             "proof_attempts": [], "failed_approaches": [], "unresolved_questions": [],
@@ -1141,6 +1261,26 @@ def test_child_prompt_states_cross_reference_contract_without_fabricating_eviden
     assert "IDs must be unique within findings, citations and verification_artifacts" in prompt
     assert "citation_ids and verification_ids must reference entries in this report" in prompt
     assert "Never invent evidence or change a failed/not_run outcome" in prompt
+
+
+@pytest.mark.parametrize("role", [
+    "proof_method", "source_citation", "literature_contribution", "adversarial",
+])
+def test_audit_schema_binds_identity_and_role_specific_fields(role):
+    packet = {"role": role, "candidate_sha256": "a" * 64, "packet_sha256": "b" * 64}
+    schema = worker_module.output_schema("audit", {"packet": packet})
+    properties = schema["properties"]
+    for key, value in packet.items():
+        assert properties[key]["enum"] == [value]
+    comparisons = properties["literature_comparisons"]
+    assert comparisons["maxItems"] == (12 if role == "literature_contribution" else 0)
+    assert properties["adversarial_checks"]["maxItems"] == (5 if role == "adversarial" else 0)
+    assert properties["adversarial_checks"].get("minItems", 0) == (5 if role == "adversarial" else 0)
+    assert "assessments" in schema["required"] and "objections" in schema["required"]
+    prompt = worker_module.json_prompt("audit", {"packet": packet})
+    assert "must return literature_comparisons=[]" in prompt
+    assert "must return adversarial_checks=[]" in prompt
+    assert "Assess scientific literature concerns" in prompt
 
 
 def test_prompt_measurement_without_optional_tokenizer_is_conservative(monkeypatch):
