@@ -53,6 +53,33 @@ for line in sys.stdin:
         }
     else:
         result = reply(op, m)
+        if op == "closure" and "closure_repair" in sys.argv:
+            if m["packet"]["phase"] == "preflight":
+                result["checks"][0]["outcome"] = "unresolved"
+                result["findings"] = [{
+                    "id": "editorial-1", "category": "error", "disposition": "open",
+                    "dimension": "terminology", "affected_sections": ["scope"],
+                    "requirement_ids": ["purpose"], "problem": "Scope wording needs correction.",
+                    "acceptance_criterion": "Clarify the finite scope.",
+                    "evidence_paths": ["manuscript.md#scope"],
+                    "disposition_reason": "The initial wording is incomplete.",
+                }]
+            else:
+                result["findings"][0]["disposition"] = "resolved"
+                result["findings"][0]["disposition_reason"] = "The author clarified the finite scope."
+        if (op == "closure" and "closure_confirmation_defect" in sys.argv
+                and m["packet"]["phase"] == "confirmation"):
+            result["checks"][0]["outcome"] = "unresolved"
+            result["findings"].append({
+                "id": "late-1", "category": "error", "disposition": "open",
+                "dimension": "terminology", "affected_sections": ["scope"],
+                "requirement_ids": ["purpose"], "problem": "A new literal error remains.",
+                "acceptance_criterion": "Correct the literal error.",
+                "evidence_paths": ["manuscript.md#scope"],
+                "disposition_reason": "Found during confirmation.",
+            })
+        if op == "closure" and "closure_malformed" in sys.argv:
+            result["reviewed_sections"] = []
         if op in {"draft", "revise"} and "scope_inventory" in sys.argv:
             result["sections"][0]["text"] = (
                 "The refinement equivalence holds for finite nonempty carriers. "
@@ -159,7 +186,8 @@ for line in sys.stdin:
                 result["assessments"][0]["verification_ids"] = ["invented"]
     emit(
         aid,
-        {"audit": "specialist_report", "integrate": "synthesis", "discover": "literature_plan"}.get(op, "draft"),
+        {"audit": "specialist_report", "integrate": "synthesis", "discover": "literature_plan",
+         "closure": "closure_report"}.get(op, "draft"),
         result=result,
         provenance=provenance,
         usage={"tokens": (m["token_limit"] - 1

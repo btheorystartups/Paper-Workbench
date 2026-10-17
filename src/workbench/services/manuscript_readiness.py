@@ -46,7 +46,7 @@ def report(session, manuscript_id):
                 row["contribution_comparison"] = agent.report.get("contribution_comparison", "")
                 # The aggregate gate checks identity, frozen evidence, current candidate,
                 # independence and revision closure. Do not show stale local passes as green.
-                if state["agent_checks_complete"]:
+                if state.get("specialist_checks_complete", state["agent_checks_complete"]):
                     row["status"] = "passed_within_scope"
         reviews.append(row)
     sections = authoring.manuscript_sections(session, manuscript_id)
@@ -91,12 +91,15 @@ def report(session, manuscript_id):
                 }
                 break
     return {
-        "policy": quality.POLICY,
+        "policy": campaign.body.get("policy", quality.POLICY) if campaign else quality.POLICY,
         "candidate_sha256": state.get("candidate_sha256"),
         "limitations": campaign.body["drafts"][-1]["candidate"]["limitations"]
         if campaign and campaign.body.get("drafts")
         else [],
         "agent_checks_complete": state["agent_checks_complete"],
+        "specialist_checks_complete": state.get("specialist_checks_complete",
+                                                state["agent_checks_complete"]),
+        "editorial_closure": state.get("closure", {"status": "not_assessed"}),
         "length_check": state.get("length_check"),
         "task_requirements": state.get("task_requirements"),
         "release_review_flags": state.get("release_review_flags", []),

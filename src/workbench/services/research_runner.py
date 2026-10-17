@@ -853,7 +853,7 @@ class Runner:
             return
         expected = {"audit": "specialist_report", "draft": "draft", "revise": "draft",
                     "integrate": "synthesis", "plan": "plan", "research": "report",
-                    "discover": "literature_plan"}
+                    "discover": "literature_plan", "closure": "closure_report"}
         until = min(self.deadline, time.monotonic() + 2)
         for handle, agent, allocation in self.active_calls.values():
             for _ in range(100):

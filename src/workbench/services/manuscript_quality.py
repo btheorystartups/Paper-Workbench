@@ -53,11 +53,13 @@ def campaign_for(session, manuscript_id):
 
 
 def create_campaign(session, task):
+    policy = ("manuscript-quality-v3-editorial"
+              if task.contract.get("quality_policy") == "manuscript-quality-v3-editorial" else POLICY)
     manuscript = authoring.create_manuscript(session, task.project_id, title="Unreviewed manuscript draft")
     manuscript.ai_suggested, manuscript.accepted_by_user = True, False
     manuscript.body = {
         **manuscript.body,
-        "quality_policy": POLICY,
+        "quality_policy": policy,
         "quality_task_id": task.id,
         "source_ids": [s["source_id"] for s in task.sources if s.get("source_id")],
     }
@@ -71,7 +73,7 @@ def create_campaign(session, task):
             "quality_assessment": True,
             "manuscript_id": manuscript.id,
             "quality_task_id": task.id,
-            "policy": POLICY,
+            "policy": policy,
             "drafts": [],
             "rounds": [],
             "reports": [],
@@ -632,14 +634,30 @@ def assessment(session, manuscript_id):
             bibliography_context=section.title.casefold() in {"references", "bibliography"},
         ):
             blockers.append("unresolved bibliography markers")
+    if task and ((task.contract.get("quality_policy") == "manuscript-quality-v3-editorial")
+                 != (campaign.body.get("policy") == "manuscript-quality-v3-editorial")):
+        blockers.append("manuscript quality policy differs from its task contract")
     review_blockers = list(dict.fromkeys(blockers))
+    closure = {"status": "not_assessed", "dimensions": [], "findings": []}
+    closure_ready = True
+    if campaign.body.get("policy") == "manuscript-quality-v3-editorial":
+        from .manuscript_closure import current_status
+
+        closure = current_status(session, task, campaign, current, not review_blockers) if task else closure
+        closure_ready = (closure["status"] in {"ready_for_human_review",
+                                                 "ready_for_human_review_with_advisories"}
+                         and closure.get("candidate_sha256") == current)
+        if not closure_ready:
+            blockers.append("current editorial closure confirmation is unavailable")
     if (task is None or task.state != "completed"
             or not task.ledger.get("parent_integration_received")
             or not task.ledger.get("child_handoff_received")):
         blockers.append("manuscript production task has not completed its final handoff")
     return {
         "required": True,
-        "agent_checks_complete": not review_blockers,
+        "agent_checks_complete": not review_blockers and closure_ready,
+        "specialist_checks_complete": not review_blockers,
+        "closure": closure,
         "draft_produced": bool(campaign.body["drafts"]),
         "agent_review_grants_publication_approval": False,
         "manuscript_id": manuscript_id,

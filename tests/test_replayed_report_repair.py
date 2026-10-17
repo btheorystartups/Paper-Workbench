@@ -23,7 +23,9 @@ def test_invalid_saved_review_spawns_before_correction_send(monkeypatch):
     allocation = {'span_id': 'retained', 'reserved': 1000}
     replay = ReplayHandle(child, allocation, {'invalid': True})
     packet = {'packet_sha256': 'b' * 64}
-    campaign = SimpleNamespace(body={'reports': [], 'audit_budget_plans': [], 'rejected_reports': []})
+    campaign = SimpleNamespace(body={
+        'reports': [], 'audit_budget_plans': [], 'rejected_reports': [], 'drafts': [{}],
+    })
     live = object()
 
     def retained(_runner, _campaign, _digest, _iteration, accepted):

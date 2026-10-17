@@ -21,7 +21,7 @@ def fixture(*, required=(), access="excerpt_available"):
     source = {"source_id": "note", "access": access,
               "text": "The support is updated by image and conditioning.",
               "version": "dated-note", "title": "Prior note", "authors": [], "sha256": "a" * 64}
-    task = SimpleNamespace(contract=contract, sources=[source])
+    task = SimpleNamespace(contract=contract, sources=[source], ledger={})
     candidate = reply("draft", {})
     campaign = SimpleNamespace(body={"drafts": [{"candidate": candidate,
                                                   "candidate_sha256": stable_hash(candidate)}],

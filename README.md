@@ -8,7 +8,9 @@ defensible manuscripts. Not a paper generator: paper creation is optional and do
 Standalone by design. Selected components were copied from (and are now owned independently
 of) POP Card Studio and Nexus; this repo imports nothing from those projects.
 
-Public mirror: <https://github.com/btheorystartups/Paper-Workbench>.
+Active repository: <https://github.com/btheorystartups/Paper-Workbench>.
+The working project home is `C:\Users\brian\Documents\Paper-Workbench`.
+The earlier Tools copy is historical; see [repository ownership](docs/REPOSITORY-OWNERSHIP.md).
 
 Local delegated research: the **Research** project tab supports bounded tasks,
 safe document/ZIP intake, independent child-worker handoffs, source provenance,
@@ -113,8 +115,8 @@ Implemented and tested (212 offline tests; live providers verified separately wi
 - **LLM-quality evals** (`scripts/run_llm_evals.py`): grounding, injection-resistance,
   hallucinated-citation, action-safety, abstention — 6/6 against live gpt-4o
   (docs/llm-eval-report.md). A regression signal, not a correctness certificate.
-- **Maintenance**: public-mirror CI runs Ruff and the offline test suite on Python 3.13;
-  the parent Tools repository includes a guarded, dry-run-by-default subtree publisher.
+- **Maintenance**: this repository's CI runs Ruff and the offline test suite on Python 3.13.
+  Publish reviewed commits from this checkout; the old Tools subtree publisher is retired.
 
 Demos: `python -m workbench.demo` (offline) · `python -X utf8 scripts/golden_path.py`
 (full live journey) · `scripts/verify_live.py`, `scripts/verify_scholarly.py` (providers) ·

@@ -111,19 +111,23 @@ def elapsed_seconds(task):
                    getattr(task, "started_at", None), getattr(task, "finished_at", None))
 
 
-def envelope(grant):
-    return {"version": 1, **grant.model_dump(), "allowed_operations": list(OPERATIONS),
+def envelope(grant, *, editorial_closure=False):
+    operations = [*OPERATIONS, *(["closure"] if editorial_closure else [])]
+    return {"version": 1, **grant.model_dump(), "allowed_operations": operations,
             "authorized_at": utcnow().isoformat(), "time_policy": "run-wall-time",
             "token_enforcement": "reservation admission; provider stopping may be best-effort"}
 
 
 def initial_authorization(task):
     return envelope(AuthorizationGrant(token_ceiling=task.contract["token_limit"],
-        time_ceiling_seconds=task.contract["time_limit_seconds"], reason="Explicit initial task start"))
+        time_ceiling_seconds=task.contract["time_limit_seconds"], reason="Explicit initial task start"),
+        editorial_closure=task.contract.get("quality_policy") == "manuscript-quality-v3-editorial")
 
 
 def continuation_authorization(task, grant):
-    authority = envelope(grant.authorization) if grant.authorization else task.ledger.get("authorization")
+    authority = (envelope(grant.authorization,
+        editorial_closure=task.contract.get("quality_policy") == "manuscript-quality-v3-editorial")
+        if grant.authorization else task.ledger.get("authorization"))
     if not authority:
         raise TaskError("saved task needs an explicit aggregate authorization before continuation")
     remaining = authority["token_ceiling"] - accounting(task)["charged_tokens"]

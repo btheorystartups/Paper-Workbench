@@ -281,6 +281,8 @@ def agent_dict(agent: ResearchAgent) -> dict:
 
 
 def snapshot(session: Session, task: ResearchTask) -> dict:
+    from .manuscript_literature import coverage_status
+
     agents = [agent_dict(a) for a in agents_for(session, task.id)]
     quality = None
     readiness = None
@@ -308,6 +310,9 @@ def snapshot(session: Session, task: ResearchTask) -> dict:
         "review_hash": review_hash(task, agents),
         "research_can_continue": task.state not in TERMINAL,
         "quality": quality,
+        "literature_coverage": (quality or {}).get("literature_coverage") or (
+            coverage_status(task.contract, task.sources, [])
+            if task.contract.get("task_type") == "manuscript" else None),
         "readiness": readiness,
     }
 
@@ -532,7 +537,9 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
         + task.synthesis.get("summary", "No synthesis available yet.")
         + "\n\nRead task_settings.json, agent_lineage.json, source_manifest.json, search_log.json, "
         "agents/, synthesis.json, verification/, open_questions.md and reviews.json. "
-        "Requested deliverables are unreviewed drafts, never automatically manuscript text.\n",
+        + ("Manuscript campaign receipts and exact retained verifier files are in evidence/. "
+           if task.contract.get("task_type") == "manuscript" else "")
+        + "Requested deliverables are unreviewed drafts, never automatically manuscript text.\n",
     )
     add(
         "task_settings.json",
@@ -558,9 +565,34 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
 
         add("manuscript-quality.json", campaign_export(session, task))
         add("readiness-report.json", data["readiness"])
+        if data["quality"] and data["quality"].get("draft_produced"):
+            from .manuscript_quality import campaign_for, draft_text
+
+            campaign = campaign_for(session, task.contract["quality_manuscript_id"])
+            if (campaign and campaign.body.get("drafts")
+                    and campaign.body.get("quality_task_id") == task.id):
+                add("manuscript.md", draft_text(campaign.body["drafts"][-1]["candidate"]))
+                if campaign.body.get("policy") == "manuscript-quality-v3-editorial":
+                    if campaign.body.get("closure_scope"):
+                        add("editorial/scope.json", campaign.body["closure_scope"])
+                    add("editorial/closure-reports.json", campaign.body.get("closure_reports", []))
     add("call-trace.json", task.ledger.get("call_trace", []))
     add("call-timing-summary.json", task.ledger.get("trace_summary", {}))
     searches, open_questions, verification_index = [], [], []
+    if task.contract.get("task_type") == "manuscript":
+        from . import manuscript_evidence_package
+        from .manuscript_quality import campaign_for
+
+        mid = task.contract.get("quality_manuscript_id")
+        campaign = campaign_for(session, mid) if mid else None
+        if campaign and campaign.body.get("quality_task_id") == task.id:
+            retained = manuscript_evidence_package.files_for(task, campaign, session=session)
+            manuscript_evidence_package.verify_files(retained)
+            files.update(retained)
+            searches.extend({"origin": "manuscript_campaign", **row}
+                            for row in campaign.body.get("search_receipts", []))
+            verification_index.extend({"origin": "manuscript_campaign", **row}
+                                      for row in json.loads(retained["evidence/verification/index.json"]))
     for agent in data["agents"]:
         aid = agent["id"]
         add(f"agents/{aid}/report.json", agent["report"])
@@ -613,6 +645,26 @@ def package(session: Session, task: ResearchTask, *, include_results_pdf: bool =
         else:
             files["results.pdf"] = rendered.data
             add("results-rendering.json", rendered.manifest())
+    if task.contract.get("quality_policy") == "manuscript-quality-v3-editorial":
+        from . import manuscript_closure
+        from .manuscript_quality import campaign_for
+
+        campaign = campaign_for(session, task.contract.get("quality_manuscript_id"))
+        records = campaign.body.get("closure_reports", []) if campaign else []
+        if (campaign and campaign.body.get("quality_task_id") == task.id and records
+                and records[-1].get("status") in {"ready_for_human_review",
+                                                 "ready_for_human_review_with_advisories"}):
+            latest = campaign.body["drafts"][-1]["candidate_sha256"]
+            specialists = [{"agent_id": r["agent_id"], "role": r["role"],
+                            "candidate_sha256": r["candidate_sha256"],
+                            "report_sha256": r["report_sha256"], "blockers": r["blockers"]}
+                           for r in campaign.body["reports"][-4:]]
+            packet = manuscript_closure.packet_for(task, campaign, latest,
+                records[-1]["agent_id"], "confirmation", specialist_records=specialists, session=session)
+            if (packet["packet_sha256"] != records[-1]["packet_sha256"]
+                    or any(name not in files or hashlib.sha256(files[name]).hexdigest() != digest
+                           for name, digest in packet["delivery_manifest"].items())):
+                raise TaskError("reader payload differs from accepted editorial closure bytes")
     add(
         "package_manifest.json",
         {

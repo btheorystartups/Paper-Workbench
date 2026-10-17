@@ -19,7 +19,11 @@ def safe_text(value) -> str:
         r"(?i)(?:[a-z]:[\\/]|\\\\[\w.-]+[\\/])[^\s<>\"']+", "[private path omitted]", text
     )
     text = re.sub(r"/(?:home|Users|tmp|var|mnt)/[^\s<>\"']+", "[private path omitted]", text)
-    text = re.sub(r"(?i)(?:bearer\s+|sk-)[A-Za-z0-9_.-]+", "[credential omitted]", text)
+    text = re.sub(
+        r"(?i)(?:bearer\s+[A-Za-z0-9_.-]+|(?<![A-Za-z0-9])sk-[A-Za-z0-9_.-]+)",
+        "[credential omitted]",
+        text,
+    )
     text = re.sub(
         r"(?i)\b(api[_ -]?key|password|access[_ -]?token|secret)\s*[:=]\s*\S+",
         r"\1=[credential omitted]",
@@ -48,10 +52,18 @@ def snapshot_from_package(payload: bytes) -> dict:
             blob = archive.read(item["file"])
             if hashlib.sha256(blob).hexdigest() != item["sha256"]:
                 raise ValueError("research package hash mismatch")
+        if "evidence/manifest.json" in archive.namelist():
+            from .manuscript_evidence_package import verify_files
+
+            retained = {name: archive.read(name) for name in archive.namelist()
+                        if name.startswith("evidence/")}
+            verify_files(retained)
         data = json.loads(archive.read("task_settings.json"))
         data["sources"] = json.loads(archive.read("source_manifest.json"))
         data["synthesis"] = json.loads(archive.read("synthesis.json"))
         data["reviews"] = json.loads(archive.read("reviews.json"))
+        if "readiness-report.json" in archive.namelist():
+            data["readiness"] = json.loads(archive.read("readiness-report.json"))
         data["agents"] = json.loads(archive.read("agent_lineage.json"))
         for agent in data["agents"]:
             aid = agent["id"]
@@ -91,7 +103,8 @@ def report_sections(data: dict) -> list[tuple[str, str]]:
     sections = []
 
     def add(title, text):
-        sections.append((safe_text(title), safe_text(text or "None recorded.")))
+        if text is not None and str(text).strip():
+            sections.append((safe_text(title), safe_text(text)))
 
     add(
         "Status and safe use",
@@ -103,7 +116,40 @@ def report_sections(data: dict) -> list[tuple[str, str]]:
         "and 'passed_within_scope' labels are unreviewed assessments, not human certification. "
         "This report does not promote claims or approve manuscript use.",
     )
+    readiness = data.get("readiness") or {}
+    integrity = (data.get("quality") or {}).get("escaping_integrity")
+    if integrity:
+        add("Escaping integrity", integrity["status"] + "\n" + integrity["notice"] + "\n"
+            + "\n".join(f"{issue['path']}:{issue['line']}:{issue['column']}: {issue['message']}"
+                        for issue in integrity["issues"]))
+    if readiness:
+        editorial = readiness.get("editorial_closure") or {"status": "not_assessed"}
+        add("Manuscript review status",
+            "Specialists: " + ("checked within scope" if readiness.get("specialist_checks_complete")
+                               else "not complete")
+            + ". Editorial closure: " + editorial.get("status", "not_assessed").replace("_", " ")
+            + ". Human publication approval: "
+            + ("recorded for current package" if readiness.get("human_publication_approval")
+               else "not recorded") + ". Rendered manuscript preview: "
+            + editorial.get("rendered_preview", "not_assessed").replace("_", " ") + ".")
+        for check in editorial.get("dimensions", []):
+            add("Editorial check: " + check["dimension"].replace("_", " "),
+                check["status"].replace("_", " ") + ". " + check["reason"]
+                + "\nEvidence: " + ", ".join(check.get("evidence_paths", [])))
+        for finding in editorial.get("findings", []):
+            if finding.get("disposition") in {"open", "deferred"}:
+                add("Unresolved editorial finding " + finding["id"], finding["problem"])
     add("Research question", contract.get("question"))
+    coverage = data.get("literature_coverage") or (data.get("quality") or {}).get("literature_coverage")
+    if coverage:
+        add("Literature coverage",
+            f"Public search permitted: {coverage['public_search_permitted']}; "
+            f"requested: {coverage['search_requested']}; "
+            f"completed searches: {coverage['completed_search_count']}.\n"
+            + "\n".join(coverage["gaps"]) + "\n"
+            + "\n".join(row["requirement"] + ": " + row["status"]
+                        for row in coverage["required_comparisons"])
+            + "\n" + coverage["notice"])
     for a in agents:
         if a.get("role") == "child":
             add("Exact assigned scope - " + a["id"], a.get("assignment", {}).get("question"))
@@ -112,6 +158,8 @@ def report_sections(data: dict) -> list[tuple[str, str]]:
         "\n\n".join(
             f"Source {s.get('source_id', s.get('id', '?'))}: {s.get('title', s.get('name', 'Untitled'))}\n"
             f"Version: {s.get('version', 'unspecified')}; access: {s.get('access', 'unspecified')}\n"
+            f"Byline metadata (not verified): {s.get('authors') or 'not established'}; "
+            f"publication status: {s.get('publication_status') or 'not established'}\n"
             f"SHA-256: {s.get('sha256', 'not recorded')}; extracted text SHA-256: "
             f"{s.get('full_extracted_sha256', 'not recorded')}\n"
             f"Context truncated: {s.get('context_truncated', False)}; "
@@ -139,12 +187,35 @@ def report_sections(data: dict) -> list[tuple[str, str]]:
         aid = agent["id"]
         add(f"Agent {aid} - {status}", report.get("summary", "No saved findings; assignment is unfinished."))
         for f in report.get("findings", []):
-            add(
-                f"Finding {f['id']} - {f['category']} (model assessment)",
-                f"{f['statement']}\n\nScope: {f['scope']}\nStance: {f.get('stance', 'unspecified')}\n"
-                f"Citations: {', '.join(f.get('citation_ids', [])) or 'none'}\n"
-                f"Checks: {', '.join(f.get('verification_ids', [])) or 'none'}",
-            )
+            if "problem" in f:
+                add(f"Editorial finding {f['id']} - {f['category']} (model assessment)",
+                    f"{f['problem']}\n\nDimension: {f['dimension']}\n"
+                    f"Disposition: {f['disposition']}\nAcceptance criterion: {f['acceptance_criterion']}\n"
+                    f"Sections: {', '.join(f['affected_sections'])}\n"
+                    f"Evidence: {', '.join(f['evidence_paths'])}\n{f['disposition_reason']}")
+            else:
+                add(
+                    f"Finding {f['id']} - {f['category']} (model assessment)",
+                    f"{f['statement']}\n\nScope: {f['scope']}\nStance: {f.get('stance', 'unspecified')}\n"
+                    f"Citations: {', '.join(f.get('citation_ids', [])) or 'none'}\n"
+                    f"Checks: {', '.join(f.get('verification_ids', [])) or 'none'}",
+                )
+        for check in report.get("checks", []):
+            add("Editorial dimension - " + check["dimension"],
+                check["outcome"] + "\n" + check["rationale"]
+                + "\nEvidence: " + ", ".join(check["evidence_paths"]))
+        add(f"Contribution comparison (agent {aid})", report.get("contribution_comparison"))
+        for comparison in report.get("literature_comparisons", []):
+            add(f"Required literature comparison (agent {aid}): " + comparison["requirement"],
+                comparison["status"] + "\n" + comparison["rationale"] + "\n"
+                + "\n".join(p["source_id"] + " at " + p["locator"] + ": " + p["quotation"]
+                            for p in comparison["passages"]))
+        for assessment in report.get("assessments", []):
+            add(f"Claim {assessment['claim_id']} (agent {aid}; model assessment)",
+                assessment["status"] + "\n" + assessment["rationale"])
+        for objection in report.get("objections", []):
+            add(f"Objection {objection['id']} - {objection['severity']} (agent {aid})",
+                objection["objection"] + "\nAcceptance criterion: " + objection["acceptance_criterion"])
         for c in report.get("citations", []):
             add(
                 f"Citation {c['id']} (agent {aid})",

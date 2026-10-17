@@ -98,6 +98,15 @@ def admit(session, task, grant, *, actor):
         drafts = deepcopy(campaign.body["drafts"])
         drafts[-1]["local_revision"] = receipt
         quality.update_campaign(campaign, drafts=drafts)
+        if campaign.body.get("policy") == "manuscript-quality-v3-editorial":
+            quality.update_campaign(campaign,
+                closure_history=[*campaign.body.get("closure_history", []), {
+                    "candidate_sha256": previous["candidate_sha256"],
+                    "reports": campaign.body.get("closure_reports", []),
+                    "calls": campaign.body.get("closure_calls", []),
+                    "scope": campaign.body.get("closure_scope"),
+                    "repair": campaign.body.get("closure_repair")}],
+                closure_reports=[], closure_calls=[], closure_scope=None, closure_repair=None)
         parent.provenance = {**parent.provenance, "local_candidate_admissions": [
             *parent.provenance.get("local_candidate_admissions", []), receipt]}
         responses = {r["comment_id"]: r for r in admitted["responses"]}
@@ -142,6 +151,10 @@ def verify_controller_completion(session, task, campaign, digest):
     allowed = {"specialist campaign has not completed its checks",
                "unresolved or stale specialist objection",
                "manuscript production task has not completed its final handoff"}
+    if campaign.body.get("policy") == "manuscript-quality-v3-editorial":
+        # This verifies only four-review workflow facts. Editorial confirmation
+        # remains a separate mandatory gate after specialist completion.
+        allowed.add("current editorial closure confirmation is unavailable")
     if set(state["blockers"]) - allowed:
         return []
     pending = []

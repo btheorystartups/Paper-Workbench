@@ -76,6 +76,7 @@ class TaskBrief(ContractModel):
     max_revision_cycles: int = Field(default=2, ge=0, le=2)
     paper_type: Literal["expository", "research"] = "expository"
     manuscript_length: ManuscriptLength | None = None
+    editorial_closure: bool = False
     literature_queries: list[LiteratureQuery] = Field(default_factory=list, max_length=4)
     allow_public_search: bool = False
     agent_literature_discovery: bool = False
@@ -97,6 +98,8 @@ class TaskBrief(ContractModel):
             raise ValueError("required literature comparisons must be unique")
         if self.manuscript_length is not None and self.task_type != "manuscript":
             raise ValueError("manuscript length bounds require a manuscript task")
+        if self.editorial_closure and self.task_type != "manuscript":
+            raise ValueError("editorial closure requires a manuscript task")
         if self.task_type == "manuscript" and self.max_children < 3:
             raise ValueError("manuscript production requires capacity for three specialist reviewers")
         if self.agent_literature_discovery and (
@@ -125,7 +128,9 @@ class TaskBrief(ContractModel):
         result["format_version"] = 1
         if self.task_type == "manuscript":
             result["format_version"] = 2
-            result["quality_policy"] = "manuscript-quality-v1"
+            result["quality_policy"] = (
+                "manuscript-quality-v3-editorial" if self.editorial_closure else "manuscript-quality-v1"
+            )
             result["max_children"] = 3
             result["deliverables"] = ["paper", "research_report", "reviewer_report"]
             result["handoff_token_reserve"] = MANUSCRIPT_HANDOFF_TOKEN_RESERVE
@@ -432,6 +437,46 @@ class SpecialistReport(ContractModel):
     evidence_assertions: list[AvailabilityAssertion] = Field(default_factory=list, max_length=50)
     historical_corrections: list[HistoricalCorrection] = Field(default_factory=list, max_length=50)
 
+
+ClosureDimension = Literal["terminology", "scope_and_purpose", "proof_and_dependency_closure",
+                           "source_and_attribution", "evidence_access", "reader_completeness", "presentation"]
+
+
+class ClosureCheck(ContractModel):
+    dimension: ClosureDimension
+    outcome: Literal["passed_within_scope", "unresolved", "not_applicable"]
+    rationale: Text
+    evidence_paths: list[Text] = Field(min_length=1, max_length=20)
+
+
+class ClosureFinding(ContractModel):
+    id: Key
+    category: Literal["error", "required_completion", "optional_improvement"]
+    disposition: Literal["open", "resolved", "deferred", "justified_rejection"]
+    dimension: ClosureDimension
+    affected_sections: list[Key] = Field(min_length=1, max_length=24)
+    requirement_ids: list[Key] = Field(max_length=30)
+    problem: Text
+    acceptance_criterion: Text
+    evidence_paths: list[Text] = Field(min_length=1, max_length=20)
+    disposition_reason: Text
+
+
+class ClosureReport(ContractModel):
+    policy: Literal["editorial-closure-v1"]
+    phase: Literal["preflight", "confirmation"]
+    candidate_sha256: Sha256
+    packet_sha256: Sha256
+    scope_sha256: Sha256
+    evidence_manifest_sha256: Sha256
+    reviewer_id: Key
+    reviewed_sections: list[Key] = Field(min_length=1, max_length=24)
+    reviewed_requirements: list[Key] = Field(min_length=1, max_length=30)
+    checks: list[ClosureCheck] = Field(min_length=7, max_length=7)
+    findings: list[ClosureFinding] = Field(max_length=60)
+    summary: Text
+
+
 OPERATION_MODELS = {"plan": Plan, "research": AgentReport, "integrate": Synthesis,
                     "draft": ManuscriptDraft, "revise": ManuscriptDraft, "audit": SpecialistReport,
-                    "discover": LiteraturePlan}
+                    "discover": LiteraturePlan, "closure": ClosureReport}

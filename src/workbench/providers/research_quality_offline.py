@@ -1,6 +1,26 @@
 """Explicit transport fixtures for manuscript operations; never scientific evidence."""
 
+from copy import deepcopy
+
+
 def reply(operation, message):
+    if operation == "closure":
+        packet = message["packet"]
+        dimensions = ("terminology", "scope_and_purpose", "proof_and_dependency_closure",
+                      "source_and_attribution", "evidence_access", "reader_completeness", "presentation")
+        return {
+            "policy": packet["policy"], "phase": packet["phase"],
+            **{k: packet[k] for k in ("candidate_sha256", "packet_sha256", "scope_sha256",
+                                       "evidence_manifest_sha256")},
+            "reviewer_id": packet["reviewer_id"],
+            "reviewed_sections": [s["id"] for s in packet["candidate"]["sections"]],
+            "reviewed_requirements": list(packet["scope"]["requirements"]),
+            "checks": [{"dimension": dimension, "outcome": "passed_within_scope",
+                        "rationale": "Offline transport fixture; no semantic model assessment.",
+                        "evidence_paths": ["manuscript.md"]} for dimension in dimensions],
+            "findings": deepcopy(packet["prior_findings"]),
+            "summary": "Offline transport fixture; no editorial model assessment.",
+        }
     if operation == "discover":
         return {
             "queries": [{"provider": "crossref", "query": "OFFLINE discovery round "

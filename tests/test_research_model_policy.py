@@ -69,10 +69,15 @@ def test_controller_rejects_role_model_or_effort_fallback(monkeypatch, key, valu
     event = {"type": kind, "result": {}, "provenance": {
         **expected, key: value, "codex_thread_id": "reviewer", "codex_turn_id": "turn",
         "account_email": "controlled@example.invalid"}}
-    runner = SimpleNamespace(task=SimpleNamespace(contract={"executor": "process"}), usage=lambda *args: None)
+    runner = SimpleNamespace(task=SimpleNamespace(contract={"executor": "process"}),
+                             usage=lambda *args: None, session=SimpleNamespace(commit=lambda: None))
+    runner.validate_result_identity = lambda *args: Runner.validate_result_identity(runner, *args)
     agent = SimpleNamespace(provenance={"requested_model_policy": expected})
     with pytest.raises(ExecutorError, match="different model or reasoning effort"):
         Runner.event(runner, SimpleNamespace(poll=lambda: event), agent, {}, "specialist_report")
+    if kind == "specialist_report":
+        assert agent.provenance["returned_outputs"][-1]["status"] == "unaccepted_return"
+        assert not agent.provenance["returned_outputs"][-1].get("identity_verified")
 
 
 @pytest.mark.parametrize("options", [

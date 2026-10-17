@@ -189,7 +189,8 @@ def checkpoint(session, task, *, active=False):
         except (ValueError, KeyError, TypeError) as exc:
             raise research_tasks.TaskError("saved specialist report is invalid") from exc
     status = campaign.body["status"]
-    if status == "agent_checks_complete" and not quality.assessment(session, mid)["agent_checks_complete"]:
+    if (status == "agent_checks_complete"
+            and not quality.assessment(session, mid).get("specialist_checks_complete", False)):
         raise research_tasks.TaskError("saved specialist completion no longer passes its checks")
     stage = {"agent_checks_complete": "integrate", "needs_revision": "revise"}.get(status, "audit")
     recovery = recoverable_return(parent, campaign, task) if stage == "revise" else None

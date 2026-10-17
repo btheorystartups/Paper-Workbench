@@ -4,7 +4,7 @@ import json
 import time
 from types import SimpleNamespace
 
-from ..models import ResearchObject, stable_hash
+from ..models import ResearchAgent, ResearchObject, stable_hash
 from ..providers.research_executor import ExecutorError
 from ..research_contract import (
     MANUSCRIPT_HANDOFF_TOKEN_RESERVE,
@@ -13,6 +13,7 @@ from ..research_contract import (
     Synthesis,
 )
 from . import manuscript_acquisition, research_trace, revision_review
+from . import manuscript_closure as closure
 from . import manuscript_quality as quality
 from .research_recovery import (
     ReplayHandle,
@@ -23,6 +24,11 @@ from .research_recovery import (
 from .research_runner import StopResearch, allocation_charge
 
 FINAL_HANDOFF_RESERVE = MANUSCRIPT_HANDOFF_TOKEN_RESERVE
+CLOSURE_CALL_RESERVE = 45000
+
+
+def _protected_reserve(runner):
+    return FINAL_HANDOFF_RESERVE + (CLOSURE_CALL_RESERVE if closure.enabled(runner.task) else 0)
 
 
 def _historical(runner, field):
@@ -68,7 +74,10 @@ def _cycle_timing(runner):
     report_repair = (
         max(report_repairs, default=max(durations.values(), default=0)) if review is not None else None
     )
-    required = (1.25 * (cycle + author_repair + report_repair) + startup) if cycle is not None else None
+    closure_time = (90.0 if getattr(runner.task, "contract", {}).get("quality_policy")
+                    == closure.QUALITY_POLICY else 0.0)
+    required = (1.25 * (cycle + author_repair + report_repair) + startup + closure_time
+                if cycle is not None else None)
     return {
         "observed_author_seconds": author,
         "observed_role_seconds": durations,
@@ -79,6 +88,7 @@ def _cycle_timing(runner):
         "author_repair_basis": "observed" if author_repairs else "ordinary_author_fallback",
         "report_repair_basis": "observed" if report_repairs else "largest_reviewer_fallback",
         "startup_reserve_seconds": startup,
+        "editorial_confirmation_reserve_seconds": closure_time,
         "margin": 1.25,
         "required_remaining_seconds": required,
         "shortfall_seconds": max(0, required - remaining)
@@ -109,6 +119,8 @@ def _admit_author_time(runner, campaign, *, revision, correction):
         required = None if repair is None else 1.25 * (repair + (
             (timing["review_wave_seconds"] or 0) + (timing["report_repair_pool_seconds"] or 0)
             if revision else 0)) + timing["startup_reserve_seconds"]
+        if required is not None:
+            required += timing["editorial_confirmation_reserve_seconds"]
     else:
         required = timing["required_remaining_seconds"]
     remaining = timing["remaining_research_seconds"]
@@ -248,10 +260,10 @@ def _revision_budget(runner, campaign=None):
             and campaign.body["drafts"][-1].get("local_revision")
             and runner.task.ledger.get("continuation", {}).get("max_report_corrections") == 0):
         repair_reserve = 0  # Explicitly disabled calls require no reservation.
-    required = review_reserve + FINAL_HANDOFF_RESERVE + repair_reserve + minimum_author
+    required = review_reserve + _protected_reserve(runner) + repair_reserve + minimum_author
     # Fund the author from capacity left after protecting the complete review cycle.
     author_grant = min(minimum_author, max(0,
-        remaining - review_reserve - FINAL_HANDOFF_RESERVE - repair_reserve))
+        remaining - review_reserve - _protected_reserve(runner) - repair_reserve))
     return {
         "candidate_sha256": campaign.body["drafts"][-1]["candidate_sha256"]
                             if campaign and campaign.body.get("drafts") else None,
@@ -260,7 +272,7 @@ def _revision_budget(runner, campaign=None):
         "remaining_tokens": remaining,
         "review_role_reserves": review_usage,
         "review_reserve": review_reserve,
-        "handoff_reserve": FINAL_HANDOFF_RESERVE,
+        "handoff_reserve": _protected_reserve(runner),
         "repair_reserve": repair_reserve,
         "input_token_estimate": input_tokens,
         "repair_input_token_estimate": repair_input_tokens,
@@ -269,7 +281,7 @@ def _revision_budget(runner, campaign=None):
         "minimum_author_grant": minimum_author,
         "author_grant": author_grant,
         "unallocated_contingency": max(0, remaining - author_grant - review_reserve
-                                       - FINAL_HANDOFF_RESERVE - repair_reserve),
+                                       - _protected_reserve(runner) - repair_reserve),
         "required_remaining_tokens": required,
         "shortfall_tokens": max(0, required - remaining),
         "author_slice_shortfall_tokens": 0,
@@ -294,7 +306,7 @@ def _initial_capacity_plan(runner, campaign):
         "packets": [*campaign.body["packets"], *manifests]})
     future = _revision_budget(runner, projected)
     revisions = int(runner.task.contract["max_revision_cycles"] > 0)
-    base = current["review_reserve"] + FINAL_HANDOFF_RESERVE
+    base = current["review_reserve"] + _protected_reserve(runner)
     repairs = current["repair_reserve"]
     if revisions:
         base += future["minimum_author_grant"] + future["review_reserve"]
@@ -353,6 +365,8 @@ def _author_payload(runner, campaign, *, revision=False):
         "verification_receipts": campaign.body["verification_receipts"],
         "search_receipts": campaign.body["search_receipts"],
         "prior_comments": prior,
+        "editorial_findings": ((campaign.body.get("closure_reports") or [{}])[0]
+            .get("report", {}).get("findings", [])) if revision else [],
         "expected_response_ids": sorted(c["id"] for c in prior),
         "previous_candidate": previous,
         "previous_candidate_sha256": stable_hash(previous) if previous else None,
@@ -550,6 +564,79 @@ def _correction_grants(corrections, available, target):
     return [minimum + extra + (index < remainder) for index, minimum in enumerate(minimums)]
 
 
+def _closure_phase(runner, parent, manuscript, campaign, digest, phase):
+    """One charged call per phase; invalid returns are retained and never retried."""
+    if not closure.enabled(runner.task):
+        return None
+    previous = campaign.body.get("closure_calls", [])
+    records = campaign.body.get("closure_reports", [])
+    if phase == "confirmation" and len(records) == 2:
+        state = quality.assessment(runner.session, manuscript.id)
+        if state["closure"]["status"] in {"ready_for_human_review",
+                                           "ready_for_human_review_with_advisories"}:
+            return records[-1]
+        raise StopResearch("failed_partial", "saved editorial confirmation is stale or invalid")
+    if len(previous) >= (1 if phase == "preflight" else 2):
+        raise StopResearch("limit_reached_partial", "editorial closure call limit reached")
+    if phase == "preflight":
+        scope = closure.scope_for(runner.task)
+        quality.update_campaign(campaign, closure_scope=scope)
+        plan = _revision_budget(runner, campaign)
+        if runner.remaining_tokens() < plan["required_remaining_tokens"] + CLOSURE_CALL_RESERVE:
+            raise StopResearch("limit_reached_partial", "full editorial and specialist path is unfunded")
+    protected = FINAL_HANDOFF_RESERVE + (CLOSURE_CALL_RESERVE if phase == "preflight" else 0)
+    if runner.remaining_tokens() < CLOSURE_CALL_RESERVE + protected:
+        raise StopResearch("limit_reached_partial", "editorial closure grant and follow-through unavailable")
+    remaining_time = runner.research_deadline - time.monotonic()
+    if remaining_time < (180 if phase == "preflight" else 60):
+        raise StopResearch("limit_reached_partial", "editorial closure time reserve unavailable")
+    agent = runner.new_agent("child", {"role": "editorial_closure", "phase": phase,
+                                       "candidate_sha256": digest}, parent)
+    packet = closure.packet_for(runner.task, campaign, digest, agent.id, phase, session=runner.session,
+        specialist_records=[{"agent_id": r["agent_id"], "role": r["role"],
+                             "candidate_sha256": r["candidate_sha256"],
+                             "report_sha256": r["report_sha256"], "blockers": r["blockers"]}
+                            for r in campaign.body["reports"][-len(SPECIALIST_ROLES):]]
+        if phase == "confirmation" else [])
+    agent.assignment = {**agent.assignment, "packet_sha256": packet["packet_sha256"]}
+    handle = runner.spawn(agent)
+    quality.update_campaign(campaign, closure_calls=[*previous, {"phase": phase,
+        "agent_id": agent.id, "candidate_sha256": digest, "packet_sha256": packet["packet_sha256"]}])
+    runner.session.commit()
+    try:
+        allocation = runner.send(handle, agent, "closure", CLOSURE_CALL_RESERVE, {"packet": packet})
+        raw = runner.wait_parent(handle, agent, allocation, "closure_report")
+        identity = (agent.provenance.get("closure_report_model", {}).get("codex_thread_id")
+                    if runner.task.contract["executor"] != "offline" else agent.id)
+        authors = [runner.session.get(ResearchAgent, d["author_id"])
+                   for d in campaign.body["drafts"]]
+        forbidden = set().union(*(quality.author_model_threads(a) for a in authors if a))
+        forbidden.update(a.provenance.get("specialist_report_model", {}).get("codex_thread_id")
+                         for a in runner.agents if a.id != agent.id)
+        state = quality.assessment(runner.session, manuscript.id) if phase == "confirmation" else {}
+        artifacts_verified = all(row.get("status") == "available" for row in
+            json.loads(packet["evidence_files"]["evidence/verification/index.json"]))
+        decision = closure.evaluate(raw, packet, assigned_reviewer_id=agent.id,
+            reviewer_thread_id=identity, writer_thread_ids=forbidden,
+            specialists_current=state.get("specialist_checks_complete", False),
+            artifacts_verified=artifacts_verified)
+        record = {"phase": phase, "agent_id": agent.id, "candidate_sha256": digest,
+                  "packet_sha256": packet["packet_sha256"], "scope_sha256": packet["scope_sha256"],
+                  "evidence_manifest_sha256": packet["evidence_manifest_sha256"],
+                  "report": raw, "report_sha256": stable_hash(raw),
+                  "status": decision["status"], "reasons": decision["reasons"],
+                  "allocation_span_id": allocation["span_id"], "reviewer_thread_id": identity}
+        quality.update_campaign(campaign, closure_reports=[*campaign.body.get("closure_reports", []), record])
+        agent.report, agent.state = raw, "completed"
+        runner.session.commit()
+        if decision["status"] in {"invalid_report", "stale_report"}:
+            raise StopResearch("failed_partial", "editorial closure report was invalid; evidence retained")
+        return record
+    finally:
+        handle.close()
+        research_trace.record(runner, "worker_closed", agent=agent, pid=handle.pid)
+
+
 def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
     pending, results = [], []
     # Accepted reports are committed individually, so interrupted waves can fill only missing roles.
@@ -576,7 +663,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
     # The original sixth-of-task slice rejected an observed 19,555-token review
     # despite ample unallocated task capacity. All review grants share one ledger.
     tokens = min(runner.task.contract["token_limit"] // 4,
-                 (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE) // role_count)
+                 (runner.remaining_tokens() - _protected_reserve(runner)) // role_count)
     if remaining_roles and tokens < 1000:
         raise StopResearch("limit_reached_partial", "insufficient allowance for all specialist reviewers")
     budget = _revision_budget(runner, campaign)
@@ -584,17 +671,17 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
     # Initial reviews have priority; protect the available repair pool without
     # lowering forecasted review grants merely to fill an unfunded repair target.
     repair_reserve = min(budget["repair_reserve"], max(0,
-        runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - review_reserve))
+        runner.remaining_tokens() - _protected_reserve(runner) - review_reserve))
     if (remaining_roles and not iteration and runner.remaining_tokens()
-            >= FINAL_HANDOFF_RESERVE + 20000 * role_count + 1000):
+            >= _protected_reserve(runner) + 20000 * role_count + 1000):
         repair_reserve = max(1000, repair_reserve)
     tokens = min(runner.task.contract["token_limit"] // 4,
-        (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - repair_reserve) // role_count)
+        (runner.remaining_tokens() - _protected_reserve(runner) - repair_reserve) // role_count)
     role_grants = {role: min(tokens, budget["review_role_reserves"][role]) for role in remaining_roles}
     repair_allocations = []
     if iteration and remaining_roles:
         repair_reserve = budget["repair_reserve"]
-        spare = (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+        spare = (runner.remaining_tokens() - _protected_reserve(runner)
                  - review_reserve - budget["repair_reserve"])
         if spare < 0:
             raise StopResearch("limit_reached_partial",
@@ -604,7 +691,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                        for role in remaining_roles}
     plan = {"iteration": iteration, "remaining_tokens": runner.remaining_tokens(),
             "review_role_grants": role_grants, "repair_reserve": repair_reserve,
-            "repair_forecast": budget["repair_reserve"], "handoff_reserve": FINAL_HANDOFF_RESERVE}
+            "repair_forecast": budget["repair_reserve"], "handoff_reserve": _protected_reserve(runner)}
     quality.update_campaign(campaign, audit_budget_plans=[
         *campaign.body.get("audit_budget_plans", []), plan])
     research_trace.record(runner, "audit_budget_planned", **plan)
@@ -663,7 +750,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
             role = deferred.pop(0)
             remaining_repair = max(0, repair_reserve - sum(
                 allocation_charge(a) for a in repair_allocations))
-            grant = (runner.remaining_tokens() - FINAL_HANDOFF_RESERVE - remaining_repair
+            grant = (runner.remaining_tokens() - _protected_reserve(runner) - remaining_repair
                      - sum(role_grants[r] for r in deferred))
             if grant < role_grants[role]:
                 raise StopResearch("limit_reached_partial", "deferred specialist reservation unavailable")
@@ -673,7 +760,7 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
             # Gather the whole wave's defects first. Each existing specialist may
             # correct its report once, using the original deadline and ledger.
             repair_reserve = min(budget["repair_reserve"], max(0,
-                runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                runner.remaining_tokens() - _protected_reserve(runner)
                 - sum(role_grants[role] for role in deferred)))
             if campaign.body["drafts"][-1].get("local_revision") and corrections and (
                     len(corrections) + len(repair_allocations) > runner.task.ledger.get(
@@ -682,9 +769,9 @@ def _audit_wave(runner, parent, manuscript, campaign, digest, iteration):
                     "local review permits only one shared format correction by default; "
                     "operator correction limit reached")
             grants = _correction_grants(corrections,
-                max(0, runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                max(0, runner.remaining_tokens() - _protected_reserve(runner)
                     - sum(role_grants[role] for role in deferred)),
-                (max(0, runner.remaining_tokens() - FINAL_HANDOFF_RESERVE
+                (max(0, runner.remaining_tokens() - _protected_reserve(runner)
                      - sum(role_grants[role] for role in deferred))
                  if campaign.body["drafts"][-1].get("local_revision") else
                  max(0, repair_reserve - sum(allocation_charge(a) for a in repair_allocations))))
@@ -986,7 +1073,9 @@ def execute(runner):
                        initial_budget["input_token_estimate"]
                        + initial_budget["review_output_headroom"]
                    )
-                   + initial_budget["repair_reserve"] + FINAL_HANDOFF_RESERVE)
+                   + initial_budget["repair_reserve"] + _protected_reserve(runner))
+        if closure.enabled(task):
+            reserve += CLOSURE_CALL_RESERVE + 12000
         draft_allowance = min(task.contract["token_limit"] // 3, runner.remaining_tokens() - reserve)
         if continuation:
             digest = campaign.body["drafts"][-1]["candidate_sha256"]
@@ -1016,6 +1105,45 @@ def execute(runner):
                 runner, parent, handle, manuscript, campaign, draft_allowance,
                 protected_after_author=reserve,
             )
+        if closure.enabled(task):
+            records = campaign.body.get("closure_reports", [])
+            preflight = records[0] if records else _closure_phase(
+                runner, parent, manuscript, campaign, digest, "preflight")
+            if records:
+                reviewer = session.get(ResearchAgent, preflight["agent_id"])
+                if (not reviewer or reviewer.deleted_at or reviewer.task_id != task.id
+                        or reviewer.assignment.get("phase") != "preflight"
+                        or stable_hash(reviewer.report) != preflight["report_sha256"]
+                        or stable_hash(preflight["report"]) != preflight["report_sha256"]
+                        or reviewer.assignment.get("packet_sha256") != preflight["packet_sha256"]):
+                    raise StopResearch("failed_partial", "saved editorial preflight changed")
+            if preflight["status"] not in {"preflight_complete", "needs_revision"}:
+                raise StopResearch("failed_partial", "saved editorial preflight is invalid")
+            if preflight["status"] == "needs_revision" and not campaign.body.get("closure_repair"):
+                if local_review_only or task.contract["max_revision_cycles"] == 0:
+                    raise StopResearch("limit_reached_partial",
+                                       "editorial repair requires authorized revision")
+                if runner.research_deadline - time.monotonic() < 300:
+                    raise StopResearch("limit_reached_partial",
+                                       "editorial repair and specialist time reserve unavailable")
+                budget = _revision_budget(runner, campaign)
+                if budget["capacity_status"] != "funded":
+                    raise StopResearch(
+                        "limit_reached_partial", "editorial repair and specialist wave are unfunded"
+                    )
+                before = digest
+                digest = _author(runner, parent, handle, manuscript, campaign,
+                                 budget["author_grant"], revision=True, protected_after_author=(
+                                     budget["review_reserve"] + budget["repair_reserve"]
+                                     + budget["handoff_reserve"]))
+                quality.update_campaign(campaign, closure_repair={
+                    "author_id": parent.id, "base_candidate_sha256": before,
+                    "candidate_sha256": digest,
+                    "finding_ids": [f["id"] for f in preflight["report"]["findings"]
+                                    if f["category"] != "optional_improvement"
+                                    and f["disposition"] in {"open", "deferred"}],
+                })
+                runner.session.commit()
         plan = _initial_capacity_plan(runner, campaign)
         quality.update_campaign(campaign, initial_capacity_plans=[
             *campaign.body.get("initial_capacity_plans", []), plan])
@@ -1069,7 +1197,22 @@ def execute(runner):
                     + budget["repair_reserve"]
                 ),
             )
+            if closure.enabled(task) and campaign.body.get("closure_repair"):
+                repair = campaign.body["closure_repair"]
+                quality.update_campaign(campaign, closure_repair={**repair,
+                    "candidate_sha256": digest,
+                    "successor_candidate_sha256": [
+                        *repair.get("successor_candidate_sha256", []), digest]})
+                session.commit()
         _save_handoff(runner, manuscript, campaign)
+        if completed and closure.enabled(task):
+            confirmation = _closure_phase(runner, parent, manuscript, campaign, digest, "confirmation")
+            if confirmation["status"] not in {"ready_for_human_review",
+                                              "ready_for_human_review_with_advisories"}:
+                completed = False
+                quality.update_campaign(campaign, status="needs_revision")
+                runner.session.commit()
+                _save_handoff(runner, manuscript, campaign)
         # A final summary has a safety margin for best-effort usage telemetry.
         # The complete candidate/reports stay in the evidence graph, not repeated
         # in the parent's final message context.
